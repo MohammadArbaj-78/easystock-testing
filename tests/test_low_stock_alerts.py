@@ -43,13 +43,13 @@ class TestSeverityBucketing:
 
     def test_below_half_threshold_is_warning(self, isolated_db):
         store_id = signup("Store", "O", "9876500402", "pass123")
-        _add(store_id, "Low Med", "L01", 3)  # 3/10 = 30% -> WARNING
+        _add(store_id, "Low Med", "L01", 1)  # 1/2 = 50% -> WARNING (<=50% of threshold)
         buckets = low_stock_service.get_low_stock_alerts(store_id)
         assert any(p["name"] == "Low Med" for p in buckets["warning"])
 
     def test_above_half_threshold_but_still_low_is_low(self, isolated_db):
         store_id = signup("Store", "O", "9876500403", "pass123")
-        _add(store_id, "Borderline Med", "B01", 8)  # 8/10 = 80% -> LOW
+        _add(store_id, "Borderline Med", "B01", 2)  # 2/2 = 100% but qty<=threshold -> LOW
         buckets = low_stock_service.get_low_stock_alerts(store_id)
         assert any(p["name"] == "Borderline Med" for p in buckets["low"])
 
@@ -70,7 +70,7 @@ class TestSeverityBucketing:
 
     def test_effective_threshold_present_in_row_data(self, isolated_db):
         store_id = signup("Store", "O", "9876500406", "pass123")
-        _add(store_id, "Test Med", "T01", 3)
+        _add(store_id, "Test Med", "T01", 1)  # qty=1 <= threshold=2 -> in warning bucket
         buckets = low_stock_service.get_low_stock_alerts(store_id)
         row = buckets["warning"][0]
         assert "effective_threshold" in row

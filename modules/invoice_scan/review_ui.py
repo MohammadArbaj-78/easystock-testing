@@ -154,6 +154,15 @@ def _render_medicine_row(idx: int, medicine: dict, row_errors: list) -> None:
     # Delete button — needs a unique key per row
     if cols[-1].button("🗑️", key=f"delete_row_{idx}", help="Delete this row"):
         review_service.delete_medicine(idx)
+        # Clear all review_row_* widget keys so that text_input widgets
+        # reinitialise from the updated medicine list on the next rerun.
+        # Without this, Streamlit restores each text_input from the stale
+        # session_state key — e.g. after deleting row 0, row 1 shifts to
+        # index 0 but "review_row_0_*" still holds the deleted row's data,
+        # causing update_medicine() to overwrite the new row 0 with the old
+        # values, making it appear that the wrong row was deleted.
+        for key in [k for k in st.session_state if k.startswith("review_row_")]:
+            del st.session_state[key]
         st.rerun()
 
     if row_errors:

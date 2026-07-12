@@ -734,3 +734,34 @@ on line 123 is unchanged.
 All workflows confirmed: add_product, edit_product, Dashboard, Expiry Alerts, Product Management — no `Invalid isoformat string` errors anywhere.
 
 ### Tests: 121/121 passed
+
+---
+
+## [2.2.0] - Expiry Alerts: new filter order with 60/90-day and expired-ago buckets
+
+### New filter order
+All Alerts → Expiring in 15 Days → Expiring in 30 Days → Expiring in 60 Days →
+Expiring in 90 Days → Expired → Expired 1 Month Ago → Expired 2 Months Ago →
+Expired 3 Months Ago
+
+### Modified files
+- **`config/alert_theme.py`** — added ALERT_TYPE_60_DAYS, ALERT_TYPE_90_DAYS, ALERT_TYPE_EXPIRED_1M/2M/3M constants and display entries; updated ALL_ALERT_TYPES to the new order
+- **`config/settings.py`** — EXPIRY_ALERT_WINDOWS_DAYS changed from [7, 15, 30] to [15, 30, 60, 90]
+- **`modules/alerts/service.py`** — updated imports; added 60/90 to _bucket_label_for_window; expired products now split into expired/expired_1m/expired_2m/expired_3m by months elapsed
+- **`modules/dashboard/ui.py`** — warning card now uses 15-day as most-urgent bucket (7_days removed); uses .get() for safe count lookup
+- **`tests/test_expiry_alerts.py`** — updated 3 tests that referenced the removed 7_days bucket
+
+### Tests: 121/121 passed
+
+---
+
+## [2.2.1] - Delete row bug fix; threshold default 10→2; test updates
+
+### Fixed
+- **`modules/invoice_scan/review_ui.py`** — Delete button now clears all `review_row_*` widget keys from session_state before `st.rerun()`. Root cause: `st.text_input` with an explicit key ignores its `value` parameter when the key exists in session_state; after a delete the shifted rows had stale keys that caused `update_medicine()` to overwrite the new occupant with the deleted row's data, making it appear the wrong row was deleted.
+- **`config/settings.py`** — `DEFAULT_LOW_STOCK_THRESHOLD` changed from 10 to 2.
+
+### Tests updated
+- **`tests/test_low_stock_alerts.py`** — 3 tests updated to use quantities that correctly trigger low-stock/warning buckets with the new default threshold of 2 (qty=1 → WARNING, qty=2 → LOW).
+
+### Tests: 121/121 passed

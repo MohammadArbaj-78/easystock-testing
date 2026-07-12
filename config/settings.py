@@ -49,7 +49,7 @@ PDF_PREVIEW_DPI = 150
 # Product Management (Module 5); this is just the fallback so Dashboard
 # and Alerts have a sensible default from day one without forcing every
 # store to configure every product before the app is useful.
-DEFAULT_LOW_STOCK_THRESHOLD = 10
+DEFAULT_LOW_STOCK_THRESHOLD = 2
 
 # "Expiring soon" on the Dashboard uses this window. The dedicated
 # Expiry Alerts module (Module 6) offers the full 7/15/30 day
@@ -64,7 +64,7 @@ DASHBOARD_EXPIRY_SOON_DAYS = 30
 # bucketing logic. Defined as a list (not separate constants) so the
 # alerts service can iterate it in order without hardcoding "7, then
 # 15, then 30" as a literal sequence in business logic.
-EXPIRY_ALERT_WINDOWS_DAYS = [7, 15, 30]
+EXPIRY_ALERT_WINDOWS_DAYS = [15, 30, 60, 90]
 
 # --- OCR / Gemini ---
 # Model name to use for invoice extraction. Gemini 1.5 Flash is chosen

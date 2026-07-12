@@ -79,15 +79,14 @@ class TestBucketingLogic:
         names = {k: {p["name"] for p in v} for k, v in buckets.items()}
 
         assert "Already Expired" in names["expired"]
-        assert "Expires Today" in names["7_days"]
-        assert "Exactly 7" in names["7_days"]
+        assert "Expires Today" in names["15_days"]
+        assert "Exactly 7" in names["15_days"]
         assert "8 Days" in names["15_days"]
-        assert "8 Days" not in names["7_days"]
         assert "Exactly 15" in names["15_days"]
         assert "16 Days" in names["30_days"]
         assert "16 Days" not in names["15_days"]
         assert "Exactly 30" in names["30_days"]
-        assert "31 Days" not in names["expired"] | names["7_days"] | names["15_days"] | names["30_days"]
+        assert "31 Days" not in names["expired"] | names["15_days"] | names["30_days"]
 
     def test_product_appears_in_only_one_bucket(self, isolated_db):
         store_id = signup("Single Bucket Store", "Owner", "9876500002", "pass123")
@@ -123,7 +122,7 @@ class TestFilterAndSearch:
 
         filtered = alerts_service.get_filtered_alerts(store_id, alert_type="expired")
         assert len(filtered["expired"]) == 1
-        assert len(filtered["7_days"]) == 0
+        assert len(filtered["15_days"]) == 0
 
     def test_search_matches_name_and_batch(self, isolated_db):
         store_id = signup("Search Store", "Owner", "9876500006", "pass123")
@@ -158,7 +157,7 @@ class TestExpiryAlertsUIRendersCorrectly:
 
         headers = [m.value for m in at.markdown if "<h4" in (m.value or "")]
         assert any("Expired (1)" in h for h in headers)
-        assert any("Expiring in 7 Days (1)" in h for h in headers)
+        assert any("Expiring in 15 Days (1)" in h for h in headers)
 
     def test_selecting_filter_narrows_visible_sections(self, isolated_db):
         mobile = "9876500008"

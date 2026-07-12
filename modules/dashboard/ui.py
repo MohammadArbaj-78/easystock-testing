@@ -51,15 +51,15 @@ def _render_expiring_soon_warning(store_id: int) -> None:
     """
     counts = alerts_service.get_alert_counts(store_id)
 
-    if counts[alerts_service.ALERT_TYPE_7_DAYS] > 0:
-        alert_type = alerts_service.ALERT_TYPE_7_DAYS
-        message = f"{counts[alert_type]} product(s) expiring within 7 days — action needed soon."
-    elif counts[alerts_service.ALERT_TYPE_15_DAYS] > 0:
+    if counts.get(alerts_service.ALERT_TYPE_15_DAYS, 0) > 0:
         alert_type = alerts_service.ALERT_TYPE_15_DAYS
-        message = f"{counts[alert_type]} product(s) expiring within 15 days."
-    elif counts[alerts_service.ALERT_TYPE_30_DAYS] > 0:
+        message = f"{counts[alert_type]} product(s) expiring within 15 days — action needed soon."
+    elif counts.get(alerts_service.ALERT_TYPE_30_DAYS, 0) > 0:
         alert_type = alerts_service.ALERT_TYPE_30_DAYS
         message = f"{counts[alert_type]} product(s) expiring within 30 days."
+    elif counts.get(alerts_service.ALERT_TYPE_60_DAYS, 0) > 0:
+        alert_type = alerts_service.ALERT_TYPE_60_DAYS
+        message = f"{counts[alert_type]} product(s) expiring within 60 days."
     else:
         return
 

@@ -33,6 +33,11 @@ from config.alert_theme import (
     ALERT_TYPE_7_DAYS,
     ALERT_TYPE_15_DAYS,
     ALERT_TYPE_30_DAYS,
+    ALERT_TYPE_60_DAYS,
+    ALERT_TYPE_90_DAYS,
+    ALERT_TYPE_EXPIRED_1M,
+    ALERT_TYPE_EXPIRED_2M,
+    ALERT_TYPE_EXPIRED_3M,
     ALL_ALERT_TYPES,
     ALERT_TYPE_DISPLAY,
 )
@@ -53,7 +58,13 @@ def _bucket_label_for_window(days: int) -> str:
             programming error (EXPIRY_ALERT_WINDOWS_DAYS and this
             mapping have drifted out of sync), not a user-facing one.
     """
-    mapping = {7: ALERT_TYPE_7_DAYS, 15: ALERT_TYPE_15_DAYS, 30: ALERT_TYPE_30_DAYS}
+    mapping = {
+        7:  ALERT_TYPE_7_DAYS,
+        15: ALERT_TYPE_15_DAYS,
+        30: ALERT_TYPE_30_DAYS,
+        60: ALERT_TYPE_60_DAYS,
+        90: ALERT_TYPE_90_DAYS,
+    }
     if days not in mapping:
         raise ValueError(
             f"No alert bucket defined for a {days}-day window. "
@@ -87,12 +98,32 @@ def get_categorized_alerts(store_id: int) -> dict:
     """
     buckets = {alert_type: [] for alert_type in ALL_ALERT_TYPES}
 
-    buckets[ALERT_TYPE_EXPIRED] = products_repository.get_expired_products(store_id)
+    # Split expired products into sub-buckets by months elapsed.
+    import calendar as _calendar
+    from utils.validators import parse_expiry_month_year
+    today_local = date.today()
+    for product in products_repository.get_expired_products(store_id):
+        try:
+            m, y = parse_expiry_month_year(product["expiry_date"])
+            months_elapsed = (today_local.year - y) * 12 + (today_local.month - m)
+        except ValueError:
+            try:
+                exp = date.fromisoformat(product["expiry_date"])
+                months_elapsed = (today_local.year - exp.year) * 12 + (today_local.month - exp.month)
+            except ValueError:
+                months_elapsed = 0
+        if months_elapsed <= 1:
+            buckets[ALERT_TYPE_EXPIRED].append(product)
+        elif months_elapsed == 2:
+            buckets[ALERT_TYPE_EXPIRED_1M].append(product)
+        elif months_elapsed == 3:
+            buckets[ALERT_TYPE_EXPIRED_2M].append(product)
+        else:
+            buckets[ALERT_TYPE_EXPIRED_3M].append(product)
 
     # Fetch the widest window once, then narrow it down in Python -
     # this avoids running three increasingly-narrow SQL queries against
-    # the same table when one query (the 30-day window, which is a
-    # superset of 7 and 15) already has everything needed.
+    # the same table when one query covers the widest window already.
     widest_window = max(EXPIRY_ALERT_WINDOWS_DAYS)
     all_expiring_soon = products_repository.get_expiring_soon_products(
         store_id, within_days=widest_window
