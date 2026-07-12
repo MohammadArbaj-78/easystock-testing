@@ -28,36 +28,19 @@ ALERT_TYPE_EXPIRED = "expired"
 ALERT_TYPE_7_DAYS = "7_days"
 ALERT_TYPE_15_DAYS = "15_days"
 ALERT_TYPE_30_DAYS = "30_days"
-ALERT_TYPE_60_DAYS = "60_days"
-ALERT_TYPE_90_DAYS = "90_days"
-ALERT_TYPE_EXPIRED_1M = "expired_1m"
-ALERT_TYPE_EXPIRED_2M = "expired_2m"
-ALERT_TYPE_EXPIRED_3M = "expired_3m"
 
-# Filter order as shown in the dropdown:
-# All Alerts → 15 Days → 30 Days → 60 Days → 90 Days →
-# Expired → Expired 1M Ago → Expired 2M Ago → Expired 3M Ago
-ALL_ALERT_TYPES = [
-    ALERT_TYPE_15_DAYS,
-    ALERT_TYPE_30_DAYS,
-    ALERT_TYPE_60_DAYS,
-    ALERT_TYPE_90_DAYS,
-    ALERT_TYPE_EXPIRED,
-    ALERT_TYPE_EXPIRED_1M,
-    ALERT_TYPE_EXPIRED_2M,
-    ALERT_TYPE_EXPIRED_3M,
-]
+ALL_ALERT_TYPES = [ALERT_TYPE_EXPIRED, ALERT_TYPE_7_DAYS, ALERT_TYPE_15_DAYS, ALERT_TYPE_30_DAYS]
 
+# The one and only color/icon/label definition per alert type. Every
+# module that needs to show an expiry urgency indicator - regardless of
+# whether it's a full section (Expiry Alerts) or a single summary card
+# (Dashboard) - reads from this dict, so the app can never end up with
+# two different color stories for the same bucket again.
 ALERT_TYPE_DISPLAY = {
-    ALERT_TYPE_EXPIRED:    {"label": "Expired",                "color": "#D32F2F", "icon": "🔴"},
-    ALERT_TYPE_7_DAYS:     {"label": "Expiring in 7 Days",     "color": "#F57C00", "icon": "🟠"},
-    ALERT_TYPE_15_DAYS:    {"label": "Expiring in 15 Days",    "color": "#FBC02D", "icon": "🟡"},
-    ALERT_TYPE_30_DAYS:    {"label": "Expiring in 30 Days",    "color": "#1976D2", "icon": "🔵"},
-    ALERT_TYPE_60_DAYS:    {"label": "Expiring in 60 Days",    "color": "#0288D1", "icon": "🔵"},
-    ALERT_TYPE_90_DAYS:    {"label": "Expiring in 90 Days",    "color": "#0277BD", "icon": "🔵"},
-    ALERT_TYPE_EXPIRED_1M: {"label": "Expired 1 Month Ago",    "color": "#B71C1C", "icon": "🔴"},
-    ALERT_TYPE_EXPIRED_2M: {"label": "Expired 2 Months Ago",   "color": "#B71C1C", "icon": "🔴"},
-    ALERT_TYPE_EXPIRED_3M: {"label": "Expired 3 Months Ago",   "color": "#B71C1C", "icon": "🔴"},
+    ALERT_TYPE_EXPIRED: {"label": "Expired", "color": "#D32F2F", "icon": "🔴"},
+    ALERT_TYPE_7_DAYS: {"label": "Expiring in 7 Days", "color": "#F57C00", "icon": "🟠"},
+    ALERT_TYPE_15_DAYS: {"label": "Expiring in 15 Days", "color": "#FBC02D", "icon": "🟡"},
+    ALERT_TYPE_30_DAYS: {"label": "Expiring in 30 Days", "color": "#1976D2", "icon": "🔵"},
 }
 
 
