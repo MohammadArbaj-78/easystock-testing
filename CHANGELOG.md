@@ -781,3 +781,17 @@ The v2.2.1 fix addressed a symptom, not the underlying cause. Every widget key i
 
 ### Debug instrumentation
 Temporary runtime debug logging added during investigation (`modules/invoice_scan/_debug_delete_instrumentation.py` plus log calls in `review_ui.py`/`review_service.py`) has been fully removed as part of this fix.
+
+## [2.2.3] - Review & Edit: mobile UI improvement (horizontal scroll)
+
+### Fixed
+- **`modules/invoice_scan/review_ui.py`** — On mobile/narrow viewports, the Review & Edit table's columns were being compressed by Streamlit's own column-shrinking, making fields hard to read and edit. The header and every row are now wrapped in a single container (`st.container(key="review_table_scroll")`) with a scoped CSS rule (`min-width: 900px` on each row, `overflow-x: auto` on the container) so the table keeps its normal desktop-proportioned layout at all times and scrolls horizontally on narrow screens instead of squeezing columns. A "↔️ Scroll sideways to see every column" hint is shown only below a 768px viewport width (CSS media query), so it is invisible on desktop.
+
+### Scope
+- Desktop layout is pixel-identical to before this change — desktop viewports are already wider than the enforced 900px minimum, so the CSS rule has no visible effect there.
+- No column was added, removed, reordered, or converted to a card layout. Every field remains an individually editable `st.text_input`. The delete button remains on the same row, in the same position.
+- The CSS selector is scoped to the `st-key-review_table_scroll` container only, so it cannot affect `st.columns()` layouts used elsewhere in the app (Dashboard, Product Management, Alerts, etc.).
+- No OCR, review-session, or save logic was touched. `modules/invoice_scan/review_service.py`, `ocr_service.py`, and `upload_service.py` are unchanged in this release.
+
+### Verification
+`pytest`/Streamlit remained unavailable in this working environment (no network access). Re-ran the same Streamlit-semantics-accurate simulation used to verify v2.2.2 (first/middle/last-row deletes, repeated deletes, edit-then-delete) against the now-wrapped table code — all scenarios still pass unchanged, confirming the container/CSS wrapper introduced no behavioral regression. Running the project's own `pytest`/`AppTest` suite in an environment with `streamlit` installed is still recommended.

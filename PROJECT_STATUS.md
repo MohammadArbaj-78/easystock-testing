@@ -2,7 +2,7 @@
 
 ## Current Version
 
-2.2.2 (per `VERSION` and the latest `CHANGELOG.md` entry).
+2.2.3 (per `VERSION` and the latest `CHANGELOG.md` entry).
 
 ## Project Stage
 
@@ -10,7 +10,7 @@ MVP. Multiple source files (`config/settings.py`, `config/product_schema.py`) ex
 
 ## Overall Progress
 
-Seven modules are implemented and working: Login, Dashboard, Product Management, Invoice Upload, OCR Extraction, Review & Edit, Expiry Alerts, and Low Stock Alerts (Modules 1-7 minus Sales/Billing/Notifications/Super Admin). The application enforces multi-tenant data isolation throughout, follows a consistent layered architecture (UI → Service → Repository → Core/Config), and has an unbroken versioned release history from v1.0.0 through v2.2.2. Four modules remain unbuilt placeholder packages.
+Seven modules are implemented and working: Login, Dashboard, Product Management, Invoice Upload, OCR Extraction, Review & Edit, Expiry Alerts, and Low Stock Alerts (Modules 1-7 minus Sales/Billing/Notifications/Super Admin). The application enforces multi-tenant data isolation throughout, follows a consistent layered architecture (UI → Service → Repository → Core/Config), and has an unbroken versioned release history from v1.0.0 through v2.2.3. Four modules remain unbuilt placeholder packages.
 
 ## Stable Modules
 
@@ -19,7 +19,7 @@ Seven modules are implemented and working: Login, Dashboard, Product Management,
 - Product Management (View/Search, Add, Edit, Delete)
 - Invoice Upload (file validation, storage, preview)
 - OCR Extraction (Gemini Vision medicine extraction)
-- Review & Edit (OCR review, delete-row bug fixed in v2.2.2, save to inventory)
+- Review & Edit (OCR review, delete-row bug fixed in v2.2.2, mobile UI improved in v2.2.3, save to inventory)
 - Expiry Alerts (15/30/60/90-day + Expired/1M/2M/3M buckets)
 - Low Stock Alerts (Critical/Warning/Low severity tiers)
 
@@ -37,7 +37,7 @@ None. No module currently has an open, in-progress task per `NEXT_TASK.md` or `C
 ## Current Test Status
 
 - **Number of tests**: 121 (per the most recent reported count in `CHANGELOG.md`, v2.2.1), across 5 test files (`test_expiry_alerts.py`, `test_low_stock_alerts.py`, `test_ocr_service.py`, `test_products_ui_threshold_checkbox.py`, `test_review_service.py`).
-- **Pass status**: 121/121 passing as of the v2.2.1 release. The v2.2.2 fix was verified via a Streamlit-semantics-accurate simulation of the real source code (first/middle/last-row deletes, repeated deletes, edit-then-delete), not via the project's actual `pytest`/`AppTest` suite - `pytest`/`streamlit` could not be installed in that session's environment (no network access). Running the real suite is recommended before treating v2.2.2 as fully verified.
+- **Pass status**: 121/121 passing as of the v2.2.1 release. The v2.2.2 and v2.2.3 changes were each verified via a Streamlit-semantics-accurate simulation of the real source code, not via the project's actual `pytest`/`AppTest` suite - `pytest`/`streamlit` could not be installed in that session's environment (no network access). Running the real suite is recommended before treating v2.2.2/v2.2.3 as fully verified.
 
 ## Current Known Issue
 
@@ -45,9 +45,9 @@ None open. The Review & Edit delete-row bug is resolved as of v2.2.2 (root cause
 
 ## Last Stable Release
 
-**Version**: 2.2.2
+**Version**: 2.2.3
 
-**Summary**: Found and fixed the real root cause of the Review & Edit delete-row bug (clicking delete removed the wrong/last row instead of the clicked row). The v2.2.1 fix had only masked the symptom by clearing session-state keys after each delete; the actual cause was that every widget key was derived from the row's list position rather than a stable identity. Fixed by assigning each medicine a stable `_row_id` (UUID) at creation and keying every widget off that id instead of position. Temporary debug instrumentation used during the investigation was fully removed.
+**Summary**: Improved the Review & Edit table's mobile UI — the table now keeps its full desktop-proportioned column layout at every screen width and scrolls horizontally on narrow/mobile viewports instead of Streamlit compressing the columns. Scoped to that one table only; desktop rendering, OCR, review-session, and save logic are all unchanged. Follows v2.2.2, which found and fixed the real root cause of the Review & Edit delete-row bug (widget keys were derived from row position rather than a stable identity; fixed with a stable `_row_id` per medicine).
 
 ## Next Planned Release
 

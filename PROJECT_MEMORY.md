@@ -2,7 +2,7 @@
 
 ## 1. Project Overview
 
-EasyStock is a Streamlit-based inventory management application built for medical stores (pharmacies). It is currently at version 2.2.2. The application is multi-tenant: each registered store's data (products, uploads) is isolated from every other store's data at both the application and database level.
+EasyStock is a Streamlit-based inventory management application built for medical stores (pharmacies). It is currently at version 2.2.3. The application is multi-tenant: each registered store's data (products, uploads) is isolated from every other store's data at both the application and database level.
 
 Core capabilities currently implemented:
 - Store owner signup and login, using mobile number as the login identity (India-only validation: 10 digits, first digit 6-9) and a bcrypt-hashed password (6-20 characters).
@@ -171,6 +171,7 @@ easystock/
 - The Expiry Alerts filter dropdown order is: All Alerts → 15 Days → 30 Days → 60 Days → 90 Days → Expired → Expired 1M Ago → Expired 2M Ago → Expired 3M Ago.
 - Low stock severity must be visually distinguished using its own tiered color scheme: Out of Stock = Red, Very Low Stock = Orange, Low Stock = Yellow.
 - The Product Management search box filters by medicine name or batch number, matched case-insensitively as a substring.
+- Wide multi-column tables (e.g. the Review & Edit medicine table) must stay at their full desktop-proportioned column layout at all viewport widths and rely on horizontal scrolling (a scoped `overflow-x: auto` container with a `min-width` floor on each row) rather than letting Streamlit auto-shrink columns on narrow/mobile screens. The scroll container must be scoped (via `st.container(key=...)`) to that specific table only, never applied globally, so it cannot affect `st.columns()` layouts elsewhere in the app. Any mobile-only hint text must be hidden on desktop via a CSS media query rather than shown unconditionally, so desktop rendering is unaffected.
 
 ## 7. Business Rules
 
@@ -218,6 +219,7 @@ easystock/
 - **Month/Year expiry format support**: Expiry is captured, validated, and stored as Month/Year (e.g. "3/28", "03/2028", "Jun-2028") end-to-end, via a single canonical validator/parser (`utils/validators.py`) shared by Review & Edit and Product Management, replacing the earlier full-calendar-date handling for this field.
 - **Expiry Alerts bucket expansion**: Filter order and buckets expanded to All Alerts → 15/30/60/90 Days → Expired → Expired 1/2/3 Months Ago.
 - **Low stock default threshold adjustment**: The store-wide default minimum stock threshold changed from 10 to 2.
+- **Review & Edit mobile UI improvement (v2.2.3)**: The medicine table now stays at its full desktop-proportioned column layout on all screen sizes and scrolls horizontally on narrow/mobile viewports instead of Streamlit compressing the columns. Desktop rendering is unchanged; a scroll hint is shown only on mobile.
 
 ## 9. Bugs Already Fixed
 
@@ -298,12 +300,12 @@ The following items are documented in `CHANGELOG.md` as "Known limitations" and 
 
 ## 15. Conversation Resume Guide
 
-- **Current version**: 2.2.2, per `VERSION` and the latest `CHANGELOG.md` entry.
+- **Current version**: 2.2.3, per `VERSION` and the latest `CHANGELOG.md` entry.
 - **Architecture to preserve**: UI → service → repository → core/config layering, with `app.py` routing-only, `core/session.py` as the sole `session_state` accessor for auth, `core/database.py` as the sole raw-SQL/connection owner, and `config/product_schema.py` / `config/alert_theme.py` as the single sources of truth for product fields and alert colors respectively.
 - **Modules delivered and working**: Login (Module 1), Dashboard (Module 2), Product Management (Module 5), Invoice Upload (Module 3, upload stage), OCR Extraction (Module 3, OCR stage), Review & Edit (Module 4), Expiry Alerts (Module 6), Low Stock Alerts (Module 7).
 - **Modules not yet started**: Sales, Billing, Notifications, and Super Admin are present only as empty placeholder packages; `core/admin_auth.py` for Super Admin authentication does not yet exist.
 - **Expiry data model**: expiry is Month/Year (not a full date), validated and parsed exclusively through `utils/validators.py`'s `is_valid_expiry()` and `parse_expiry_month_year()` - any future code touching expiry dates must go through these, not `date.fromisoformat()`.
 - **Row identity model**: any dynamic add/delete widget list (currently: the OCR Review & Edit table) must key its widgets off a stable per-row `_row_id`, never off list position - this is now a permanent rule (see `AI_RULES.md`).
-- **Most recent change**: v2.2.2 fixed the real root cause of the Review & Edit delete-row bug (position-based widget keys, not the v2.2.1 session-key-clearing workaround) by introducing a stable `_row_id` per medicine. Verified via a Streamlit-semantics-accurate simulation, not the real `pytest` suite (unavailable in that session's environment - no network access) - running the actual test suite is still recommended.
+- **Most recent change**: v2.2.3 improved the Review & Edit table's mobile UI (scoped horizontal scroll instead of column compression) with no backend, OCR, or save-logic changes. Desktop rendering is unaffected. v2.2.2 fixed the real root cause of the delete-row bug (position-based widget keys) by introducing a stable `_row_id` per medicine. Both changes were verified via a Streamlit-semantics-accurate simulation, not the real `pytest` suite (unavailable in that session's environment - no network access) - running the actual test suite is still recommended.
 - **Testing habit to continue**: any new module or fix should be accompanied by real, executed `pytest`/`AppTest` tests (not just code review), the full regression suite re-run, results reported with an exact pass count, and a new `CHANGELOG.md` entry with a version bump, consistent with every prior release in this project.
 - **Known open limitations to keep in mind**: image preview is not directly testable via `AppTest` in the Streamlit version used, OCR accuracy depends on scan quality, PDF preview falls back to a metadata card for encrypted/non-standard PDFs, and the OCR flow cannot be tested end-to-end without a real Gemini API key and network access.

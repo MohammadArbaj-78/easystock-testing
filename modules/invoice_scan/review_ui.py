@@ -95,18 +95,78 @@ def render_review_section(source_filename: str, medicines: list) -> None:
 
 
 def _render_table() -> None:
-    """Render the editable medicine table: one row per medicine."""
+    """Render the editable medicine table: one row per medicine.
+
+    UI-only change: the header and all rows are wrapped in a single
+    scoped container so a small CSS block (see _render_table_scroll_css)
+    can give that container a horizontal scrollbar and give each row a
+    minimum width. On desktop, viewports are already wider than that
+    minimum, so nothing visually changes. On narrow/mobile viewports,
+    the row no longer gets compressed by Streamlit's own column
+    shrinking — it keeps its full desktop-like width and the container
+    scrolls sideways instead. No column layout, field, or button was
+    added, removed, or reordered.
+    """
     medicines = review_service.get_medicines()
 
     if not medicines:
         st.info("No medicines in the list. Use 'Add New Medicine' below to add one.")
         return
 
-    _render_table_header()
+    _render_table_scroll_css()
 
-    errors_by_row = review_service.validate_all_medicines()
-    for idx, medicine in enumerate(medicines):
-        _render_medicine_row(idx, medicine, errors_by_row.get(idx, []))
+    with st.container(key="review_table_scroll"):
+        _render_table_header()
+
+        errors_by_row = review_service.validate_all_medicines()
+        for idx, medicine in enumerate(medicines):
+            _render_medicine_row(idx, medicine, errors_by_row.get(idx, []))
+
+
+def _render_table_scroll_css() -> None:
+    """Inject the mobile-only horizontal-scroll styling for the review table.
+
+    Scoped to the `review_table_scroll` container via Streamlit's
+    `st.container(key=...)` -> `.st-key-review_table_scroll` class, so
+    this cannot affect st.columns() layouts used elsewhere in the app
+    (Dashboard, Product Management, Alerts, etc.).
+
+    - The container gets horizontal scrolling with smooth touch support.
+    - Each row (a Streamlit "horizontal block", i.e. one st.columns()
+      call) gets a minimum width so it keeps its normal desktop
+      proportions instead of being squeezed into a narrow phone screen.
+      Desktop viewports are already wider than this minimum, so the
+      rule has no visible effect there.
+    - A small "scroll for more" hint is shown only below 768px width
+      (typical mobile breakpoint) and is invisible on desktop.
+    """
+    st.markdown(
+        """
+        <style>
+        .st-key-review_table_scroll {
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+            padding-bottom: 0.5rem;
+        }
+        .st-key-review_table_scroll [data-testid="stHorizontalBlock"] {
+            min-width: 900px;
+        }
+        .easystock-mobile-scroll-hint {
+            display: none;
+        }
+        @media (max-width: 768px) {
+            .easystock-mobile-scroll-hint {
+                display: block;
+                font-size: 0.8rem;
+                color: #6b7280;
+                margin-bottom: 0.25rem;
+            }
+        }
+        </style>
+        <div class="easystock-mobile-scroll-hint">↔️ Scroll sideways to see every column</div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def _render_table_header() -> None:
