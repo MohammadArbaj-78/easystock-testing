@@ -795,3 +795,19 @@ Temporary runtime debug logging added during investigation (`modules/invoice_sca
 
 ### Verification
 `pytest`/Streamlit remained unavailable in this working environment (no network access). Re-ran the same Streamlit-semantics-accurate simulation used to verify v2.2.2 (first/middle/last-row deletes, repeated deletes, edit-then-delete) against the now-wrapped table code — all scenarios still pass unchanged, confirming the container/CSS wrapper introduced no behavioral regression. Running the project's own `pytest`/`AppTest` suite in an environment with `streamlit` installed is still recommended.
+
+## [2.2.4] - Review & Edit mobile UI: v2.2.3 withdrawn, corrected implementation
+
+### Withdrawn
+- **v2.2.3's approach was rejected after real-device testing** and is fully discarded, not iterated on. Its CSS only set `min-width: 900px` on the row container; it never overrode `flex-direction`. Streamlit's own built-in stylesheet already switches `st.columns()` to `flex-direction: column` (stacking) below its mobile breakpoint, so that native stacking rule still won. Because `st.text_input` renders at `width: 100%` of its parent column, and the parent block had been forced to 900px wide, the visible result was 8 full-width, ~900px-wide inputs stacked vertically per medicine — not the intended horizontal scroll.
+
+### Fixed
+- **`modules/invoice_scan/review_ui.py`** — Rebuilt from the v2.2.2 source (not from v2.2.3). All mobile CSS is now scoped inside `@media (max-width: 768px)`, so above that width nothing applies at all and desktop rendering is pixel-identical to v2.2.2, regardless of browser width. Below that width: `flex-wrap: nowrap` is forced on the row to override Streamlit's native stacking, and each of the 8 columns is given a fixed pixel width (`flex: none`, no shrink or grow) approximating its desktop proportion (Name 200px, Batch 140px, Expiry 140px, Qty/MRP/Rate/GST 70px each, Delete 55px). The row is therefore wider than the viewport and the container (not the page) scrolls horizontally, while each input stays close to its normal desktop size instead of stacking or stretching.
+
+### Scope
+- Desktop is pixel-identical to v2.2.2 — confirmed by construction, since every new rule lives inside a `max-width: 768px` media query that cannot apply above that width.
+- No column added/removed/reordered, no card layout, no vertical stacking on mobile, no full-width giant inputs. Delete button stays on the same row, in the same position.
+- No OCR, review-session, or save logic touched. `review_service.py`, `ocr_service.py`, and `upload_service.py` are unchanged (confirmed via file timestamps before packaging).
+
+### Verification
+Re-ran the same Streamlit-semantics-accurate simulation used for v2.2.2/v2.2.3 (first/middle/last-row deletes, repeated deletes, edit-then-delete) against the corrected code — all pass, confirming no behavioral regression. `pytest`/`streamlit` remain unavailable in this working environment (no network access), so this is not yet verified against the project's real `AppTest` suite.

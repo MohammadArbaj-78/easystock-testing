@@ -27,6 +27,14 @@ Medicine"), and every st.text_input's key is derived from that _row_id
 get silently reassigned to a different medicine whenever a row above
 them is deleted (Streamlit ignores value= once key already exists in
 session_state), which is exactly the bug this design avoids.
+
+Mobile note: the table is wrapped in a keyed container purely so a
+scoped, mobile-only (max-width: 768px) CSS rule can keep the row as a
+single non-wrapping horizontal line with roughly desktop-sized columns
+and let the container scroll horizontally, instead of Streamlit's own
+default behavior of stacking st.columns() vertically on narrow
+screens. The CSS applies to nothing above that breakpoint, so desktop
+rendering is unaffected.
 """
 
 import streamlit as st
@@ -97,15 +105,11 @@ def render_review_section(source_filename: str, medicines: list) -> None:
 def _render_table() -> None:
     """Render the editable medicine table: one row per medicine.
 
-    UI-only change: the header and all rows are wrapped in a single
-    scoped container so a small CSS block (see _render_table_scroll_css)
-    can give that container a horizontal scrollbar and give each row a
-    minimum width. On desktop, viewports are already wider than that
-    minimum, so nothing visually changes. On narrow/mobile viewports,
-    the row no longer gets compressed by Streamlit's own column
-    shrinking — it keeps its full desktop-like width and the container
-    scrolls sideways instead. No column layout, field, or button was
-    added, removed, or reordered.
+    Wrapped in a keyed container purely so the mobile-only CSS in
+    _render_table_scroll_css can target this table specifically. The
+    container itself adds no visible styling (no border/padding), so
+    on its own it changes nothing — see _render_table_scroll_css for
+    the actual (mobile-only) behavior change.
     """
     medicines = review_service.get_medicines()
 
@@ -124,43 +128,66 @@ def _render_table() -> None:
 
 
 def _render_table_scroll_css() -> None:
-    """Inject the mobile-only horizontal-scroll styling for the review table.
+    """Inject mobile-only CSS so the review table scrolls horizontally
+    instead of Streamlit's default of stacking st.columns() vertically
+    on narrow screens.
 
-    Scoped to the `review_table_scroll` container via Streamlit's
-    `st.container(key=...)` -> `.st-key-review_table_scroll` class, so
-    this cannot affect st.columns() layouts used elsewhere in the app
-    (Dashboard, Product Management, Alerts, etc.).
+    Everything here is inside `@media (max-width: 768px)`, so above
+    that viewport width none of it applies at all — desktop rendering
+    is pixel-identical to having no CSS block here whatsoever.
 
-    - The container gets horizontal scrolling with smooth touch support.
-    - Each row (a Streamlit "horizontal block", i.e. one st.columns()
-      call) gets a minimum width so it keeps its normal desktop
-      proportions instead of being squeezed into a narrow phone screen.
-      Desktop viewports are already wider than this minimum, so the
-      rule has no visible effect there.
-    - A small "scroll for more" hint is shown only below 768px width
-      (typical mobile breakpoint) and is invisible on desktop.
+    Two things have to happen together for a usable mobile row, and
+    both are needed — either alone reproduces a broken layout:
+      1. `flex-wrap: nowrap` on the row itself, to override Streamlit's
+         own built-in mobile rule that switches st.columns() to
+         `flex-direction: column` (stacking) below its breakpoint.
+      2. A fixed pixel width plus `flex-shrink: 0; flex-grow: 0` on
+         each individual column, so columns can't shrink to illegible
+         widths (the original bug) NOR stretch to fill the now-wide,
+         non-wrapping row (the v2.2.3 bug — nowrap alone, without
+         fixing column width, would still let text_input's 100%-width
+         default blow each column up to the full row width).
+    The container then scrolls horizontally because its content (the
+    row, now wider than the viewport) no longer fits or wraps.
+
+    Column widths approximate each column's desktop proportion (same
+    relative weights as _COLUMNS) as fixed pixel values, so on mobile
+    inputs are close to their normal desktop size — not shrunk, not
+    stretched.
     """
     st.markdown(
         """
         <style>
-        .st-key-review_table_scroll {
-            overflow-x: auto;
-            -webkit-overflow-scrolling: touch;
-            padding-bottom: 0.5rem;
-        }
-        .st-key-review_table_scroll [data-testid="stHorizontalBlock"] {
-            min-width: 900px;
-        }
-        .easystock-mobile-scroll-hint {
-            display: none;
-        }
         @media (max-width: 768px) {
+            .st-key-review_table_scroll {
+                overflow-x: auto;
+                -webkit-overflow-scrolling: touch;
+            }
+            .st-key-review_table_scroll [data-testid="stHorizontalBlock"] {
+                flex-wrap: nowrap !important;
+                width: max-content !important;
+            }
+            .st-key-review_table_scroll [data-testid="stColumn"] {
+                flex: none !important;
+                min-width: 0 !important;
+            }
+            .st-key-review_table_scroll [data-testid="stColumn"]:nth-child(1) { width: 200px !important; }
+            .st-key-review_table_scroll [data-testid="stColumn"]:nth-child(2) { width: 140px !important; }
+            .st-key-review_table_scroll [data-testid="stColumn"]:nth-child(3) { width: 140px !important; }
+            .st-key-review_table_scroll [data-testid="stColumn"]:nth-child(4) { width: 70px  !important; }
+            .st-key-review_table_scroll [data-testid="stColumn"]:nth-child(5) { width: 70px  !important; }
+            .st-key-review_table_scroll [data-testid="stColumn"]:nth-child(6) { width: 70px  !important; }
+            .st-key-review_table_scroll [data-testid="stColumn"]:nth-child(7) { width: 70px  !important; }
+            .st-key-review_table_scroll [data-testid="stColumn"]:nth-child(8) { width: 55px  !important; }
             .easystock-mobile-scroll-hint {
                 display: block;
                 font-size: 0.8rem;
                 color: #6b7280;
                 margin-bottom: 0.25rem;
             }
+        }
+        .easystock-mobile-scroll-hint {
+            display: none;
         }
         </style>
         <div class="easystock-mobile-scroll-hint">↔️ Scroll sideways to see every column</div>
