@@ -765,3 +765,19 @@ Expired 3 Months Ago
 - **`tests/test_low_stock_alerts.py`** — 3 tests updated to use quantities that correctly trigger low-stock/warning buckets with the new default threshold of 2 (qty=1 → WARNING, qty=2 → LOW).
 
 ### Tests: 121/121 passed
+
+## [2.2.2] - Delete row bug: real root cause found and fixed (v2.2.1's fix was incomplete)
+
+### Root cause
+The v2.2.1 fix addressed a symptom, not the underlying cause. Every widget key in the Review & Edit table (`review_row_{idx}_{field}`, `delete_row_{idx}`) was derived from the row's **position** in the list, not from any identity belonging to the medicine itself. Since `idx` is recomputed fresh from `enumerate()` on every render, a given key string does not consistently refer to the same medicine across reruns — after any row is removed, the same key string gets silently reused for whichever medicine now occupies that position (Streamlit ignores `value=` once a `key` already exists in `session_state`). Clearing `review_row_*` keys after a delete (v2.2.1) masked this for the simplest case but did not fix the identity model itself, did not clear `delete_row_*` keys, and did not hold up under real-device use, which is why the bug was reported as still 100% reproducible after v2.2.1 shipped.
+
+### Fixed
+- **`modules/invoice_scan/review_service.py`** — Every medicine dict is now assigned a stable `_row_id` (`uuid.uuid4().hex`) at the moment it enters the session — in `initialise_review_session()` (OCR results) and in `add_empty_medicine()` (manually added rows). `delete_medicine()` now also removes only that specific row's own leftover `review_row_{row_id}_*` and `delete_row_{row_id}` session-state keys, instead of the previous blanket wipe of every `review_row_*` key in the app.
+- **`modules/invoice_scan/review_ui.py`** — Widget keys for every text input and the delete button are now built from the medicine's `_row_id`, not its list position (`idx`). `idx` is still used to call `update_medicine(idx, ...)` / `delete_medicine(idx)`, which correctly operate on list position — only widget *identity* changed. Module docstring and function docstring updated to describe the stable-id key scheme and explain why position-based keys were unsafe.
+- **`_row_id` is confined to the review session** — `save_invoice_medicines()` already builds `form_data` as an explicit whitelist of named fields, so `_row_id` never reaches `products_service.add_product` or the database.
+
+### Verification
+`pytest`/Streamlit were not installable in this working environment (no network access), so the real `pytest`/`AppTest` suite could not be executed directly this round. In its place: (1) confirmed the existing `tests/test_review_service.py` makes no assertion on the literal `review_row_{idx}` key format or on exact dict equality for a medicine row, so it is not expected to conflict with the added `_row_id` field or the new key scheme; (2) built a Streamlit-semantics-accurate harness (faithfully replicating keyed `text_input`/`button`/`session_state`/`st.rerun()` behavior) and ran the actual, unmodified fixed source against it — first/middle/last single-row deletes, two sequential deletes at different positions, and an edit-immediately-before-delete scenario all produced the correct remaining rows with no stale-key regressions. Running the project's own `pytest` suite in an environment with `streamlit` installed is still recommended before this release is considered fully verified.
+
+### Debug instrumentation
+Temporary runtime debug logging added during investigation (`modules/invoice_scan/_debug_delete_instrumentation.py` plus log calls in `review_ui.py`/`review_service.py`) has been fully removed as part of this fix.

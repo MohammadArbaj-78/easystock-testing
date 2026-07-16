@@ -1,0 +1,309 @@
+# EasyStock Permanent Project Document
+
+## 1. Project Overview
+
+EasyStock is a Streamlit-based inventory management application built for medical stores (pharmacies). It is currently at version 2.2.2. The application is multi-tenant: each registered store's data (products, uploads) is isolated from every other store's data at both the application and database level.
+
+Core capabilities currently implemented:
+- Store owner signup and login, using mobile number as the login identity (India-only validation: 10 digits, first digit 6-9) and a bcrypt-hashed password (6-20 characters).
+- A Dashboard summarizing inventory health: total products, expiring-soon count, expired count, and low-stock count.
+- Product Management with full CRUD (create, read, update, delete) for products, with validation driven by a schema definition rather than hardcoded per-field checks.
+- Invoice Scan: uploading an invoice image/PDF, extracting medicine line items via Gemini Vision OCR, reviewing/editing the extracted data, and saving it into the products table.
+- Expiry Alerts: products bucketed into urgency windows (15, 30, 60, 90 days, plus Expired and Expired 1/2/3 Months Ago), each product appearing in exactly one bucket.
+- Low Stock Alerts: products at or below their effective minimum stock threshold, categorized into severity tiers (Out of Stock, Very Low Stock, Low Stock).
+
+Modules present in the codebase but not yet implemented (empty placeholder packages): Sales, Billing, Notifications, and Super Admin.
+
+The product field set (Medicine Name, Batch Number, Expiry, Quantity, Minimum Stock Level, MRP, Rate, GST %, Purchase Date) is deliberately centralized in one schema definition so the app can later be extended to other business types (e.g. grocery, hardware) without rewriting the database, OCR, or UI layers.
+
+## 2. Project Architecture
+
+EasyStock follows a layered architecture with a strict separation of concerns:
+
+- **UI layer** (`ui.py` files inside each module): Streamlit rendering code only. No direct database access and no business logic.
+- **Service layer** (`service.py` files inside each module): business logic, validation, and orchestration. No Streamlit imports and no raw SQL.
+- **Repository layer** (`repository.py` files inside relevant modules): data access only, containing SQL queries. Every repository function takes `store_id` as an explicit argument to enforce data isolation.
+- **Core layer** (`core/`): cross-cutting concerns used by all modules - database connection management, authentication, session management, and custom exceptions.
+- **Config layer** (`config/`): application-wide constants and centrally defined business rules (product schema, alert color theme, settings such as thresholds and file limits), so that behavior likely to change lives in configuration rather than embedded in logic.
+
+Key architectural rules observed in the code:
+- `app.py` is routing-only: it initializes the database, checks login state, and dispatches to the selected module's render function via a `NAV_PAGES` mapping. It contains no business logic or direct database access.
+- `core/session.py` is the only file that touches Streamlit's `session_state` for authentication purposes; all other code obtains the current store's identity through `get_current_store_id()`.
+- `core/database.py` is the only file containing raw SQL for schema creation and the only place that knows SQLite connection details; all other modules reach the database through repository functions that use `core.database.get_connection()`.
+- Every table other than `stores` carries a `store_id` foreign key, and every repository read/update/delete query filters by `store_id`, so cross-store data leakage is structurally prevented rather than relying on convention.
+- Custom exceptions (defined in `core/exceptions.py`) are used throughout instead of returning `None`/`False`/error strings, so a function's return value always signals success and failure is always communicated via a specific exception type.
+- Product field definitions live in one place (`config/product_schema.py`) and are consumed by the database schema, OCR parsing, and UI forms alike, avoiding duplicated field definitions across layers.
+- Alert color/urgency theming lives in one place (`config/alert_theme.py`) after a prior bug caused by two modules independently defining alert colors.
+- Database schema creation is idempotent (`CREATE TABLE IF NOT EXISTS`), so it is safely re-run on every application startup with no separate migration step at this MVP stage.
+- Passwords are hashed with bcrypt (never stored or compared in plaintext).
+- The project follows semantic versioning (MAJOR.MINOR.PATCH) with every module or fix shipped as a full-project release and recorded in `CHANGELOG.md`.
+- Any dynamic, addable/deletable list of rows rendered as widgets (e.g. the OCR Review & Edit table) keys each row's widgets off a stable per-row identifier (`_row_id`, assigned once when the row is created) rather than the row's list position - since Streamlit reuses a widget key's stored value across reruns once that key exists, position-based keys get silently reassigned to a different record whenever the list is mutated.
+
+## 3. Folder Structure
+
+```
+easystock/
+├── app.py                     # Application entry point / routing only
+├── VERSION                    # Current version string (2.2.1)
+├── CHANGELOG.md                # Full history of modules and fixes
+├── requirements.txt            # Production dependencies
+├── requirements-dev.txt        # Test-only dependencies (e.g. pytest)
+├── .env.example                 # Example environment variables (e.g. Gemini API key)
+├── .gitignore
+├── .streamlit/
+│   └── config.toml             # Streamlit app configuration
+├── config/
+│   ├── __init__.py
+│   ├── settings.py             # App-wide constants (paths, auth rules, thresholds, OCR settings)
+│   ├── product_schema.py       # Canonical product field definitions
+│   └── alert_theme.py          # Centralized alert color/urgency theme
+├── core/
+│   ├── __init__.py
+│   ├── auth.py                 # Store signup/login logic
+│   ├── database.py             # Connection management and schema initialization
+│   ├── session.py              # Session state management (login identity)
+│   ├── login_ui.py             # Login/signup screen rendering
+│   └── exceptions.py           # Custom application exceptions
+├── modules/
+│   ├── __init__.py
+│   ├── dashboard/
+│   │   ├── __init__.py
+│   │   ├── service.py          # Dashboard metrics business logic
+│   │   └── ui.py                # Dashboard rendering
+│   ├── products/
+│   │   ├── __init__.py
+│   │   ├── repository.py       # Products table data access
+│   │   ├── service.py          # Product validation and orchestration
+│   │   └── ui.py                # Product Management rendering
+│   ├── alerts/
+│   │   ├── __init__.py
+│   │   ├── service.py          # Expiry alerts bucketing logic
+│   │   ├── ui.py                # Expiry Alerts page rendering
+│   │   ├── low_stock_service.py # Low stock severity logic
+│   │   └── low_stock_ui.py      # Low Stock Alerts page rendering
+│   ├── invoice_scan/
+│   │   ├── __init__.py
+│   │   ├── upload_service.py    # Invoice upload validation/save logic
+│   │   ├── upload_ui.py         # Invoice upload page rendering
+│   │   ├── ocr_service.py       # Gemini Vision OCR extraction
+│   │   └── review_service.py    # OCR review/edit session and save logic
+│   │   └── review_ui.py         # OCR review/edit page rendering
+│   ├── notifications/
+│   │   ├── __init__.py
+│   │   └── channels/
+│   │       └── __init__.py      # Placeholder - not yet implemented
+│   ├── sales/
+│   │   └── __init__.py          # Placeholder - not yet implemented
+│   ├── billing/
+│   │   └── __init__.py          # Placeholder - not yet implemented
+│   └── super_admin/
+│       └── __init__.py          # Placeholder - not yet implemented
+├── utils/
+│   ├── __init__.py
+│   ├── validators.py            # Input validation helpers (mobile, password, expiry parsing, etc.)
+│   └── file_utils.py            # File upload validation, saving, and preview generation
+├── data/
+│   └── uploads/                 # Store-scoped uploaded invoice files
+└── tests/
+    ├── __init__.py
+    ├── test_expiry_alerts.py
+    ├── test_low_stock_alerts.py
+    ├── test_ocr_service.py
+    ├── test_products_ui_threshold_checkbox.py
+    └── test_review_service.py
+```
+
+## 4. Important Files
+
+- **`app.py`** - Sole entry point of the application. Initializes the database and routes between the login/signup screen and the main app shell, dispatching to module render functions via the `NAV_PAGES` mapping.
+- **`core/database.py`** - Owns the SQLite connection (via `get_connection()`) and schema creation (via `initialize_database()`). The only file containing raw SQL for table/index creation. Defines the `stores` and `products` tables and their indexes.
+- **`core/auth.py`** - Implements store `signup()` and `login()`, including password hashing/verification with bcrypt and mobile number uniqueness checks.
+- **`core/session.py`** - Manages the authenticated session in Streamlit's `session_state`; the sole source of the current store's identity (`get_current_store_id()`, `get_current_store_name()`, `get_current_owner_name()`).
+- **`core/exceptions.py`** - Defines the application's exception hierarchy (`EasyStockError` and subclasses: `ValidationError`, `DuplicateMobileError`, `InvalidCredentialsError`, `DatabaseError`, `OCRError`, `GeminiAPIError`).
+- **`config/settings.py`** - Central constants: file paths, authentication rules, upload limits, inventory threshold defaults, expiry alert windows, OCR model/timeout settings, and session key.
+- **`config/product_schema.py`** - Defines `PRODUCT_FIELDS`, the canonical list of product fields (key, label, type, required) used by the database layer, OCR layer, and UI forms.
+- **`config/alert_theme.py`** - Defines alert type identifiers, their display labels/colors/icons, and a shared `render_alert_banner()` helper used by both the Dashboard and Expiry Alerts pages.
+- **`modules/products/repository.py`** - Data access layer for the `products` table; shared by Dashboard, Product Management, and Alerts modules. Every method is store-scoped.
+- **`modules/products/service.py`** - Validation and orchestration for product creation, editing, and deletion, driven by `config/product_schema.py`.
+- **`modules/dashboard/service.py`** - Computes the Dashboard's headline metrics (total products, expiring soon, expired, low stock) by calling the products repository.
+- **`modules/alerts/service.py`** - Buckets products into expiry urgency windows, reusing the products repository's existing queries rather than issuing new SQL.
+- **`modules/alerts/low_stock_service.py`** - Assigns severity tiers (Critical/Warning/Low) to low-stock products, reusing the products repository's low-stock query.
+- **`modules/invoice_scan/ocr_service.py`** - Sends uploaded invoice images to Gemini Vision and parses the structured medicine line-item response. Contains no Streamlit or database code.
+- **`modules/invoice_scan/review_service.py`** - Manages the editable OCR review session (keyed by SHA-256 hash of the uploaded file) and saves reviewed medicines into the products table.
+- **`modules/invoice_scan/upload_service.py`** - Validates and saves uploaded invoice files under a store-scoped directory.
+- **`CHANGELOG.md`** - Chronological, versioned record of every module delivered and every fix made, including verification notes.
+- **`VERSION`** - Current release version of the project (2.2.1).
+
+## 5. Coding Rules
+
+- `app.py` must remain routing-only: it initializes the database, checks login state, and dispatches to module render functions. It must not contain business logic or direct database access.
+- `core/session.py` is the only file permitted to touch Streamlit's `session_state` for authentication purposes. All other code must obtain the current store's identity through `get_current_store_id()`, `get_current_store_name()`, or `get_current_owner_name()`.
+- `core/database.py` is the only file permitted to contain raw SQL for schema creation and the only place that knows SQLite connection details. Every other module must access the database through repository functions that use `core.database.get_connection()`.
+- Every repository function that reads, writes, updates, or deletes store-owned data must take `store_id` as an explicit argument, and every such query must filter by `store_id` in its WHERE clause. Update and delete operations must perform an explicit ownership check (store_id + row id) before executing.
+- Repository functions trust their input and focus solely on persistence; validation of that input is the responsibility of the service layer, not the repository.
+- Service-layer files must contain no Streamlit imports and no raw SQL.
+- UI-layer files must not access the database directly; they call into the service layer.
+- Failure must always be communicated via a specific exception type from `core/exceptions.py` (subclasses of `EasyStockError`), never via a `None`/`False`/error-string return value, so a function's return value always signals success.
+- `update_product` and `delete_product` must raise `ValidationError` (not silently no-op) when no matching product exists for the given store, so callers can distinguish "saved" from "nothing happened."
+- `login()` must raise the same `InvalidCredentialsError` regardless of whether the mobile number does not exist or the password is wrong, so a caller cannot distinguish which was incorrect.
+- Product field definitions (key, label, type, required) must be defined once in `config/product_schema.py` and consumed by the database layer, OCR layer, and UI layer, rather than hardcoded independently in each.
+- Alert type identifiers and their colors/icons/labels must be defined once in `config/alert_theme.py` and imported by every module that displays expiry urgency, rather than redefined per module.
+- Values likely to be tuned (database path, password length limits, upload size/type limits, thresholds, alert windows, OCR model/timeout) must live in `config/settings.py`, not be embedded as literals in business logic.
+- Validation functions in `utils/validators.py` must be pure: given input, they return a cleaned value or raise `ValidationError`, and must never touch the database or Streamlit.
+- File utilities in `utils/file_utils.py` must be pure or near-pure and must not touch Streamlit session state or render UI.
+- Schema creation must use `CREATE TABLE IF NOT EXISTS` so `initialize_database()` is idempotent and safe to call on every app startup.
+- Passwords must be hashed with bcrypt (a deliberately slow algorithm with per-hash random salts); plaintext passwords must never be stored or compared directly.
+- `modules/invoice_scan/ocr_service.py` must contain no Streamlit imports, no database access, and perform no writes of any kind - its only responsibility is extraction.
+- `modules/invoice_scan/upload_service.py` is the only entry point for saving an invoice file; any future upload path must call it rather than writing to disk directly, so validation and store-scoping are never bypassed.
+- File validation (`validate_upload`) must run before file saving (`save_upload`), and must not be combined into one step, so all validation errors can be surfaced before any disk I/O occurs.
+- Uploaded invoice files must be saved only under a path that includes the requesting store's own `store_id` (`data/uploads/{store_id}/`), with no code path permitted to write outside that store's own folder.
+- Every module or bug fix must ship as a complete, full-project release with a version bump and a corresponding `CHANGELOG.md` entry, not as a partial diff.
+
+## 6. UI Rules
+
+- Product Management is rendered as a single screen using tabs ("View / Search Products" and "Add New Product") to keep navigation minimal.
+- Product form fields are generated by looping over `config.product_schema.PRODUCT_FIELDS` rather than hardcoding one input widget per field, so a schema change updates the form automatically.
+- The "Set a custom minimum stock level" checkbox must be rendered outside of `st.form(...)`, not inside it, so that checking/unchecking it instantly shows or hides the minimum stock level input with zero submit clicks. (An earlier version placed it inside the form, which meant the show/hide only took effect after form submission - this was fixed and is now a standing UI rule.)
+- Validation of the minimum stock level field's value must still only run on Save, even though the checkbox itself reacts instantly.
+- The Minimum Stock Level field must be absent by default on both Add and Edit forms unless the custom threshold checkbox is checked.
+- Expiry urgency must be communicated visually using the color/icon scheme centrally defined in `config/alert_theme.py`: Expired = Red, 7 Days = Orange, 15 Days = Yellow, 30/60/90 Days = Blue variants. Both the Dashboard's expiry warning card and the Expiry Alerts page must use the same `render_alert_banner()` helper so their visual structure is identical, not just their colors.
+- The Expiry Alerts page provides a filter-by-type dropdown (showing live counts per category) and a search box matching by medicine name or batch number.
+- The Expiry Alerts filter dropdown order is: All Alerts → 15 Days → 30 Days → 60 Days → 90 Days → Expired → Expired 1M Ago → Expired 2M Ago → Expired 3M Ago.
+- Low stock severity must be visually distinguished using its own tiered color scheme: Out of Stock = Red, Very Low Stock = Orange, Low Stock = Yellow.
+- The Product Management search box filters by medicine name or batch number, matched case-insensitively as a substring.
+
+## 7. Business Rules
+
+- Mobile number is the login identity. It must be a 10-digit Indian mobile number whose first digit is 6, 7, 8, or 9. Common input variations (spaces, dashes, a leading +91 or leading 0) are accepted and normalized to a plain 10-digit form.
+- Passwords must be between 6 and 20 characters, with no additional complexity requirements (an explicit MVP-stage product decision).
+- A mobile number can only be registered to one store account; signup with a duplicate mobile number is rejected.
+- A logged-in store may only ever read, create, update, or delete its own products and its own uploaded files; cross-store access is not possible even given a guessed or iterated ID.
+- A product's `minimum_stock_threshold` may be left unset (NULL), in which case the store-wide `DEFAULT_LOW_STOCK_THRESHOLD` is used as its effective threshold. A store may instead set a custom per-product threshold.
+- When a custom minimum stock threshold is enabled for a product, its value must be provided and must be at least 1; blank, zero, or negative values are rejected.
+- A product is considered low stock when its quantity is at or below its effective threshold (per-product threshold if set, otherwise the global default).
+- Low stock severity tiers: quantity of 0 is "Out of Stock" (Critical); quantity between 1 and 50% of the effective threshold is "Very Low Stock" (Warning); quantity above 50% of the threshold but still at or below it is "Low Stock" (Low).
+- Expiry is stored and validated as a Month/Year value (e.g. "3/28", "03/28", "03/2028", "Jun-2028"), not a full calendar date. Two-digit years are interpreted as 2000+YY.
+- A product is treated as expired when its expiry month/year is before the current month/year.
+- Each product is assigned to exactly one expiry urgency bucket - its single most urgent applicable window (Expired takes priority, then the narrowest applicable day-window) - so a product never appears duplicated across multiple alert categories.
+- The Expiry Alerts module buckets products using the windows 15, 30, 60, and 90 days; the Dashboard's own "expiring soon" summary uses a single wider window (30 days) to avoid missing anything expiring within a month at a glance.
+- For MM/YY expiry values, "expiring within N days" is evaluated conservatively against the last calendar day of the expiry month.
+- New products (Add Product) must have an expiry date in the current month or a future month; past expiry dates are rejected at creation time.
+- Existing products (Edit Product) may retain or be saved with a past expiry date, since a product already in the system may have genuinely expired - this is expected lifecycle behavior, not an input error.
+- A product with the same medicine name and batch number (case-insensitive) already existing for a store cannot be added again; the store must edit the existing entry or use a different batch number instead.
+- Numeric product fields (quantity, MRP, rate, GST %) cannot be negative; GST % additionally cannot exceed 100%.
+- Quantity is stored as a whole number (no fractional units).
+- Invoice uploads are restricted to the file extensions JPG, JPEG, PNG, and PDF.
+- An uploaded invoice file cannot exceed 10 MB.
+- Each uploaded invoice file is saved to a filename that includes a timestamp, a short unique ID, and a sanitized version of the original filename, ensuring uniqueness even for same-named uploads.
+- An OCR review session is identified by the SHA-256 hash of the uploaded file's bytes, not its filename, so uploading the same file content twice reuses the existing review session (OCR is not re-run), while two different files with the same name get separate sessions.
+- Extracted invoice line items must be reviewed/edited by the store owner before being saved into the products table; saving into inventory is a distinct, explicit step from OCR extraction.
+
+## 8. Completed Features
+
+- **Module 1 - Login**: Store signup and login using mobile number and bcrypt-hashed password; centralized app settings, custom exception types, SQLite connection management with the `stores` table, session management, and the combined login/signup screen.
+- **Module 2 - Dashboard**: Four metric cards (Total Products, Expiring Soon, Expired, Low Stock) with expandable detail lists; the canonical `product_schema.py` field definitions; the initial read-only products repository; the `products` table and its indexes.
+- **Module 5 - Product Management**: Full View/Search, Add, Edit, and Delete for products, with schema-driven form fields, duplicate name+batch detection, and ownership enforcement on edit/delete. Includes an optional per-product custom minimum stock threshold (checkbox-driven, defaulting to unset/NULL).
+- **Module 6 - Expiry Alerts**: Products bucketed into a single most-urgent expiry window, with a filter-by-type dropdown (live counts) and a name/batch search box. Later extended from 7/15/30-day buckets to the current 15/30/60/90-day plus Expired/Expired 1M/2M/3M-Ago bucket set.
+- **Dashboard expiry warning card + centralized color system**: A shared `render_alert_banner()` helper and `config/alert_theme.py` as the single source of truth for alert colors, used by both the Dashboard's warning card and the Expiry Alerts page.
+- **Module 7 - Low Stock Alerts**: Products bucketed into three severity tiers (Critical/Warning/Low) with a filter dropdown, search box, and "Qty: X / Min: Y" display per row, reusing the existing low-stock repository query.
+- **Module 3 - Invoice Upload Screen**: File uploader accepting JPG/JPEG/PNG/PDF, extension and size validation, store-scoped file saving with unique filenames, image preview, and PDF preview via PyMuPDF rasterization (with metadata fallback for encrypted/corrupt PDFs).
+- **Module 3 - OCR Extraction**: Gemini Vision-based extraction of medicine line items from an uploaded invoice (`extract_medicines_from_file`), with API key loaded from environment/`.env`, JSON response parsing/validation, and UI display of extraction metrics (count, time) with no database writes at this stage. Prompt later strengthened for batch number accuracy (additional character-confusion pairs, explicit alphanumeric guidance).
+- **Invoice Scan UX additions**: Hindi-language photo tips shown above the uploader, and an automatic image quality warning (blur/brightness/resolution checks via PIL) shown after upload for image files, without blocking upload or OCR.
+- **Module 4 - Review & Edit**: An editable table of OCR-extracted medicines (per-field inputs, delete row, add empty row, live count, validation summary), backed by a session-state-managed review session with no database access in the service/UI files themselves.
+- **Review & Edit public API cleanup**: Added `render_review_ui(ocr_result)` as the single public entry point for the review screen, plus an on-screen reminder to verify Batch Number and Expiry before saving.
+- **OCR call-once optimization**: Gemini Vision is now called at most once per uploaded file per session; a session-active guard skips OCR entirely on reruns caused by typing, adding, or deleting rows.
+- **Hash-based session identity**: Invoice review sessions are keyed by SHA-256 hash of the uploaded file's bytes rather than filename, so identical re-uploads reuse the cached session and differently-named-but-identical files share one session.
+- **Navigation persistence for Invoice Scan**: Returning to the Invoice Scan page after navigating away re-renders the cached review session instead of requiring re-upload or re-running OCR.
+- **Save and Clear actions for Review & Edit**: A "Save Medicines" action that validates and writes reviewed medicines into the products table (reporting per-row errors without aborting valid rows) and a "Clear Review" action that discards the current session, including resetting the file uploader widget itself.
+- **Month/Year expiry format support**: Expiry is captured, validated, and stored as Month/Year (e.g. "3/28", "03/2028", "Jun-2028") end-to-end, via a single canonical validator/parser (`utils/validators.py`) shared by Review & Edit and Product Management, replacing the earlier full-calendar-date handling for this field.
+- **Expiry Alerts bucket expansion**: Filter order and buckets expanded to All Alerts → 15/30/60/90 Days → Expired → Expired 1/2/3 Months Ago.
+- **Low stock default threshold adjustment**: The store-wide default minimum stock threshold changed from 10 to 2.
+
+## 9. Bugs Already Fixed
+
+- **Custom threshold checkbox not reactive inside form (v1.2.3)**: The "Set a custom minimum stock level" checkbox originally lived inside `st.form(...)`, so toggling it had no visible effect until form submission. Fixed by rendering the checkbox outside the form so it reacts instantly; later verified with real Streamlit `AppTest`-driven tests (v1.2.4) after an earlier, inaccurate claim of verification was corrected in the changelog.
+- **Custom threshold validation gap (v1.2.2)**: Enabling the custom minimum stock level checkbox and leaving the value blank, zero, or negative was previously accepted without error. Fixed to require a value of at least 1 when the checkbox is enabled, with specific error messages for blank vs. sub-1 values.
+- **Low stock detection broken for new products (v1.2.1)**: The minimum stock level field always submitted `0` for new products (since a plain number input cannot represent "unset"), which was stored as a real threshold of 0 instead of `NULL`, so products above 0 quantity never appeared in Low Stock. Fixed by adding the custom-threshold checkbox, storing `NULL` (falls back to the default threshold) when left unchecked.
+- **Alert color inconsistency (v1.3.1)**: A spec conflict was found where 7-day expiry was specified as Red but the existing Expiry Alerts page already used Orange for 7-day; an initial build using `st.error`/`st.warning` produced a mismatched color/text pairing. Fixed by centralizing all alert colors in `config/alert_theme.py` as the single source of truth, consumed by both the Dashboard and Expiry Alerts.
+- **Add Product checkbox not resetting after save (v1.4.1)**: After a successful Add Product save, the custom threshold checkbox (which lives outside the form) did not reset to unchecked, because `clear_on_submit` only clears widgets inside the form and a direct session-state pop happened too late in the rerun cycle. Fixed using a sentinel-flag pattern that pops the checkbox's widget key before `st.checkbox` is called on the next rerun.
+- **Gemini called on every rerun (v1.9.0)**: OCR extraction was being triggered on every Streamlit rerun (every keypress, add, or delete in the review table), not just on new uploads, because the uploaded file object persists across reruns. Fixed with a session-active guard at the top of the OCR-triggering function that returns immediately once a session already exists for the current file.
+- **Filename-based session collisions (v2.0.0, Bug 1)**: Two different invoices with the same filename previously shared one OCR review session. Fixed by keying sessions on the SHA-256 hash of the file's bytes instead of its filename.
+- **Review session lost on navigation (v2.0.0, Bug 2)**: Navigating away from Invoice Scan and back caused the uploaded file/session to be lost, forcing re-upload. Fixed by rendering the cached session directly when the uploader returns `None` but an active session exists.
+- **Missing Save/Clear actions in Review & Edit (v2.0.0, Bug 3)**: The review screen had no way to persist reviewed medicines to inventory or discard the review. Fixed by adding "Save Medicines" (validates and writes to the products table, reporting per-row errors) and "Clear Review" (discards session) actions.
+- **File uploader not resetting after Clear (v2.0.1)**: Clicking "Clear Review" did not visually reset the file uploader widget because it lacked an explicit `key`, so `clear_session()` could not remove its session-state entry. Fixed by adding an explicit key to the uploader and deleting it in `clear_session()`.
+- **Expiry format validation too permissive (v2.0.2)**: The original expiry regex accepted any digit/digit pattern without validating the month range, so values like 13/28, 0/28, and 99/9999 were wrongly accepted. Fixed by validating the month as 1-12 and the year as a sensible 2- or 4-digit range.
+- **Expiry date parsing crash for Month/Year values (v2.0.3)**: `modules/products/service.py` still used `date.fromisoformat()` for the expiry field, raising an error for Month/Year strings such as "03/28", and silently skipped the future-expiry check for such values via a bare `except ValueError: pass`. Fixed by introducing a single canonical `parse_expiry_month_year()` parser and using it for both storage and the future-expiry comparison.
+- **Product Edit crash / missing submit button (v2.1.0, Bug 1 & 2)**: Editing a product with an OCR-saved Month/Year expiry (e.g. "1/29") crashed inside the edit form because the form's date field used `date.fromisoformat()` on a non-ISO value, which also prevented the submit button from ever rendering. Fixed by rendering the expiry field as a text input (MM/YY) instead of a date picker, while other date fields (e.g. purchase date) kept the date picker.
+- **Expiry Alerts showing future products as expired (v2.1.0, Bug 3)**: `get_expired_products()` and `get_expiring_soon_products()` compared Month/Year expiry strings against an ISO date using SQL string comparison, which produced incorrect results (e.g. "1/29" sorted as "expired" due to ASCII string ordering). Fixed by fetching all products and filtering/comparing in Python using the canonical Month/Year parser, with a fallback to ISO comparison for legacy ISO-formatted rows.
+- **Wrong row deleted in Review & Edit table (v2.2.1, later found incomplete - see v2.2.2)**: Deleting a row from the OCR review table could cause the wrong row's data to appear deleted, because `st.text_input` widgets keyed by row index retained stale session-state values after the rows shifted up, so a later row's edit function overwrote the wrong occupant. The v2.2.1 fix (clearing all `review_row_*` session-state keys before rerunning after a delete) addressed this specific symptom but not the underlying position-based key design, and the bug was later confirmed still 100% reproducible on real devices.
+- **Delete-row bug: real root cause found and fixed (v2.2.2)**: Every widget key in the Review & Edit table (`review_row_{idx}_{field}`, `delete_row_{idx}`) was derived from the row's list position, not a stable identity - so after any deletion, existing key strings got silently reused for whichever medicine now occupied that position. Fixed by assigning every medicine a stable `_row_id` (UUID) when it enters the session (`initialise_review_session`, `add_empty_medicine`) and keying every widget off `_row_id` instead of `idx`; `delete_medicine()` now cleans up only that row's own leftover widget keys instead of a blanket wipe of all rows.
+
+## 10. Current Known Bug
+
+None open as of v2.2.2. The Review & Edit delete-row bug (clicking delete removed the wrong/last row instead of the clicked row) was root-caused and fixed in v2.2.2 - see Section 9. One caveat: the fix was verified via a Streamlit-semantics-accurate simulation of the real source code (covering first/middle/last-row deletes, repeated deletes, and edit-then-delete), not via the project's actual `pytest`/`AppTest` suite, because `pytest`/`streamlit` were not installable (no network access) in the environment where the fix was made. Running the real test suite in an environment with those packages installed is recommended before treating v2.2.2 as fully verified.
+
+The following items are documented in `CHANGELOG.md` as "Known limitations" and have not been marked as resolved in any later entry:
+- **Invoice Upload Screen (v1.5.0)**: `AppTest` in the Streamlit version used does not expose `st.image` as a testable element, so image preview is verified indirectly rather than directly. Wrong-extension files trigger Streamlit's own widget guard before the app's own `validate_upload` runs, which surfaces as an `AppTest` exception rather than a user-visible crash. PDF preview quality depends on PyMuPDF, and encrypted or non-standard PDFs fall back to a metadata card instead of a rendered preview.
+- **OCR Extraction (v1.6.0)**: OCR accuracy depends on scan quality; blurry or skewed invoices may return partial or empty results (the UI shows a note asking the store owner to verify extracted data). `AppTest` cannot test the OCR flow end-to-end because it requires a real Gemini API key and live network access, so only the UI rendering path is covered by automated tests. The request timeout is applied at the `google.genai` SDK's client level via `GEMINI_TIMEOUT_SECONDS`.
+
+## 11. Pending Roadmap
+
+- **Super Admin authentication**: `core/auth.py`'s module docstring states that Super Admin authentication is intended to be handled by a separate module, `core/admin_auth.py`, "built later," against a separate database table - this file does not yet exist in the project.
+- **`modules/super_admin/`**: Present in the codebase as an empty package (`__init__.py` only), with no service, repository, or UI files yet.
+- **`modules/sales/`**: Present in the codebase as an empty package (`__init__.py` only), with no service, repository, or UI files yet.
+- **`modules/billing/`**: Present in the codebase as an empty package (`__init__.py` only), with no service, repository, or UI files yet.
+- **`modules/notifications/`** (including `modules/notifications/channels/`): Present in the codebase as an empty package (`__init__.py` only, plus an empty `channels` sub-package), with no service, repository, or UI files yet.
+- **Multi-business-type product schema**: `config/product_schema.py` states that extending EasyStock beyond medical stores (e.g. to grocery or hardware stores) would involve splitting `PRODUCT_FIELDS` into several named schemas (e.g. `MEDICAL_STORE_FIELDS`, `GROCERY_STORE_FIELDS`) with the active one selected per store. The docstring explicitly states this refactor is deliberately deferred until a second business type is actually being built.
+
+## 12. Investigation Log
+
+- **v1.2.4 - Correction of an inaccurate verification claim**: The v1.2.3 changelog entry claimed that "Behavioral UI tests using Streamlit's `AppTest` framework" had confirmed instant checkbox show/hide behavior, but no such test had actually been run or saved, and the underlying bug was reported as still present after that release. The v1.2.4 entry documents this correction directly, states the earlier claim was inaccurate, and records that the checkbox-outside-form code was, on inspection, structurally correct but had never actually been verified by a real rerun test - only by reading the code. `AppTest`-driven verification was then performed and a new, re-runnable `pytest` suite (`tests/test_products_ui_threshold_checkbox.py`) was added.
+- **v1.3.1 - Alert color specification conflict**: While building the Dashboard's expiry warning card, a conflict was detected between a specification stating 7-day expiry should be Red and the existing Expiry Alerts page's established use of Orange for 7-day. An initial implementation using `st.error`/`st.warning` was built, tested, and found to render an orange card while reporting "7 days" - the changelog records this as a caught color/text mismatch. The investigation concluded with a decision to centralize a single, consistent alert color system in `config/alert_theme.py` rather than resolve the conflict per-module.
+- **v1.6.0 - OCR SDK deprecation investigation**: The initially installed `google-generativeai` package raised a `FutureWarning` pointing to `google-genai`. This was investigated and the project switched to `google.genai` v2 (`google-genai==2.10.0`), the current maintained package, which also required changing the test mock target from the full `genai` module to a dedicated `_build_genai_client()` seam.
+- **v1.7.0 - Image quality threshold calibration**: The image quality warning's blur, brightness, and resolution thresholds were calibrated against real invoice image measurements. The changelog records that an initial brightness ceiling of 220 produced false positives on white-paper invoices (which measured approximately 226-242), leading to the ceiling being raised to 253. It also records that a blur threshold of 144 was found to misclassify a uniform-grey degenerate test case (which measured approximately 267), leading to the threshold being raised to 500.
+- **v1.4.1 - Root cause investigation of checkbox reset failure**: Investigation traced the Add Product checkbox's failure to reset after save to the checkbox living outside `st.form(...)` (by design, so it can trigger an instant rerun on toggle) combined with `clear_on_submit` only clearing widgets inside the form. A first fix attempt (popping the session-state key and calling `st.rerun()`) was found insufficient because Streamlit restores widget values from session state before the script body runs on each rerun, so the pop occurred too late.
+- **v2.1.0 - Root cause chain for Product Edit crash and Expiry Alerts miscalculation**: Investigation found that `modules/products/ui.py` called `date.fromisoformat()` on every `FieldType.DATE` field including `expiry_date`, and that an OCR-saved Month/Year value (e.g. "1/29") raised a `ValueError` inside `st.form(...)` before the submit button was reached - explaining both the edit-page crash and the separately reported missing-submit-button symptom as the same root cause. A second, independent root cause was traced in `modules/products/repository.py`, where `get_expired_products()` and `get_expiring_soon_products()` compared Month/Year expiry strings against an ISO date using SQL string comparison, causing SQLite to evaluate `'1/29' < '2026-07-08'` as true due to ASCII character ordering, which wrongly classified future products (e.g. those expiring 1/29, 2/29, 6/28, 9/27) as expired.
+- **v2.2.1 - Root cause investigation of Review & Edit delete bug**: Investigation found that `st.text_input` widgets with an explicit `key` ignore their `value` parameter once that key already exists in `session_state`. After a row was deleted and remaining rows shifted up, the shifted rows retained stale `review_row_*` keys, causing `update_medicine()` to overwrite the new occupant of a row with the deleted row's data - making it appear that the wrong row had been deleted.
+- **v2.2.2 - Real root cause found after v2.2.1's fix proved incomplete**: The bug was reported as still 100% reproducible after v2.2.1 shipped (delete always removed the last row, on both desktop and mobile). Static analysis and a first execution-level simulation of the unmodified v2.2.1 code did not reproduce the symptom, so temporary runtime debug logging was added at five points across the delete workflow (before each row render, on delete-button click, inside `delete_medicine()` before/after `pop()`, before `st.rerun()`, and after the rerun begins) to gather real evidence instead of further theorizing. Backend log evidence subsequently confirmed the clicked widget key, received index, and `pop(index)` all correctly matched - ruling out `delete_medicine()`, `enumerate()`, and index-passing as the cause. Investigation then focused on widget lifecycle: every widget key in the table (`review_row_{idx}_{field}`, `delete_row_{idx}`) was built from the row's *position*, never a stable identity belonging to the medicine - meaning any key string could be silently reassigned to a different medicine after a list mutation, since Streamlit ignores `value=` once `key` already exists in `session_state`. This was confirmed as the actual root cause, the debug instrumentation was removed, and the fix (stable per-row `_row_id` used for widget keys instead of `idx`) was verified via a Streamlit-semantics-accurate simulation covering first/middle/last-row deletes, repeated deletes, and an edit-then-delete scenario - all producing correct results.
+
+## 13. Development Principles
+
+- Strict separation of concerns across four layers - UI, service, repository, and core/config - with each layer's responsibility documented directly in that file's own docstring (e.g. `app.py` is routing-only; `core/database.py` is the only file with raw SQL; `core/session.py` is the only file touching `session_state`).
+- Single source of truth for shared definitions: product fields (`config/product_schema.py`), alert colors/urgency (`config/alert_theme.py`), and expiry parsing (`utils/validators.py`'s `is_valid_expiry`/`parse_expiry_month_year`) are each defined once and imported everywhere they are needed, rather than redefined per module.
+- No medical-specific hardcoding: form fields, validation, and labels are all driven by iterating `config/product_schema.py` rather than hardcoding field names, so the product model can later be adapted to other business types by changing configuration rather than code.
+- Data isolation by construction, not convention: every store-scoped table carries a `store_id` foreign key, every repository query filters by `store_id`, and every write additionally checks row ownership - so a bug elsewhere in the code cannot cause one store to see or modify another's data.
+- Failure is always communicated through specific, named exceptions (subclasses of `EasyStockError`) rather than `None`/`False`/sentinel return values, so calling code never has to guess why an operation failed.
+- Repositories are not duplicated: new modules (Dashboard, Alerts) reuse the existing `modules/products/repository.py` query functions rather than writing new SQL, so different parts of the app cannot silently disagree about the same underlying data.
+- Idempotent, migration-free schema management at this MVP stage: `CREATE TABLE IF NOT EXISTS` statements are safely re-run on every app startup.
+- Every module or bug fix ships as a complete, full-project release with a version bump and a `CHANGELOG.md` entry, per an explicit process change adopted after v1.2.3 - never a partial diff.
+- Claims of verification must be backed by an actually-executed, re-runnable test, not by reading code or by an unverified assertion - this principle is explicitly called out in the changelog after an earlier inaccurate verification claim (v1.2.3/v1.2.4) and is reiterated in later entries (e.g. v1.6.0's "tests actually executed, not claimed").
+- Root causes are documented, not just symptoms: multiple changelog entries (e.g. v1.4.1, v2.1.0, v2.2.1) record the underlying mechanism of a bug (such as Streamlit's widget/session-state rerun timing) rather than only describing the fix.
+- Scope boundaries are stated explicitly when a module is delivered incrementally (e.g. Module 3's Invoice Upload Screen release explicitly lists OCR, Gemini, and the review screen as "Not built" / out of scope for that release).
+
+## 14. Testing Strategy
+
+- Automated tests are written with `pytest`, using a separate `requirements-dev.txt` so test-only tooling is not bundled into the production `requirements.txt` used for deployment.
+- Streamlit's `AppTest` framework is used for behavioral UI tests that actually drive the live app (e.g. logging in, navigating to a page, toggling a widget) rather than relying on code review alone.
+- Test files, one per module/concern:
+  - `tests/test_expiry_alerts.py` - boundary verification at each expiry window, single-bucket assignment, multi-tenant isolation, filter/search logic, and AppTest UI checks for the Expiry Alerts page.
+  - `tests/test_low_stock_alerts.py` - severity bucketing across all tiers, custom vs. default threshold behavior, multi-tenant isolation, search by name/batch, and AppTest UI checks for the Low Stock Alerts page.
+  - `tests/test_ocr_service.py` - API key handling, response parsing/validation, file-to-image conversion, and the end-to-end extraction function, with all Gemini API calls mocked via a patchable client-construction seam (`_build_genai_client`) so no real API key or network access is required.
+  - `tests/test_products_ui_threshold_checkbox.py` - AppTest-driven checks that the custom minimum stock threshold checkbox shows/hides the threshold field instantly and that validation still only runs on Save.
+  - `tests/test_review_service.py` - session initialization, deep-copying of OCR output, multi-file/hash-based session reset, medicine CRUD operations, validation rules (including the accepted/rejected expiry formats), the `render_review_ui` public entry point, OCR-called-once guarantees, and structural/AST-level checks (e.g. confirming `review_service.py` and `review_ui.py` import no database modules and contain no raw SQL).
+- The full project regression suite is re-run after every change described in `CHANGELOG.md`, with the passing count tracked and reported in each entry; the suite grew from 10 tests (Module 1) to 121 tests (through v2.2.1) as modules were added.
+- Cross-store security is explicitly tested by simulating one store attempting to edit or delete another store's data and confirming the operation is blocked.
+- Boundary conditions are explicitly tested for numeric/date thresholds (e.g. exact 7/15/30-day expiry boundaries, quantity thresholds at and around the low-stock cutoff, expiry month validation at 0/1/12/13).
+- Where `AppTest` cannot exercise a path (e.g. it does not expose `st.image` as a testable element in the Streamlit version used, and it cannot perform real Gemini network calls), the changelog documents the specific coverage gap and how the surrounding logic is verified instead (e.g. success-banner/no-warning as an indirect signal for successful image decode).
+- App boot itself is checked after changes (clean HTTP 200 with no exceptions), separate from the unit/UI test suite.
+
+## 15. Conversation Resume Guide
+
+- **Current version**: 2.2.2, per `VERSION` and the latest `CHANGELOG.md` entry.
+- **Architecture to preserve**: UI → service → repository → core/config layering, with `app.py` routing-only, `core/session.py` as the sole `session_state` accessor for auth, `core/database.py` as the sole raw-SQL/connection owner, and `config/product_schema.py` / `config/alert_theme.py` as the single sources of truth for product fields and alert colors respectively.
+- **Modules delivered and working**: Login (Module 1), Dashboard (Module 2), Product Management (Module 5), Invoice Upload (Module 3, upload stage), OCR Extraction (Module 3, OCR stage), Review & Edit (Module 4), Expiry Alerts (Module 6), Low Stock Alerts (Module 7).
+- **Modules not yet started**: Sales, Billing, Notifications, and Super Admin are present only as empty placeholder packages; `core/admin_auth.py` for Super Admin authentication does not yet exist.
+- **Expiry data model**: expiry is Month/Year (not a full date), validated and parsed exclusively through `utils/validators.py`'s `is_valid_expiry()` and `parse_expiry_month_year()` - any future code touching expiry dates must go through these, not `date.fromisoformat()`.
+- **Row identity model**: any dynamic add/delete widget list (currently: the OCR Review & Edit table) must key its widgets off a stable per-row `_row_id`, never off list position - this is now a permanent rule (see `AI_RULES.md`).
+- **Most recent change**: v2.2.2 fixed the real root cause of the Review & Edit delete-row bug (position-based widget keys, not the v2.2.1 session-key-clearing workaround) by introducing a stable `_row_id` per medicine. Verified via a Streamlit-semantics-accurate simulation, not the real `pytest` suite (unavailable in that session's environment - no network access) - running the actual test suite is still recommended.
+- **Testing habit to continue**: any new module or fix should be accompanied by real, executed `pytest`/`AppTest` tests (not just code review), the full regression suite re-run, results reported with an exact pass count, and a new `CHANGELOG.md` entry with a version bump, consistent with every prior release in this project.
+- **Known open limitations to keep in mind**: image preview is not directly testable via `AppTest` in the Streamlit version used, OCR accuracy depends on scan quality, PDF preview falls back to a metadata card for encrypted/non-standard PDFs, and the OCR flow cannot be tested end-to-end without a real Gemini API key and network access.

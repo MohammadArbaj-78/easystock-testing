@@ -18,6 +18,7 @@ session correctly (no OCR rerun).
 import copy
 import hashlib
 import re
+import uuid
 
 import streamlit as st
 
@@ -67,10 +68,14 @@ def initialise_review_session(
         medicines:       Medicine dicts from ocr_service. Deep-copied.
         ocr_metadata:    Optional OCR metrics (count, time, model).
     """
+    rows = copy.deepcopy(medicines)
+    for row in rows:
+        row.setdefault("_row_id", uuid.uuid4().hex)
+
     st.session_state[_SESSION_KEY] = {
         "file_hash": file_hash,
         "source_file": source_filename,
-        "medicines": copy.deepcopy(medicines),
+        "medicines": rows,
         "ocr_metadata": ocr_metadata or {},
         "save_result": None,
     }
@@ -145,16 +150,32 @@ def update_medicine(index: int, field: str, value: str) -> None:
 
 
 def delete_medicine(index: int) -> None:
-    """Remove the medicine at index (local state only, no DB)."""
+    """Remove the medicine at index (local state only, no DB).
+
+    Also removes this row's own widget keys (text inputs + delete
+    button), identified by its stable _row_id rather than its position,
+    so no other row's widget can ever inherit stale session_state left
+    behind by the row that was just removed.
+    """
     medicines = get_medicines()
     if 0 <= index < len(medicines):
+        row_id = medicines[index].get("_row_id")
         medicines.pop(index)
         st.session_state[_SESSION_KEY]["medicines"] = medicines
+
+        if row_id:
+            stale_keys = [
+                k for k in list(st.session_state.keys())
+                if k.startswith(f"review_row_{row_id}_") or k == f"delete_row_{row_id}"
+            ]
+            for k in stale_keys:
+                del st.session_state[k]
 
 
 def add_empty_medicine() -> None:
     """Append a blank medicine row (local state only, no DB)."""
     empty_row = {field: "" for field in MEDICINE_FIELDS}
+    empty_row["_row_id"] = uuid.uuid4().hex
     medicines = get_medicines()
     medicines.append(empty_row)
     st.session_state[_SESSION_KEY]["medicines"] = medicines

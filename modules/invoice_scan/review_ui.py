@@ -19,11 +19,14 @@ rerun, consistent with the "minimal clicks" UI principle.
 Wait — Streamlit widgets outside a form trigger a rerun on every change,
 which would re-render and lose focus between keystrokes. The better
 approach for a multi-field editable row is to keep the row data in
-session state keyed by row index and field name, which is exactly what
-review_service does. Each st.text_input has a stable key derived from
-its row index and field name, so Streamlit restores the widget value
-from the key on each rerun, giving smooth inline editing without a
-submit button per row.
+session state keyed by a stable per-row id and field name, which is
+exactly what review_service does. Each medicine is assigned a stable
+_row_id when it enters the session (OCR extraction or "Add New
+Medicine"), and every st.text_input's key is derived from that _row_id
+— not from the row's position in the list. Position-based keys would
+get silently reassigned to a different medicine whenever a row above
+them is deleted (Streamlit ignores value= once key already exists in
+session_state), which is exactly the bug this design avoids.
 """
 
 import streamlit as st
@@ -119,22 +122,28 @@ def _render_table_header() -> None:
 def _render_medicine_row(idx: int, medicine: dict, row_errors: list) -> None:
     """Render one editable medicine row.
 
-    Each text_input is keyed by (row_index, field_key) so Streamlit
-    restores its value from session state across reruns. The on_change
-    callback writes the new value back into the session state medicines
-    list immediately, so the data is always current even without a Save
+    Each text_input is keyed by (row's stable _row_id, field_key) — NOT
+    by the row's position — so Streamlit always maps a given widget key
+    to the same medicine for that medicine's entire lifetime in the
+    session, even as other rows are added or deleted around it. The
+    write-back below keeps session state's medicines list current
+    immediately, so the data is always up to date even without a Save
     button.
 
     Args:
-        idx:        Row index in the medicines list.
+        idx:        Row's current position (used only to call
+                     update_medicine/delete_medicine, which operate on
+                     list position — not used for widget identity).
         medicine:   The current field values for this row.
         row_errors: Validation errors for this row (shown below the row).
     """
+    row_id = medicine.get("_row_id", idx)
+
     widths = [col[2] for col in _COLUMNS] + [1]
     cols = st.columns(widths)
 
     for col_widget, (field_key, label, _) in zip(cols[:-1], _COLUMNS):
-        widget_key = f"review_row_{idx}_{field_key}"
+        widget_key = f"review_row_{row_id}_{field_key}"
         current_value = medicine.get(field_key, "")
 
         new_value = col_widget.text_input(
@@ -151,18 +160,10 @@ def _render_medicine_row(idx: int, medicine: dict, row_errors: list) -> None:
         if new_value != current_value:
             review_service.update_medicine(idx, field_key, new_value)
 
-    # Delete button — needs a unique key per row
-    if cols[-1].button("🗑️", key=f"delete_row_{idx}", help="Delete this row"):
+    # Delete button — keyed by the row's stable id, not its position.
+    delete_key = f"delete_row_{row_id}"
+    if cols[-1].button("🗑️", key=delete_key, help="Delete this row"):
         review_service.delete_medicine(idx)
-        # Clear all review_row_* widget keys so that text_input widgets
-        # reinitialise from the updated medicine list on the next rerun.
-        # Without this, Streamlit restores each text_input from the stale
-        # session_state key — e.g. after deleting row 0, row 1 shifts to
-        # index 0 but "review_row_0_*" still holds the deleted row's data,
-        # causing update_medicine() to overwrite the new row 0 with the old
-        # values, making it appear that the wrong row was deleted.
-        for key in [k for k in st.session_state if k.startswith("review_row_")]:
-            del st.session_state[key]
         st.rerun()
 
     if row_errors:
