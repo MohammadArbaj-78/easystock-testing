@@ -333,3 +333,62 @@ def delete_product(store_id: int, product_id: int) -> None:
             raise ValidationError(
                 "Product not found, or you do not have permission to delete it."
             )
+
+
+def reduce_stock(store_id: int, product_id: int, quantity: int) -> None:
+    """Atomically decrement a product's stock by quantity (used by Sales).
+
+    The availability check and the write happen in the same SQL
+    statement (WHERE quantity >= ?), not as a separate read-then-write.
+    This is what actually prevents overselling under concurrent access:
+    two near-simultaneous calls attempting to sell the last unit cannot
+    both succeed, because the second call's WHERE clause will no longer
+    match once the first call's UPDATE has committed. A service-layer
+    "check stock, then write" pattern alone would be vulnerable to
+    exactly that race; this function is the real guard, not a
+    convenience wrapper around one.
+
+    Also enforces store ownership in the same WHERE clause as
+    update_product/delete_product do, so this cannot reduce another
+    store's stock even given a guessed or stale product_id.
+
+    Args:
+        store_id: The store that must own this product.
+        product_id: The product whose stock is being reduced.
+        quantity: Whole number of units to subtract. Must be positive -
+            validating that is the caller's (service.py) responsibility;
+            this function trusts its input's type but not its
+            availability, which is exactly what the WHERE clause checks.
+
+    Raises:
+        ValidationError: If no product with this ID exists for this
+            store, or if the product's current quantity is less than
+            the requested quantity (insufficient stock). Both causes
+            produce the same zero-rowcount result and are deliberately
+            not distinguished here, matching the same combined-cause
+            pattern update_product/delete_product already use for
+            "not found or not yours" - the caller cannot tell which
+            case occurred, which is acceptable since the resulting
+            user-facing message ("not enough stock, or item not found")
+            is correct either way.
+    """
+    with get_connection() as connection:
+        cursor = connection.execute(
+            """
+            UPDATE products
+            SET quantity = quantity - ?, updated_at = ?
+            WHERE store_id = ? AND product_id = ? AND quantity >= ?
+            """,
+            (
+                quantity,
+                datetime.now().isoformat(timespec="seconds"),
+                store_id,
+                product_id,
+                quantity,
+            ),
+        )
+        if cursor.rowcount == 0:
+            raise ValidationError(
+                "Unable to sell this quantity - not enough stock available, "
+                "or the product could not be found."
+            )

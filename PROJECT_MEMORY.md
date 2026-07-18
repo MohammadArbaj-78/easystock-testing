@@ -2,7 +2,7 @@
 
 ## 1. Project Overview
 
-EasyStock is a Streamlit-based inventory management application built for medical stores (pharmacies). It is currently at version 2.2.4. The application is multi-tenant: each registered store's data (products, uploads) is isolated from every other store's data at both the application and database level.
+EasyStock is a Streamlit-based inventory management application built for medical stores (pharmacies). It is currently at version 2.4.0. The application is multi-tenant: each registered store's data (products, uploads) is isolated from every other store's data at both the application and database level.
 
 Core capabilities currently implemented:
 - Store owner signup and login, using mobile number as the login identity (India-only validation: 10 digits, first digit 6-9) and a bcrypt-hashed password (6-20 characters).
@@ -11,8 +11,9 @@ Core capabilities currently implemented:
 - Invoice Scan: uploading an invoice image/PDF, extracting medicine line items via Gemini Vision OCR, reviewing/editing the extracted data, and saving it into the products table.
 - Expiry Alerts: products bucketed into urgency windows (15, 30, 60, 90 days, plus Expired and Expired 1/2/3 Months Ago), each product appearing in exactly one bucket.
 - Low Stock Alerts: products at or below their effective minimum stock threshold, categorized into severity tiers (Out of Stock, Very Low Stock, Low Stock).
+- Sales: live search (by name or batch number) to find a product, a compact quantity stepper, and a Sell action that reduces stock and records a permanent, append-only sale history entry - newest first, capped at the latest 100. No billing, GST, customer management, invoice printing, or reports/analytics.
 
-Modules present in the codebase but not yet implemented (empty placeholder packages): Sales, Billing, Notifications, and Super Admin.
+Modules present in the codebase but not yet implemented (empty placeholder packages): Billing, Notifications, and Super Admin.
 
 The product field set (Medicine Name, Batch Number, Expiry, Quantity, Minimum Stock Level, MRP, Rate, GST %, Purchase Date) is deliberately centralized in one schema definition so the app can later be extended to other business types (e.g. grocery, hardware) without rewriting the database, OCR, or UI layers.
 
@@ -44,7 +45,7 @@ Key architectural rules observed in the code:
 ```
 easystock/
 ├── app.py                     # Application entry point / routing only
-├── VERSION                    # Current version string (2.2.1)
+├── VERSION                    # Current version string (2.4.0)
 ├── CHANGELOG.md                # Full history of modules and fixes
 ├── requirements.txt            # Production dependencies
 ├── requirements-dev.txt        # Test-only dependencies (e.g. pytest)
@@ -93,7 +94,10 @@ easystock/
 │   │   └── channels/
 │   │       └── __init__.py      # Placeholder - not yet implemented
 │   ├── sales/
-│   │   └── __init__.py          # Placeholder - not yet implemented
+│   │   ├── __init__.py
+│   │   ├── repository.py       # sales_history table data access
+│   │   ├── service.py          # Sale orchestration and validation
+│   │   └── ui.py                # Sales page rendering (search, sell, history)
 │   ├── billing/
 │   │   └── __init__.py          # Placeholder - not yet implemented
 │   └── super_admin/
@@ -123,7 +127,7 @@ easystock/
 - **`config/settings.py`** - Central constants: file paths, authentication rules, upload limits, inventory threshold defaults, expiry alert windows, OCR model/timeout settings, and session key.
 - **`config/product_schema.py`** - Defines `PRODUCT_FIELDS`, the canonical list of product fields (key, label, type, required) used by the database layer, OCR layer, and UI forms.
 - **`config/alert_theme.py`** - Defines alert type identifiers, their display labels/colors/icons, and a shared `render_alert_banner()` helper used by both the Dashboard and Expiry Alerts pages.
-- **`modules/products/repository.py`** - Data access layer for the `products` table; shared by Dashboard, Product Management, and Alerts modules. Every method is store-scoped.
+- **`modules/products/repository.py`** - Data access layer for the `products` table; shared by Dashboard, Product Management, Alerts, and (as of v2.3.0) Sales modules. Every method is store-scoped. Includes `reduce_stock` (v2.3.0), an atomic conditional decrement used by Sales - the same reuse pattern Dashboard/Alerts already established, which is why Dashboard and Low Stock Alerts will reflect a sale's stock reduction with no code changes of their own.
 - **`modules/products/service.py`** - Validation and orchestration for product creation, editing, and deletion, driven by `config/product_schema.py`.
 - **`modules/dashboard/service.py`** - Computes the Dashboard's headline metrics (total products, expiring soon, expired, low stock) by calling the products repository.
 - **`modules/alerts/service.py`** - Buckets products into expiry urgency windows, reusing the products repository's existing queries rather than issuing new SQL.
@@ -131,8 +135,11 @@ easystock/
 - **`modules/invoice_scan/ocr_service.py`** - Sends uploaded invoice images to Gemini Vision and parses the structured medicine line-item response. Contains no Streamlit or database code.
 - **`modules/invoice_scan/review_service.py`** - Manages the editable OCR review session (keyed by SHA-256 hash of the uploaded file) and saves reviewed medicines into the products table.
 - **`modules/invoice_scan/upload_service.py`** - Validates and saves uploaded invoice files under a store-scoped directory.
+- **`modules/sales/repository.py`** - Data access layer for the `sales_history` table (Phase 1, added v2.3.0). `record_sale` is the only write; no update or delete function exists, making the table append-only by omission. `get_sales_history` has no filter/pagination parameters beyond `store_id`, capped by `SALES_HISTORY_DISPLAY_LIMIT`.
+- **`modules/sales/service.py`** - Business logic for Sales (Phase 2, added v2.3.1): `search_products`, `sell_product`, `get_sales_history`. Reaches `products` only through `products_repository` (never `products_service`), matching Dashboard/Alerts' existing reuse pattern. `sell_product` reduces stock before recording the sale, in that order, deliberately.
+- **`modules/sales/ui.py`** - Sales page rendering (Phase 3, added v2.4.0): live search, per-result quantity stepper and Sell button, and a card-based Sales History section. No custom CSS - the stepper and history cards degrade to mobile naturally, unlike the Review & Edit table's wide-column layout.
 - **`CHANGELOG.md`** - Chronological, versioned record of every module delivered and every fix made, including verification notes.
-- **`VERSION`** - Current release version of the project (2.2.1).
+- **`VERSION`** - Current release version of the project (2.4.0).
 
 ## 5. Coding Rules
 
@@ -220,6 +227,9 @@ easystock/
 - **Expiry Alerts bucket expansion**: Filter order and buckets expanded to All Alerts → 15/30/60/90 Days → Expired → Expired 1/2/3 Months Ago.
 - **Low stock default threshold adjustment**: The store-wide default minimum stock threshold changed from 10 to 2.
 - **Review & Edit mobile UI improvement (v2.2.4; supersedes withdrawn v2.2.3)**: The medicine table stays at its full desktop-proportioned column layout on all screen sizes and scrolls horizontally on narrow/mobile viewports, using a media-query-scoped fix (`flex-wrap: nowrap` + fixed per-column pixel widths) rather than v2.2.3's `min-width`-only approach, which was rejected after real-device testing showed it produced stacked, full-width fields instead of a scrollable row. Desktop rendering is unaffected (verified by construction: all mobile CSS lives inside `@media (max-width: 768px)`); a scroll hint is shown only on mobile.
+- **Sales module, Phase 1 - database + repository only (v2.3.0)**: New `sales_history` table (7 columns: `sale_id`, `store_id`, `product_id`, `medicine_name`, `batch_number`, `sold_quantity`, `sold_at` - no price/total fields yet), append-only by omission (no update/delete function in its repository). New `modules/sales/repository.py` (`record_sale`, `get_sales_history`, capped at `SALES_HISTORY_DISPLAY_LIMIT`). New `reduce_stock` on `modules/products/repository.py`, an atomic conditional decrement that prevents overselling under concurrent access and reuses the products table's single shared data-access point (the same reuse pattern Dashboard/Alerts already use), so Dashboard and Low Stock Alerts will automatically reflect a future sale's stock reduction with zero code changes to either module. No service layer, no UI, and no `app.py` routing entry yet - later phases.
+- **Sales module, Phase 2 - service layer only (v2.3.1)**: New `modules/sales/service.py` (`search_products`, `sell_product`, `get_sales_history`). `sell_product` validates quantity server-side, reduces stock via `products_repository.reduce_stock` first, and only records the sale after that succeeds - never the reverse. Reaches `products` only through `products_repository`, matching the reuse pattern already established in Phase 1/Dashboard/Alerts, never through `products_service`. No new exception type - reuses `ValidationError` for every failure case. No UI, no `app.py` routing entry yet.
+- **Sales module, Phase 3 - UI + routing, module now complete (v2.4.0)**: New `modules/sales/ui.py` and one `app.py` `NAV_PAGES` entry. Live search (name or batch number; an empty box shows guidance text and never loads every product); each result shows a summary line plus a compact `[-] quantity [+]` stepper (keyed by `product_id`, floor 1, ceiling current stock, both buttons natively `disabled` at their limits) and a Sell button (natively `disabled` at zero stock); a successful sale resets the row's quantity to 1. Sales History renders as native `st.container(border=True)` cards, newest first, capped at 100, read-only. No custom CSS anywhere in this file - reuses the products-list search pattern and row-summary format, and the review-table's row-divider convention, rather than inventing a new visual language. Dashboard and Low Stock Alerts require no code changes to reflect a sale, exactly as designed in Phase 1.
 
 ## 9. Bugs Already Fixed
 
@@ -253,7 +263,6 @@ The following items are documented in `CHANGELOG.md` as "Known limitations" and 
 
 - **Super Admin authentication**: `core/auth.py`'s module docstring states that Super Admin authentication is intended to be handled by a separate module, `core/admin_auth.py`, "built later," against a separate database table - this file does not yet exist in the project.
 - **`modules/super_admin/`**: Present in the codebase as an empty package (`__init__.py` only), with no service, repository, or UI files yet.
-- **`modules/sales/`**: Present in the codebase as an empty package (`__init__.py` only), with no service, repository, or UI files yet.
 - **`modules/billing/`**: Present in the codebase as an empty package (`__init__.py` only), with no service, repository, or UI files yet.
 - **`modules/notifications/`** (including `modules/notifications/channels/`): Present in the codebase as an empty package (`__init__.py` only, plus an empty `channels` sub-package), with no service, repository, or UI files yet.
 - **Multi-business-type product schema**: `config/product_schema.py` states that extending EasyStock beyond medical stores (e.g. to grocery or hardware stores) would involve splitting `PRODUCT_FIELDS` into several named schemas (e.g. `MEDICAL_STORE_FIELDS`, `GROCERY_STORE_FIELDS`) with the active one selected per store. The docstring explicitly states this refactor is deliberately deferred until a second business type is actually being built.
@@ -301,12 +310,12 @@ The following items are documented in `CHANGELOG.md` as "Known limitations" and 
 
 ## 15. Conversation Resume Guide
 
-- **Current version**: 2.2.4, per `VERSION` and the latest `CHANGELOG.md` entry.
+- **Current version**: 2.4.0, per `VERSION` and the latest `CHANGELOG.md` entry.
 - **Architecture to preserve**: UI → service → repository → core/config layering, with `app.py` routing-only, `core/session.py` as the sole `session_state` accessor for auth, `core/database.py` as the sole raw-SQL/connection owner, and `config/product_schema.py` / `config/alert_theme.py` as the single sources of truth for product fields and alert colors respectively.
-- **Modules delivered and working**: Login (Module 1), Dashboard (Module 2), Product Management (Module 5), Invoice Upload (Module 3, upload stage), OCR Extraction (Module 3, OCR stage), Review & Edit (Module 4), Expiry Alerts (Module 6), Low Stock Alerts (Module 7).
-- **Modules not yet started**: Sales, Billing, Notifications, and Super Admin are present only as empty placeholder packages; `core/admin_auth.py` for Super Admin authentication does not yet exist.
+- **Modules delivered and working**: Login (Module 1), Dashboard (Module 2), Product Management (Module 5), Invoice Upload (Module 3, upload stage), OCR Extraction (Module 3, OCR stage), Review & Edit (Module 4), Expiry Alerts (Module 6), Low Stock Alerts (Module 7), Sales (complete as of v2.4.0).
+- **Modules not yet started**: Billing, Notifications, and Super Admin are present only as empty placeholder packages; `core/admin_auth.py` for Super Admin authentication does not yet exist.
 - **Expiry data model**: expiry is Month/Year (not a full date), validated and parsed exclusively through `utils/validators.py`'s `is_valid_expiry()` and `parse_expiry_month_year()` - any future code touching expiry dates must go through these, not `date.fromisoformat()`.
 - **Row identity model**: any dynamic add/delete widget list (currently: the OCR Review & Edit table) must key its widgets off a stable per-row `_row_id`, never off list position - this is now a permanent rule (see `AI_RULES.md`).
-- **Most recent change**: v2.2.4 replaced v2.2.3's mobile UI fix, which was withdrawn after real-device testing showed it produced stacked, full-width fields instead of a horizontal scroll (root cause: `min-width` alone didn't override Streamlit's native mobile column-stacking). v2.2.4 was rebuilt from the v2.2.2 source with all mobile CSS scoped inside `@media (max-width: 768px)`, forcing `flex-wrap: nowrap` plus fixed per-column pixel widths. No backend, OCR, or save-logic changes. v2.2.2 fixed the real root cause of the delete-row bug (position-based widget keys) by introducing a stable `_row_id` per medicine. All three changes were verified via a Streamlit-semantics-accurate simulation, not the real `pytest` suite (unavailable in that session's environment - no network access) - running the actual test suite is still recommended.
+- **Most recent change**: v2.4.0 completed the Sales module - `modules/sales/ui.py` (live search, quantity stepper, Sell button, card-based Sales History) plus one `app.py` `NAV_PAGES` entry. No custom CSS anywhere in the new file; reuses the products-list search/summary pattern and the review-table's divider convention rather than inventing a new visual language. Verified with a Streamlit-semantics-accurate simulation executing the real, unmodified code end-to-end (15 checks: empty-search guard, stepper clamping at both ends via native `disabled=`, a full sell reducing stock/resetting quantity/recording history, and zero-stock correctly blocking a further sale) - all passed; all prior simulation/functional suites were re-run afterward and still pass. `modules/sales/service.py` (v2.3.1, Phase 2) and `modules/sales/repository.py` + `products_repository.reduce_stock` (v2.3.0, Phase 1) are unchanged this release. `pytest`/`streamlit` remain unavailable in this environment (no network access), so the project's own test suite could not be run for any of the three Sales phases; recommended before treating them as fully verified. v2.2.4 replaced v2.2.3's mobile UI fix (withdrawn after real-device testing) and v2.2.2 fixed the delete-row bug's real root cause (position-based widget keys) with a stable `_row_id` per medicine.
 - **Testing habit to continue**: any new module or fix should be accompanied by real, executed `pytest`/`AppTest` tests (not just code review), the full regression suite re-run, results reported with an exact pass count, and a new `CHANGELOG.md` entry with a version bump, consistent with every prior release in this project.
 - **Known open limitations to keep in mind**: image preview is not directly testable via `AppTest` in the Streamlit version used, OCR accuracy depends on scan quality, PDF preview falls back to a metadata card for encrypted/non-standard PDFs, and the OCR flow cannot be tested end-to-end without a real Gemini API key and network access.

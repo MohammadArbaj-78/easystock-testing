@@ -146,3 +146,44 @@ def initialize_database() -> None:
             ON products (store_id, expiry_date)
             """
         )
+
+        # sales_history is intentionally append-only: no repository
+        # function exists to update or delete a row here, so a sale
+        # once recorded stays a permanent, unmodified fact. Kept
+        # deliberately minimal for the MVP - name and batch_number are
+        # snapshotted (not looked up live from products) so a sale
+        # record still reads correctly even if the product is later
+        # renamed, re-batched, or deleted. No price_per_unit or
+        # total_amount yet - billing/analytics can add those later
+        # without needing to touch this table's core shape.
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sales_history (
+                sale_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                store_id INTEGER NOT NULL,
+                product_id INTEGER NOT NULL,
+                medicine_name TEXT NOT NULL,
+                batch_number TEXT NOT NULL,
+                sold_quantity INTEGER NOT NULL,
+                sold_at TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (store_id) REFERENCES stores (store_id)
+            )
+            """
+        )
+
+        # store_id alone for ownership-scoped lookups (matches every
+        # other table); store_id + sold_at composite for
+        # get_sales_history's ORDER BY sold_at DESC LIMIT query, so
+        # that read stays fast as a store's sales history grows.
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_sales_history_store_id
+            ON sales_history (store_id)
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_sales_history_store_sold_at
+            ON sales_history (store_id, sold_at)
+            """
+        )

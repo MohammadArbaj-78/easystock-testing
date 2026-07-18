@@ -19,6 +19,7 @@ from modules.products.ui import render_products_page
 from modules.alerts.ui import render_expiry_alerts_page
 from modules.alerts.low_stock_ui import render_low_stock_alerts_page
 from modules.invoice_scan.upload_ui import render_invoice_scan_page
+from modules.sales.ui import render_sales_page
 
 st.set_page_config(
     page_title=APP_NAME,
@@ -38,6 +39,7 @@ initialize_database()
 NAV_PAGES = {
     "📊 Dashboard": render_dashboard,
     "💊 Products": render_products_page,
+    "🛒 Sales": render_sales_page,
     "🧾 Invoice Scan": render_invoice_scan_page,
     "⏰ Expiry Alerts": render_expiry_alerts_page,
     "📦 Low Stock": render_low_stock_alerts_page,

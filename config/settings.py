@@ -66,6 +66,14 @@ DASHBOARD_EXPIRY_SOON_DAYS = 30
 # 15, then 30" as a literal sequence in business logic.
 EXPIRY_ALERT_WINDOWS_DAYS = [15, 30, 60, 90]
 
+# --- Sales ---
+# Sales History (Module: Sales) shows only the most recent sales, newest
+# first, with no pagination for the MVP. This caps how many rows
+# get_sales_history() ever returns, so the query and the page stay fast
+# regardless of how many sales a store accumulates over time. Tunable
+# here, not hardcoded in modules/sales/repository.py's SQL.
+SALES_HISTORY_DISPLAY_LIMIT = 100
+
 # --- OCR / Gemini ---
 # Model name to use for invoice extraction. Gemini 1.5 Flash is chosen
 # for the MVP: it supports vision input, is fast enough for interactive

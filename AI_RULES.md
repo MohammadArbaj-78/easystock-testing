@@ -31,6 +31,7 @@
 - Widgets that must be resettable across a rerun (e.g. after Save or Clear) need an explicit `key`; resetting an outside-form widget requires a sentinel-flag pattern (set a flag on the triggering action, pop the widget's key before the widget is instantiated on the next rerun) because Streamlit restores widget values from session state before the script body runs.
 - Any dynamic, addable/deletable list of rows rendered as widgets (e.g. an editable table) must key each row's widgets off a stable per-row identifier (assigned once, when the row is created) — never off the row's current list position/index. Position-based keys get silently reassigned to a different underlying record whenever the list shrinks, grows, or reorders, since Streamlit ignores a widget's `value=` parameter once its `key` already exists in `session_state`. When a row is removed, only that row's own stable-id-keyed session_state entries should be cleared — not a blanket wipe of every row's keys.
 - A wide multi-column table must not be redesigned (e.g. into cards) to fit mobile screens; it must keep its full desktop-proportioned column layout at every viewport width and rely on horizontal scrolling instead of letting Streamlit auto-shrink or stack its columns. A `min-width` on the row alone is not sufficient — Streamlit's own built-in stylesheet switches `st.columns()` to vertical stacking below its mobile breakpoint, and `st.text_input` fills 100% of its parent column, so a wide-but-stacked column becomes a giant full-width input. The working pattern needs all three together, scoped via `st.container(key=...)` and entirely inside a `@media (max-width: <breakpoint>)` query so desktop is provably unaffected: `flex-wrap: nowrap` on the row (overrides native stacking), a fixed pixel width plus `flex: none` on each individual column by position (stops shrinking AND stretching), and `overflow-x: auto` on the container. Never apply this CSS globally — target only that table's key. Any mobile-only affordance (e.g. a scroll hint) must be gated by the same media query, not shown unconditionally.
+- Before reaching for custom CSS to solve a mobile problem, check whether a native Streamlit component already solves it — e.g. `st.container(border=True)` for a "card" (not custom HTML/CSS), and a widget's own `disabled=` parameter for a clamped stepper/limit (not manual class-based styling to grey something out). A row of a few narrow buttons (like a `[-] qty [+]` stepper) does not have the text-input-fills-100%-width failure mode a wide data-entry table has, so it does not need the media-query treatment above — adding that CSS anyway would be solving a problem that doesn't exist on that control. Reach for the wide-table CSS pattern only when a control actually has that specific failure mode, not by default.
 
 ## Database Rules
 
@@ -51,6 +52,8 @@
 - Repository never performs validation - it trusts its input and focuses solely on persistence; validating input is the service layer's job.
 - `update_*`/`delete_*` functions raise a `ValidationError` (not a silent no-op) when no matching row exists for the given store, so callers can distinguish "saved" from "nothing happened."
 - Repository functions that must compare non-ISO, non-comparable stored values (e.g. Month/Year expiry) filter/compare in Python rather than relying on SQL comparison operators, with a fallback path for legacy ISO-formatted values.
+- When a write's correctness depends on a condition that could change concurrently (e.g. "enough stock remains"), the condition check and the write must happen in the same atomic SQL statement (e.g. `UPDATE ... WHERE quantity >= ?`), never as a separate read-then-check-then-write in the service layer — a service-layer pre-check alone is race-vulnerable; the atomic write in the repository is the actual guard.
+- A table meant to be append-only (e.g. an audit/history table) must have no update or delete function defined anywhere in its repository file — enforce "never mutated" by omission, not by convention or a comment. Adding a mutation path later requires a new, visible function, not an edit to something already there.
 
 ## Service Rules
 
@@ -138,6 +141,8 @@
 - Never let the UI layer access the database directly or perform business calculations.
 - Never let the service layer import Streamlit or contain raw SQL.
 - Never let the repository layer perform validation or business-rule decisions.
+- Never implement a concurrency-sensitive stock/quantity check as a separate read-then-write - combine the check and the write into one atomic SQL statement.
+- Never define an update or delete function for a table that is meant to be append-only (e.g. sales/audit history).
 - Never compare or parse expiry values with `date.fromisoformat()` - always use the canonical Month/Year validator/parser.
 - Never define alert colors, product fields, or other shared constants locally in a module - always import from the centralized `config/` definition.
 - Never return `None`/`False`/an error string to signal failure - always raise the appropriate exception.
