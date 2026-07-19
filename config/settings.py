@@ -74,6 +74,20 @@ EXPIRY_ALERT_WINDOWS_DAYS = [15, 30, 60, 90]
 # here, not hardcoded in modules/sales/repository.py's SQL.
 SALES_HISTORY_DISPLAY_LIMIT = 100
 
+# Sales search behaves as a lightweight autocomplete, not a full list -
+# capped so the suggestion list never renders hundreds of results.
+SALES_SEARCH_SUGGESTION_LIMIT = 10
+
+# "Frequently Sold" (shown when the search box is empty) surfaces this
+# many top-selling, currently-in-stock medicines.
+SALES_FREQUENTLY_SOLD_LIMIT = 8
+
+# sales_history has no live stock column, so the service layer must
+# fetch more top-sold product_ids than it needs and filter out any that
+# are now out of stock (or deleted) to find SALES_FREQUENTLY_SOLD_LIMIT
+# in-stock results. This bounds that candidate fetch.
+SALES_FREQUENTLY_SOLD_CANDIDATE_LIMIT = 50
+
 # --- OCR / Gemini ---
 # Model name to use for invoice extraction. Gemini 1.5 Flash is chosen
 # for the MVP: it supports vision input, is fast enough for interactive

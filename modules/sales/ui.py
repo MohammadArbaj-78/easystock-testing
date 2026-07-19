@@ -1,30 +1,44 @@
 """
 Sales screen UI.
 
-Renders the Sales page: a live search to find a product to sell, a
-compact [-] quantity [+] stepper and Sell button per result, and a
-read-only Sales History section below.
+Renders the Sales page: a live autocomplete search to find a product to
+sell (or a "Frequently Sold" shortlist when the search box is empty),
+a compact [-] quantity [+] stepper and Sell button for the selected
+product, and a read-only Sales History section below.
+
+Search UX (this file's own layer only - the underlying sell mechanics
+in _render_sale_row are unchanged and reused as-is):
+  - An empty search box never loads the full inventory - it shows a
+    prompt plus the Frequently Sold section instead.
+  - As the owner types, up to SALES_SEARCH_SUGGESTION_LIMIT lightweight
+    suggestions appear (name, batch, stock only - no expiry/MRP/GST),
+    each a single compact row (a dropdown-list entry, not a card).
+  - Clicking a suggestion or a Frequently Sold tile fills the search
+    box, hides the suggestion list, and shows that product's full
+    detail (the unmodified per-row sell controls) immediately - the
+    owner never has to search again for the same item.
 
 Deliberately reuses patterns already established elsewhere in
 EasyStock rather than inventing new ones:
   - Live search with the same label/placeholder style as
     modules/products/ui.py's product list search.
   - A compact "Name • Batch: X • Stock: Y • Expires: Z" summary line
-    per result, matching modules/products/ui.py's row-summary format.
-  - st.divider() between rows, matching
+    for the selected product's full detail, matching
+    modules/products/ui.py's row-summary format.
+  - st.divider() between the sell section and Sales History, matching
     modules/invoice_scan/review_ui.py's table row separation.
-  - Native st.container(border=True) for the Sales History "cards" -
-    a real Streamlit component, not custom HTML/CSS, so this satisfies
-    "card layout" and "no CSS unless absolutely necessary" at the same
-    time.
+  - Native st.container(border=True) for the Sales History cards - a
+    real Streamlit component, not custom HTML/CSS. Search suggestions
+    and Frequently Sold rows are deliberately NOT cards - they are
+    compact, single-row buttons styled as a dropdown list, since a
+    bordered card per suggestion wastes vertical space for something
+    meant to be scanned quickly.
 
-No custom CSS anywhere in this file. Unlike the Review & Edit table
-(modules/invoice_scan/review_ui.py), which needed a scoped, mobile-only
-media-query fix because it renders 7+ text-input columns in one wide
-row, nothing here does: the quantity stepper is a handful of narrow
-buttons and the history cards stack vertically by nature. Both degrade
-to mobile naturally with zero CSS, so none was added - CSS here would
-be solving a problem that does not exist on this screen.
+No custom CSS anywhere in this file. Every element here (suggestion
+rows, Frequently Sold rows, Sales History cards) uses only native
+Streamlit components - none of them have the Review & Edit table's
+wide-multi-column failure mode, so none of them need CSS to work
+correctly on mobile; they all stack naturally.
 
 Talks to modules.sales.service only - never modules.sales.repository or
 modules.products.repository/service directly, matching every other
@@ -48,7 +62,21 @@ def render_sales_page() -> None:
 
 
 def _render_sell_section() -> None:
-    """Render the live search and per-result sell controls."""
+    """Render the live search/autocomplete, Frequently Sold, and the
+    selected product's full sell controls.
+
+    Flow:
+      - A product can be "selected" (session_state key
+        sales_selected_product_id) either by clicking a search
+        suggestion or a Frequently Sold tile. While a valid selection
+        is active, this renders only that product's full detail (via
+        the unmodified _render_sale_row) - no suggestion list, no
+        Frequently Sold, matching "the owner should not search again".
+      - If the search box is empty and nothing is selected: show the
+        guidance message and the Frequently Sold section.
+      - Otherwise: show up to SALES_SEARCH_SUGGESTION_LIMIT lightweight
+        suggestions (name, batch, stock only - no expiry/MRP/GST).
+    """
     store_id = get_current_store_id()
 
     search_term = st.text_input(
@@ -57,21 +85,106 @@ def _render_sell_section() -> None:
         key="sales_search_term",
     )
 
-    if not search_term or not search_term.strip():
-        st.info("Start typing a medicine name or batch number.")
+    selected_product = _get_active_selection(store_id, search_term)
+    if selected_product is not None:
+        _render_sale_row(store_id, selected_product)
         return
 
-    products = sales_service.search_products(store_id, search_term)
+    if not search_term or not search_term.strip():
+        st.info("Start typing a medicine name or batch number.")
+        _render_frequently_sold(store_id)
+        return
 
-    if not products:
+    suggestions = sales_service.search_products(store_id, search_term)
+
+    if not suggestions:
         st.info("No products match your search.")
         return
 
-    st.caption(f"{len(products)} product(s)")
+    for product in suggestions:
+        _render_suggestion_tile(product)
 
-    for product in products:
-        _render_sale_row(store_id, product)
-        st.divider()
+
+def _get_active_selection(store_id: int, search_term: str) -> dict:
+    """Resolve the currently-selected product, if any, and clear a
+    stale selection.
+
+    A selection is only treated as still active if: a product_id is
+    recorded, that product still exists and is still in stock, and the
+    search box still shows exactly the name that selecting it filled
+    in. If the owner has typed something different, the selection is
+    dropped and search/autocomplete takes over again on this same
+    render - the owner never needs an extra click to "undo" a stale
+    selection.
+    """
+    selected_id = st.session_state.get("sales_selected_product_id")
+    if selected_id is None:
+        return None
+
+    product = sales_service.get_product(store_id, selected_id)
+    if product is not None and product["quantity"] > 0 and search_term == product["name"]:
+        return product
+
+    st.session_state.pop("sales_selected_product_id", None)
+    return None
+
+
+def _select_product(product: dict) -> None:
+    """on_click callback for a suggestion/Frequently Sold row: fills the
+    search box, marks this product selected, and resets its quantity to
+    1 - matching "Reset quantity to 1" and "the owner should not search
+    again".
+
+    This MUST be wired as a widget's on_click callback, not called from
+    inside a plain "if st.button(...):" block. Streamlit callbacks run
+    in a dedicated phase before the script body reruns and widgets are
+    re-instantiated - so setting st.session_state["sales_search_term"]
+    here is always safe. Doing the same assignment from inside the
+    normal script body (after the search text_input has already been
+    instantiated earlier in that same run) is exactly what raised
+    StreamlitAPIException: st.session_state.sales_search_term cannot be
+    modified after the widget with key sales_search_term is
+    instantiated. No st.rerun() call is needed here either - Streamlit
+    already reruns automatically after any widget interaction,
+    including a button's on_click callback.
+    """
+    st.session_state["sales_search_term"] = product["name"]
+    st.session_state["sales_selected_product_id"] = product["product_id"]
+    st.session_state[f"sales_qty_{product['product_id']}"] = 1
+
+
+def _render_suggestion_tile(product: dict) -> None:
+    """Render one compact, single-row suggestion: name, batch, stock
+    only - no expiry, MRP, or GST. A dropdown-style list entry, not a
+    bordered card - the whole row is one native st.button (Streamlit
+    supports basic Markdown in widget labels, including bold text and
+    line breaks), so clicking anywhere on the row selects it via the
+    on_click callback above. No separate container, no separate
+    "Select" sub-button, minimal vertical spacing.
+    """
+    label = f"**{product['name']}**\nBatch: {product['batch_number']} • Stock: {product['quantity']}"
+    st.button(
+        label,
+        key=f"sales_select_{product['product_id']}",
+        use_container_width=True,
+        on_click=_select_product,
+        args=(product,),
+    )
+
+
+def _render_frequently_sold(store_id: int) -> None:
+    """Render the "⭐ Frequently Sold" section shown when the search box
+    is empty: top sellers that are still in stock, each clicking exactly
+    like a search suggestion.
+    """
+    frequently_sold = sales_service.get_frequently_sold(store_id)
+
+    if not frequently_sold:
+        return
+
+    st.markdown("**⭐ Frequently Sold**")
+    for product in frequently_sold:
+        _render_suggestion_tile(product)
 
 
 def _render_sale_row(store_id: int, product: dict) -> None:

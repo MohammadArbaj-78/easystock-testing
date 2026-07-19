@@ -19,16 +19,26 @@ which has nothing to do with selling).
 from modules.products import repository as products_repository
 from modules.sales import repository as sales_repository
 from core.exceptions import ValidationError
+from config.settings import SALES_SEARCH_SUGGESTION_LIMIT, SALES_FREQUENTLY_SOLD_LIMIT, SALES_FREQUENTLY_SOLD_CANDIDATE_LIMIT
 
 
 def search_products(store_id: int, search_term: str) -> list:
-    """Search products available to sell, by name or batch number.
+    """Search sellable products, by name or batch number.
 
-    A thin passthrough to products_repository.get_all_products, which
+    A thin wrapper around products_repository.get_all_products, which
     already matches against both name and batch number - no new search
-    logic needed here. Deciding whether to call this at all for an
-    empty search term is a UI-layer concern (Sales' UI shows a "start
-    typing" prompt instead of listing every product), not a rule
+    matching logic needed here. Two business rules are layered on top,
+    both belonging here (not in the repository, which has no concept
+    of "sellable", and not in the UI, which must not contain business
+    rules or SQL):
+      - Out-of-stock products are never suggested (quantity must be > 0).
+      - Results are capped at SALES_SEARCH_SUGGESTION_LIMIT - this is a
+        lightweight autocomplete, not a full list; it should never
+        return hundreds of results for the UI to render.
+
+    Deciding whether to call this at all for an empty search term
+    remains a UI-layer concern (Sales' UI shows a "start typing" prompt
+    and Frequently Sold instead of listing every product), not a rule
     enforced here.
 
     Args:
@@ -36,10 +46,68 @@ def search_products(store_id: int, search_term: str) -> list:
         search_term: Text to filter by name or batch number.
 
     Returns:
-        A list of product dicts (name, batch_number, quantity,
-        expiry_date, and the other product fields).
+        A list of in-stock product dicts (name, batch_number, quantity,
+        expiry_date, and the other product fields), at most
+        SALES_SEARCH_SUGGESTION_LIMIT of them.
     """
-    return products_repository.get_all_products(store_id, search_term)
+    products = products_repository.get_all_products(store_id, search_term)
+    in_stock = [product for product in products if product["quantity"] > 0]
+    return in_stock[:SALES_SEARCH_SUGGESTION_LIMIT]
+
+
+def get_frequently_sold(store_id: int) -> list:
+    """Get the top-selling, currently-in-stock products for this store.
+
+    Combines sales_repository.get_top_sold_product_ids (a historical
+    fact - which products have sold the most - with no notion of
+    current stock) with products_repository.get_product_by_id (live
+    data) to answer a question neither repository can answer alone:
+    "what are this store's best sellers that it can actually still
+    sell right now". A product that has sold well but is now out of
+    stock, or has since been deleted, is silently skipped - never
+    shown, matching the same "never suggest out-of-stock medicines"
+    rule search_products enforces.
+
+    Args:
+        store_id: The currently logged-in store's ID.
+
+    Returns:
+        A list of in-stock product dicts, best-seller first, at most
+        SALES_FREQUENTLY_SOLD_LIMIT of them. Empty list if this store
+        has no sales history yet.
+    """
+    candidate_ids = sales_repository.get_top_sold_product_ids(
+        store_id, SALES_FREQUENTLY_SOLD_CANDIDATE_LIMIT
+    )
+
+    results = []
+    for product_id in candidate_ids:
+        product = products_repository.get_product_by_id(store_id, product_id)
+        if product is not None and product["quantity"] > 0:
+            results.append(product)
+        if len(results) >= SALES_FREQUENTLY_SOLD_LIMIT:
+            break
+
+    return results
+
+
+def get_product(store_id: int, product_id: int) -> dict:
+    """Get a single product's current, live data.
+
+    A thin passthrough to products_repository.get_product_by_id, so the
+    UI can re-check a previously-selected product's current stock
+    (e.g. after selecting a search suggestion) without reaching into
+    products_repository directly - the same layering rule every other
+    UI file in this codebase already follows.
+
+    Args:
+        store_id: The currently logged-in store's ID.
+        product_id: The product to look up.
+
+    Returns:
+        The product dict, or None if it does not exist for this store.
+    """
+    return products_repository.get_product_by_id(store_id, product_id)
 
 
 def sell_product(store_id: int, product_id: int, quantity: int) -> int:

@@ -71,6 +71,43 @@ def record_sale(
         return cursor.lastrowid
 
 
+def get_top_sold_product_ids(store_id: int, limit: int) -> list:
+    """Get product_ids ordered by total quantity sold, most-sold first.
+
+    Pure aggregation over the existing sales_history table - no schema
+    change, no new table. This function does not know about current
+    stock (sales_history has no live stock column, and never will -
+    quantities are historical snapshots); filtering out products that
+    are now out of stock or deleted is the service layer's job, which
+    is why this returns bare product_ids rather than deciding anything
+    about which ones are still sellable.
+
+    Args:
+        store_id: The currently logged-in store's ID.
+        limit: Maximum number of product_ids to return. The caller is
+            expected to request more than it ultimately needs (some
+            candidates may no longer be in stock) - this function has
+            no opinion on that; it just aggregates and caps.
+
+    Returns:
+        A list of product_id values (ints), ordered by SUM(sold_quantity)
+        descending.
+    """
+    with get_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT product_id, SUM(sold_quantity) AS total_sold
+            FROM sales_history
+            WHERE store_id = ?
+            GROUP BY product_id
+            ORDER BY total_sold DESC
+            LIMIT ?
+            """,
+            (store_id, limit),
+        ).fetchall()
+        return [row["product_id"] for row in rows]
+
+
 def get_sales_history(store_id: int) -> list:
     """Get the most recent sales for a store, newest first.
 
