@@ -67,6 +67,7 @@ UI file's own layering rule (UI -> Service -> Repository).
 """
 
 import streamlit as st
+from datetime import datetime, timezone
 
 from modules.sales import service as sales_service
 from core.session import get_current_store_id
@@ -393,6 +394,37 @@ def _render_sale_row(store_id: int, product: dict) -> None:
                     st.error(str(error))
 
 
+def _format_sold_at(sold_at: str) -> str:
+    """Convert a stored sold_at timestamp to the local timezone and
+    format it as "DD MMM YYYY, HH:MM AM/PM" for display.
+
+    sold_at is written by SQLite's own `datetime('now')` default
+    (core/database.py), which always produces naive UTC text in
+    "YYYY-MM-DD HH:MM:SS" format - confirmed consistent for every row,
+    so no schema change or backfill/migration is needed here. This
+    function only affects how that value is DISPLAYED, never how it is
+    stored: it parses the stored string, explicitly marks it as UTC
+    (tzinfo=timezone.utc - it never was naive in meaning, only in
+    representation), then converts to the local timezone via
+    datetime.astimezone() with no argument, which resolves to whatever
+    timezone this server process is running in. This is timezone-aware
+    conversion with no hardcoded offset (no "+5:30" or similar) -
+    exactly the same conversion Python's own datetime module is
+    designed for.
+
+    If a value doesn't match the expected format (e.g. a future schema
+    change, or unexpected data), the raw string is returned unchanged
+    rather than raising - a single malformed row must never break the
+    rest of the Sales History list.
+    """
+    try:
+        utc_dt = datetime.strptime(sold_at, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+        local_dt = utc_dt.astimezone()
+        return local_dt.strftime("%d %b %Y, %I:%M %p")
+    except (ValueError, TypeError):
+        return sold_at
+
+
 def _render_sales_history_section() -> None:
     """Render the read-only Sales History: latest 100, newest first,
     as native bordered-container cards. No edit, no delete, no
@@ -414,5 +446,5 @@ def _render_sales_history_section() -> None:
             st.caption(
                 f"Batch: {sale['batch_number']}  •  "
                 f"Sold Qty: {sale['sold_quantity']}  •  "
-                f"Sold: {sale['sold_at']}"
+                f"Sold: {_format_sold_at(sale['sold_at'])}"
             )
