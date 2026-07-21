@@ -9,6 +9,7 @@ routing, that's a sign logic is leaking into the wrong layer.
 """
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 from config.settings import APP_NAME
 from core.database import initialize_database
@@ -60,8 +61,114 @@ def render_main_app() -> None:
             end_session()
             st.rerun()
 
+        _render_mobile_sidebar_css()
+        _render_mobile_sidebar_autoclose()
+
     st.title(f"📦 {APP_NAME}")
     NAV_PAGES[selected_page]()
+
+
+def _render_mobile_sidebar_css() -> None:
+    """Mobile-only sidebar polish: bigger touch targets and slightly
+    larger text on the nav items. Entirely inside
+    @media (max-width: 768px), so desktop spacing/fonts are completely
+    unaffected. Scoped to [data-testid="stSidebar"] [role="radiogroup"]
+    label - the sidebar's own nav radio rows - so nothing outside the
+    sidebar, and no other st.radio elsewhere in the app, is touched.
+    role="radiogroup" is a standard ARIA attribute Streamlit's radio
+    widget already provides, not an internal/unstable test id.
+    """
+    st.markdown(
+        """
+        <style>
+        @media (max-width: 768px) {
+            [data-testid="stSidebar"] [role="radiogroup"] label {
+                min-height: 3rem !important;
+                padding: 0.85rem 0.6rem !important;
+                display: flex !important;
+                align-items: center !important;
+                font-size: 1.12em !important;
+                line-height: 1.4 !important;
+            }
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_mobile_sidebar_autoclose() -> None:
+    """Auto-close the sidebar after tapping a nav item, on mobile only.
+
+    Streamlit has no public Python API to collapse the sidebar, so this
+    uses a tiny, invisible (height=0) component to detect - on the
+    browser side - that the selected nav item just changed, and if the
+    viewport is mobile-width, programmatically click Streamlit's own
+    native sidebar-collapse control (the same control a user would tap
+    themselves). Desktop is unaffected: the collapse click is only
+    attempted when window.innerWidth is at or below the same 768px
+    breakpoint used above, and this never touches desktop's own sidebar
+    state.
+
+    This relies on Streamlit's current internal DOM structure for the
+    collapse button (best-effort selectors, several are tried), which
+    is not part of Streamlit's public API and could require updating on
+    a future Streamlit version upgrade. It is written to fail silently:
+    if the collapse control can't be found, navigation still works
+    exactly as before, the sidebar just doesn't auto-close.
+
+    A previously-selected-label is tracked in the browser's own
+    sessionStorage (survives Streamlit's rerender, cleared when the tab
+    closes) so this only fires right after an actual navigation change -
+    never on first page load, before the user has tapped anything.
+    """
+    components.html(
+        """
+        <script>
+        (function() {
+            try {
+                var doc = window.parent.document;
+                var STORAGE_KEY = "easystock_last_nav_selection";
+
+                function getSelectedLabel() {
+                    var checked = doc.querySelector(
+                        '[data-testid="stSidebar"] [role="radiogroup"] input:checked'
+                    );
+                    if (!checked) return null;
+                    var label = checked.closest('label');
+                    return label ? label.innerText.trim() : null;
+                }
+
+                function collapseSidebarIfMobile() {
+                    if (window.parent.innerWidth > 768) return;
+                    var selectors = [
+                        '[data-testid="stSidebarCollapseButton"] button',
+                        '[data-testid="stSidebarCollapseButton"]',
+                        '[data-testid="stSidebar"] button[kind="header"]'
+                    ];
+                    for (var i = 0; i < selectors.length; i++) {
+                        var el = doc.querySelector(selectors[i]);
+                        if (el) { el.click(); break; }
+                    }
+                }
+
+                var current = getSelectedLabel();
+                var last = window.parent.sessionStorage.getItem(STORAGE_KEY);
+                if (current && last && current !== last) {
+                    collapseSidebarIfMobile();
+                }
+                if (current) {
+                    window.parent.sessionStorage.setItem(STORAGE_KEY, current);
+                }
+            } catch (e) {
+                // Fail silently - this is a best-effort mobile enhancement
+                // and must never break navigation if it can't run.
+            }
+        })();
+        </script>
+        """,
+        height=0,
+    )
 
 
 if is_logged_in():
