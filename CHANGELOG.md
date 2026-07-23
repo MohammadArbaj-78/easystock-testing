@@ -1137,3 +1137,31 @@ Running the real `pytest`/`AppTest` suite, and testing the `stores` table's Supa
 
 ### Next steps (not part of this phase)
 All three MVP-critical data-access surfaces (Products, Sales, Authentication/Store) are now dual-backend, sharing one switch. Still needed before any real cutover: create the `stores`, `sales_history` tables and the `reduce_product_stock` RPC function in an actual Supabase project, verify all three implementations against that real project (not the in-memory fakes used for verification so far), and decide a table-by-table migration or dual-write cutover strategy.
+
+## [2.10.0] - Supabase migration Phase 6: Invoice Save backend (no code changes - already dual-backend by reuse)
+
+### Scope
+No source file was modified this phase. Investigation confirmed the Invoice Review "Save Inventory" write path already fully supports both backends, as a consequence of Phase 2's Products Repository migration - there was nothing left to migrate.
+
+### Investigation
+Traced the write path from the "💾 Save Inventory" button backward: `modules/invoice_scan/review_ui.py` calls `modules/invoice_scan/review_service.py`'s `save_invoice_medicines(store_id)`, which iterates the reviewed medicine rows and calls `modules.products.service.add_product(store_id, form_data)` for each one - the exact same function Product Management's "Add Product" form already uses. `add_product` calls `modules.products.repository.create_product`, which has dispatched on the shared `ACTIVE_DB_BACKEND` (from `config/settings.py`) to a `_..._sqlite` or `_..._supabase` implementation since v2.6.0/v2.7.0.
+
+`grep` across the entire `modules/invoice_scan/` package (`review_service.py`, `review_ui.py`, `upload_service.py`, `upload_ui.py`, `ocr_service.py`) confirms zero direct database access anywhere in it - `ocr_service.py`'s own module docstring states "No database access. No writes of any kind," and `review_ui.py`'s states "No INSERT / UPDATE / commit." The module's only path to persistence is the single call to `add_product` inside `save_invoice_medicines`, already covered by the existing dual-backend Products Repository.
+
+This mirrors exactly why Dashboard and Low Stock Alerts never needed their own migration in earlier phases: they read through the same shared, already-migrated Products Repository rather than owning any SQL of their own. Invoice Save turned out to be the same case for writes.
+
+### Not changed
+Per the investigation above, none of the following needed modification, and none was touched: OCR extraction, the Gemini prompt, OCR parsing, the Review UI, the Products Repository, the Sales Repository, Dashboard, Alerts, Authentication, Product Management UI, Sales UI, `config/settings.py`, `core/supabase_client.py`.
+
+### Verification
+Since `pytest`/`streamlit`/`supabase`/`google.genai` remain unavailable in this working environment (no network access - both were stubbed, `streamlit` including a dict-backed `session_state` since `review_service.py` uses it directly for its editable medicine list):
+- **SQLite path:** a 3-row scenario (two valid medicines, one with a missing required name) was run through `initialise_review_session` → `save_invoice_medicines` with `ACTIVE_DB_BACKEND` unset (default `"sqlite"`) - result was `{"saved": 2, "skipped": [...]}` with the correct per-row validation error, and both saved medicines were immediately visible via `modules.products.service.search_products`, confirming product visibility after save.
+- **Supabase path, identical outcome:** the identical 3-row scenario was re-run with `ACTIVE_DB_BACKEND=supabase` and `streamlit`/`supabase` stubbed by an in-memory fake client (the same fake used to verify the Products Repository in v2.6.0) - produced the identical `{"saved": 2, "skipped": [...]}` result and identical post-save product visibility, confirming the invoice save flow correctly reaches the Supabase path with no code changes needed.
+- **`ACTIVE_DB_BACKEND` switching confirmed:** unset, `"supabase"`, and an unrecognized value (`"garbage"`) resolve to `"sqlite"`, `"supabase"`, and `"sqlite"` respectively, exactly as already verified for the Products Repository itself.
+- **Full regression:** a login → products → dashboard → alerts → sales scenario was re-run end to end through the unchanged default SQLite path and returned correct results, alongside the invoice-save-specific scenario above.
+- **Structural check:** `diff -rq` of the entire project tree against the pristine pre-Phase-2 zip shows exactly the same set of differing source files as v2.9.0 (`config/settings.py`, `core/auth.py`, `modules/products/repository.py`, `modules/sales/repository.py`) plus this release's documentation - confirming no new source file changed.
+
+Running the real `pytest`/`AppTest` suite, and testing the full invoice-upload-to-save flow against a real Supabase project (once the `stores`, `sales_history` tables and `reduce_product_stock` RPC function from earlier phases exist there), both remain recommended before `ACTIVE_DB_BACKEND` is ever set to `"supabase"` outside of testing.
+
+### Next steps (not part of this phase)
+Products, Sales, Authentication/Store, and (by reuse) Invoice Save are all now dual-backend-covered. No repository or write path in the application currently bypasses `ACTIVE_DB_BACKEND`. Remaining prerequisites for any real cutover are unchanged from v2.9.0's entry: create the `stores`, `sales_history` tables and the `reduce_product_stock` RPC function in an actual Supabase project, and verify every implementation against that real project.
