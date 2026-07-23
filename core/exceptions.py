@@ -75,3 +75,18 @@ class GeminiAPIError(EasyStockError):
     directly in the UI via st.error().
     """
     pass
+
+
+class SupabaseConfigError(EasyStockError):
+    """Raised when Supabase configuration (SUPABASE_URL / SUPABASE_KEY)
+    is missing or blank in Streamlit secrets.
+
+    Phase 1 infrastructure only (core/supabase_client.py) - this is not
+    yet raised anywhere in the active application, since nothing calls
+    into the Supabase client yet. SQLite remains the active database.
+    Raised instead of silently returning None/a broken client, matching
+    every other exception in this file: a missing configuration value
+    must be an explicit, catchable failure, never a value that could be
+    mistaken for a working connection.
+    """
+    pass

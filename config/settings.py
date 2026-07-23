@@ -108,5 +108,28 @@ GEMINI_TIMEOUT_SECONDS = 30
 # needs to reference session_state directly.
 SESSION_STATE_KEY = "easystock_session"
 
+# --- Database backend selection (SQLite -> Supabase migration, Phase 3) ---
+# The single, one-place switch for which backend a dual-backend
+# repository (currently only modules/products/repository.py, see its
+# Phase 2 dual-backend implementations) actually uses. Read once, here,
+# from the ACTIVE_DB_BACKEND environment variable - not from Streamlit
+# secrets, so this file (and anything that imports only this constant)
+# stays importable without the `streamlit` package installed.
+#
+# Fails safe: any value other than exactly "supabase" (case-insensitive,
+# whitespace-trimmed) resolves to "sqlite", so an unset, misspelled, or
+# blank environment variable can never accidentally activate the
+# Supabase path - the deployed application keeps behaving exactly as it
+# does today unless this variable is deliberately set to "supabase".
+# No other file defines or re-derives this value; a dual-backend
+# repository imports ACTIVE_DB_BACKEND from here rather than defining
+# its own backend constant - see AI_RULES.md's "Multi-Backend
+# Repository Rules."
+ACTIVE_DB_BACKEND = (
+    "supabase"
+    if os.environ.get("ACTIVE_DB_BACKEND", "sqlite").strip().lower() == "supabase"
+    else "sqlite"
+)
+
 # --- App metadata ---
 APP_NAME = "EasyStock"

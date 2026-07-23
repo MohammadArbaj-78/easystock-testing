@@ -11,6 +11,31 @@ All functions here either return a meaningful success value or raise a
 specific exception from core.exceptions. Nothing in this module returns
 None/False to signal failure, so calling code is never left guessing
 whether a falsy return means "invalid" or "not yet checked".
+
+--- Phase 5 (Supabase migration): dual-backend persistence, SQLite still active ---
+signup() and login() are unchanged: validation, password hashing/
+verification, and the DuplicateMobileError/InvalidCredentialsError
+business logic all still live here exactly as before this phase. Only
+the raw persistence step each function calls - inserting a store row,
+fetching a store row by mobile number - is now dual-backend, following
+the same pattern as modules/products/repository.py and
+modules/sales/repository.py: a private dispatcher (_insert_store,
+_fetch_store_by_mobile) reads ACTIVE_DB_BACKEND from config/settings.py
+(the single, one-place switch - not redefined here) and delegates to a
+_..._sqlite (the pre-existing logic, unchanged) or _..._supabase (new,
+inert) implementation. The Supabase implementation uses the shared
+client from core.supabase_client (imported lazily, so importing this
+module - or running the SQLite path - never requires the
+`supabase`/`streamlit` packages to be installed) and is not reachable
+unless ACTIVE_DB_BACKEND is explicitly set to "supabase". See
+AI_RULES.md's "Multi-Backend Repository Rules".
+
+The Supabase insert path translates a Postgres unique-constraint
+violation on mobile_number into the same DatabaseError("UNIQUE
+constraint failed...") shape signup() already checks for from SQLite,
+so the actual business decision - that a unique-constraint failure
+means "this mobile number is already registered" - still lives in
+exactly one place (signup(), below), not duplicated per backend.
 """
 
 import bcrypt
@@ -18,6 +43,7 @@ import bcrypt
 from core.database import get_connection
 from core.exceptions import DuplicateMobileError, InvalidCredentialsError, DatabaseError
 from utils.validators import validate_mobile_number, validate_password, validate_required_text
+from config.settings import ACTIVE_DB_BACKEND
 
 
 def _hash_password(plain_password: str) -> str:
@@ -85,21 +111,19 @@ def signup(store_name: str, owner_name: str, mobile_number: str, password: str) 
     password_hash = _hash_password(password)
 
     try:
-        with get_connection() as connection:
-            cursor = connection.execute(
-                """
-                INSERT INTO stores (store_name, owner_name, mobile_number, password_hash)
-                VALUES (?, ?, ?, ?)
-                """,
-                (clean_store_name, clean_owner_name, clean_mobile_number, password_hash),
-            )
-            return cursor.lastrowid
+        return _insert_store(clean_store_name, clean_owner_name, clean_mobile_number, password_hash)
     except DatabaseError as error:
         # sqlite3.IntegrityError (wrapped as DatabaseError by get_connection)
         # is raised when the UNIQUE constraint on mobile_number is violated.
-        # Checking the message is a pragmatic MVP approach; if this needs
-        # to be more robust later, get_connection could be extended to
-        # preserve the original sqlite3 exception type for inspection.
+        # The Supabase insert path (_insert_store_supabase) wraps a Postgres
+        # unique-violation into the same DatabaseError("UNIQUE constraint
+        # failed...") shape, so this check - the actual business decision
+        # that this means "already registered" - applies identically
+        # regardless of which backend persisted (or failed to persist)
+        # the row. Checking the message is a pragmatic MVP approach; if
+        # this needs to be more robust later, get_connection could be
+        # extended to preserve the original sqlite3 exception type for
+        # inspection.
         if "UNIQUE constraint failed" in str(error):
             raise DuplicateMobileError(
                 "This mobile number is already registered. Please login instead."
@@ -131,15 +155,7 @@ def login(mobile_number: str, password: str) -> dict:
     """
     clean_mobile_number = validate_mobile_number(mobile_number)
 
-    with get_connection() as connection:
-        row = connection.execute(
-            """
-            SELECT store_id, store_name, owner_name, password_hash
-            FROM stores
-            WHERE mobile_number = ?
-            """,
-            (clean_mobile_number,),
-        ).fetchone()
+    row = _fetch_store_by_mobile(clean_mobile_number)
 
     if row is None or not _verify_password(password, row["password_hash"]):
         raise InvalidCredentialsError("Invalid mobile number or password.")
@@ -149,3 +165,134 @@ def login(mobile_number: str, password: str) -> dict:
         "store_name": row["store_name"],
         "owner_name": row["owner_name"],
     }
+
+
+# =====================================================================
+# Private persistence dispatchers
+#
+# signup() and login() call only these two functions for raw storage
+# access. Every other line in signup()/login() above is business logic
+# (validation, hashing, exception interpretation) and is unaffected by
+# which backend is active - exactly the same separation
+# modules/products/repository.py and modules/sales/repository.py use.
+# =====================================================================
+
+
+def _insert_store(store_name: str, owner_name: str, mobile_number: str, password_hash: str) -> int:
+    """Insert a new store row and return its store_id.
+
+    Raises:
+        DatabaseError: If the insert fails, including a unique-constraint
+            violation on mobile_number (see signup()'s docstring for how
+            that specific case is turned into DuplicateMobileError one
+            layer up, identically regardless of backend).
+    """
+    if ACTIVE_DB_BACKEND == "supabase":
+        return _insert_store_supabase(store_name, owner_name, mobile_number, password_hash)
+    return _insert_store_sqlite(store_name, owner_name, mobile_number, password_hash)
+
+
+def _fetch_store_by_mobile(mobile_number: str):
+    """Fetch a store row by mobile number.
+
+    Returns:
+        A dict with keys store_id, store_name, owner_name, password_hash,
+        or None if no store is registered under this mobile number.
+    """
+    if ACTIVE_DB_BACKEND == "supabase":
+        return _fetch_store_by_mobile_supabase(mobile_number)
+    return _fetch_store_by_mobile_sqlite(mobile_number)
+
+
+# =====================================================================
+# SQLite implementations (active backend)
+# =====================================================================
+
+
+def _insert_store_sqlite(store_name: str, owner_name: str, mobile_number: str, password_hash: str) -> int:
+    with get_connection() as connection:
+        cursor = connection.execute(
+            """
+            INSERT INTO stores (store_name, owner_name, mobile_number, password_hash)
+            VALUES (?, ?, ?, ?)
+            """,
+            (store_name, owner_name, mobile_number, password_hash),
+        )
+        return cursor.lastrowid
+
+
+def _fetch_store_by_mobile_sqlite(mobile_number: str):
+    with get_connection() as connection:
+        row = connection.execute(
+            """
+            SELECT store_id, store_name, owner_name, password_hash
+            FROM stores
+            WHERE mobile_number = ?
+            """,
+            (mobile_number,),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+# =====================================================================
+# Supabase implementations (Phase 5 - prepared, not yet active)
+#
+# Not imported, called, or exercised by any code path outside this file
+# while ACTIVE_DB_BACKEND == "sqlite". Every store row is looked up or
+# created scoped to this table's own store_id/mobile_number - there is
+# no cross-store concept for the stores table itself (a store owns
+# itself; store_id-scoping other tables to a given store is what every
+# other repository already enforces).
+# =====================================================================
+
+
+def _auth_stores_table():
+    """Return the Supabase 'stores' table query builder.
+
+    Lazily imports core.supabase_client (which itself lazily creates
+    the client) so this module stays importable, and its SQLite path
+    fully usable, without the `supabase`/`streamlit` packages installed.
+    This import only ever executes if ACTIVE_DB_BACKEND is "supabase".
+    """
+    from core.supabase_client import get_supabase_client
+    return get_supabase_client().table("stores")
+
+
+def _insert_store_supabase(store_name: str, owner_name: str, mobile_number: str, password_hash: str) -> int:
+    payload = {
+        "store_name": store_name,
+        "owner_name": owner_name,
+        "mobile_number": mobile_number,
+        "password_hash": password_hash,
+    }
+    try:
+        response = _auth_stores_table().insert(payload).execute()
+    except Exception as error:
+        # supabase-py/postgrest raises its own exception type (not
+        # sqlite3.IntegrityError) for a Postgres unique-violation
+        # (error code 23505) on mobile_number. Re-wrapped here as the
+        # same DatabaseError("UNIQUE constraint failed...") shape the
+        # SQLite path produces via get_connection, so signup()'s single
+        # check for that string - the actual business decision that
+        # this means "already registered" - is not duplicated per
+        # backend. Any other Supabase/network failure is wrapped as a
+        # plain DatabaseError, exactly as get_connection wraps any
+        # other sqlite3 failure.
+        message = str(error)
+        if "23505" in message or "duplicate key value" in message.lower():
+            raise DatabaseError(
+                "UNIQUE constraint failed: stores.mobile_number"
+            ) from error
+        raise DatabaseError(f"Supabase insert into stores failed: {message}") from error
+    return response.data[0]["store_id"]
+
+
+def _fetch_store_by_mobile_supabase(mobile_number: str):
+    response = (
+        _auth_stores_table()
+        .select("store_id, store_name, owner_name, password_hash")
+        .eq("mobile_number", mobile_number)
+        .execute()
+    )
+    rows = response.data
+    return dict(rows[0]) if rows else None

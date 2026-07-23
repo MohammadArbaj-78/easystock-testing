@@ -58,6 +58,14 @@
 - When a write's correctness depends on a condition that could change concurrently (e.g. "enough stock remains"), the condition check and the write must happen in the same atomic SQL statement (e.g. `UPDATE ... WHERE quantity >= ?`), never as a separate read-then-check-then-write in the service layer — a service-layer pre-check alone is race-vulnerable; the atomic write in the repository is the actual guard.
 - A table meant to be append-only (e.g. an audit/history table) must have no update or delete function defined anywhere in its repository file — enforce "never mutated" by omission, not by convention or a comment. Adding a mutation path later requires a new, visible function, not an edit to something already there.
 
+## Multi-Backend Repository Rules
+
+- A repository file supporting more than one database backend (e.g. SQLite and Supabase during the migration) keeps every public function's name, parameters, return value, and exceptions identical across backends. Backend selection is a single constant defined in exactly one place — `config/settings.py`'s `ACTIVE_DB_BACKEND` (sourced from an environment variable, failing safe to `"sqlite"` for any unset/unrecognized value) — imported and read by any dual-backend repository, never redefined, re-derived, or overridden locally. It is never a parameter callers pass, and never exposed outside the repository file it's read into.
+- Only one backend is "active" at a time; the inactive backend's implementation must be fully written and directly testable (with the active backend's package(s) mocked, matching this project's existing no-network testing convention), but must not be reachable from any code path outside the repository file while inactive.
+- A backend's own package (e.g. `supabase`, `streamlit`'s `st.secrets`) is imported lazily, inside the functions that actually use it — never at module level — so the repository file (and the active backend) stays importable and testable without the inactive backend's packages installed.
+- Backend-agnostic data-shaping logic that more than one backend's implementation needs (e.g. Python-side filtering because the stored value can't be compared with SQL/PostgREST operators) is written once as a shared private helper and called by both backends' implementations — never duplicated per backend.
+- When a write's correctness depends on a condition that could change concurrently (see the atomic-write rule under Repository Rules above), the non-SQL backend's equivalent must be a single atomic server-side operation (e.g. a Postgres RPC function performing the same guarded update) — never a client-side read-current-value-then-write, which reintroduces the exact race the atomic SQL statement exists to prevent.
+
 ## Service Rules
 
 - Service never imports Streamlit and never contains raw SQL.
