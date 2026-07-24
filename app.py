@@ -23,7 +23,11 @@ from core.session import (
     start_session,
     end_session,
     get_saved_session_token,
+    save_persistent_session,
+    pop_persistent_session_token,
     clear_persistent_session,
+    queue_persistent_session_clear,
+    pop_persistent_session_clear,
 )
 from core.login_ui import render_login_signup_screen
 from modules.dashboard.ui import render_dashboard
@@ -62,6 +66,8 @@ def render_main_app() -> None:
     """Render the main app shell for a logged-in store: sidebar
     navigation plus whichever module page is currently selected.
     """
+    _write_pending_persistent_session_cookie()
+
     with st.sidebar:
         st.markdown(f"### {get_current_store_name()}")
         st.caption(f"Owner: {get_current_owner_name()}")
@@ -70,7 +76,7 @@ def render_main_app() -> None:
         st.divider()
         if st.button("Logout", use_container_width=True):
             end_session()
-            clear_persistent_session()
+            queue_persistent_session_clear()
             st.rerun()
 
         _render_mobile_sidebar_css()
@@ -183,6 +189,20 @@ def _render_mobile_sidebar_autoclose() -> None:
     )
 
 
+def _write_pending_persistent_session_cookie() -> None:
+    """Write a "Remember Session" cookie queued by a just-completed
+    login/signup (core.login_ui's queue_persistent_session_token), if
+    any. Called once at the top of render_main_app(), deliberately NOT
+    from the login/signup form handlers themselves - see
+    core.session.queue_persistent_session_token's docstring for why
+    writing it there raced st.rerun() and silently failed in real
+    browser usage.
+    """
+    pending_token = pop_persistent_session_token()
+    if pending_token:
+        save_persistent_session(pending_token)
+
+
 def _restore_persistent_session_if_any() -> None:
     """If no session is active yet, try to restore one from a saved
     "Remember Session" cookie (Persistent Login) before deciding which
@@ -205,9 +225,19 @@ def _restore_persistent_session_if_any() -> None:
     )
 
 
-_restore_persistent_session_if_any()
+_just_logged_out = pop_persistent_session_clear()
+
+if not _just_logged_out:
+    # Only attempt to restore from a saved cookie when this render is
+    # NOT the one immediately following a Logout click - otherwise the
+    # cookie (not cleared until the branch below runs) would still be
+    # sitting there and silently log the store back in, defeating the
+    # logout that was just requested.
+    _restore_persistent_session_if_any()
 
 if is_logged_in():
     render_main_app()
 else:
+    if _just_logged_out:
+        clear_persistent_session()
     render_login_signup_screen()
