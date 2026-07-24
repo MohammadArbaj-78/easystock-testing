@@ -2,10 +2,12 @@
 EasyStock - main application entry point.
 
 This file's only responsibility is routing: initialize the database once,
-check whether a store is logged in, and show either the login/signup
-screen or the main app shell. It deliberately contains no business logic
-and no direct database access - if this file starts growing beyond
-routing, that's a sign logic is leaking into the wrong layer.
+check whether a store is logged in (including restoring one from a saved
+Persistent Login cookie, if any - see _restore_persistent_session_if_any),
+and show either the login/signup screen or the main app shell. It
+deliberately contains no business logic and no direct database access -
+if this file starts growing beyond routing, that's a sign logic is
+leaking into the wrong layer.
 """
 
 import streamlit as st
@@ -13,7 +15,16 @@ import streamlit.components.v1 as components
 
 from config.settings import APP_NAME
 from core.database import initialize_database
-from core.session import is_logged_in, get_current_store_name, get_current_owner_name, end_session
+from core.auth import validate_session_token
+from core.session import (
+    is_logged_in,
+    get_current_store_name,
+    get_current_owner_name,
+    start_session,
+    end_session,
+    get_saved_session_token,
+    clear_persistent_session,
+)
 from core.login_ui import render_login_signup_screen
 from modules.dashboard.ui import render_dashboard
 from modules.products.ui import render_products_page
@@ -59,6 +70,7 @@ def render_main_app() -> None:
         st.divider()
         if st.button("Logout", use_container_width=True):
             end_session()
+            clear_persistent_session()
             st.rerun()
 
         _render_mobile_sidebar_css()
@@ -170,6 +182,30 @@ def _render_mobile_sidebar_autoclose() -> None:
         height=0,
     )
 
+
+def _restore_persistent_session_if_any() -> None:
+    """If no session is active yet, try to restore one from a saved
+    "Remember Session" cookie (Persistent Login) before deciding which
+    screen to show. Never shows an error and never blocks rendering - a
+    missing, expired, or invalid saved cookie just means "show the
+    normal login screen", exactly as if the feature didn't exist.
+    """
+    if is_logged_in():
+        return
+    saved_token = get_saved_session_token()
+    if not saved_token:
+        return
+    restored = validate_session_token(saved_token)
+    if restored is None:
+        return
+    start_session(
+        store_id=restored["store_id"],
+        store_name=restored["store_name"],
+        owner_name=restored["owner_name"],
+    )
+
+
+_restore_persistent_session_if_any()
 
 if is_logged_in():
     render_main_app()

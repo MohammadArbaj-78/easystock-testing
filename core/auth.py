@@ -36,14 +36,30 @@ constraint failed...") shape signup() already checks for from SQLite,
 so the actual business decision - that a unique-constraint failure
 means "this mobile number is already registered" - still lives in
 exactly one place (signup(), below), not duplicated per backend.
+
+--- Persistent Login (Remember Session) ---
+create_session_token()/validate_session_token() implement "stay logged
+in until you explicitly log out" without a JWT library, without
+Supabase Auth, and without any database schema change: a compact
+"store_id.expiry.signature" token, HMAC-signed using the store's own
+already-stored password_hash as the key (so no new secret needs to be
+generated or kept in sync anywhere), verified by re-deriving the same
+signature from that store's current password_hash via _fetch_store_by_id
+- itself dual-backend, following _fetch_store_by_mobile's exact pattern.
+No password or password hash ever leaves this module in the token
+itself. The token's storage/retrieval (a browser cookie) is
+core.session's responsibility, not this module's - see that file.
 """
 
 import bcrypt
+import hashlib
+import hmac
+import time
 
 from core.database import get_connection
 from core.exceptions import DuplicateMobileError, InvalidCredentialsError, DatabaseError
 from utils.validators import validate_mobile_number, validate_password, validate_required_text
-from config.settings import ACTIVE_DB_BACKEND
+from config.settings import ACTIVE_DB_BACKEND, SESSION_TOKEN_VALIDITY_DAYS
 
 
 def _hash_password(plain_password: str) -> str:
@@ -167,8 +183,111 @@ def login(mobile_number: str, password: str) -> dict:
     }
 
 
-# =====================================================================
-# Private persistence dispatchers
+def create_session_token(store_id: int) -> str:
+    """Create an opaque, signed token that can later restore this
+    store's session without re-entering a password (Persistent Login /
+    "Remember Session").
+
+    Called once, right after a successful login() or signup(), by
+    core.session.save_persistent_session - never independently, since
+    it trusts store_id is already an authenticated identity.
+
+    Design: a compact "store_id.expiry.signature" string - not a JWT
+    (no header/claims JSON, no library, no standard to opt into) and not
+    a new database-backed session table (no schema change). The HMAC key
+    is the store's own bcrypt password_hash, already stored and already
+    fetched by every login - so no new secret needs to be generated,
+    configured, or kept in sync across processes/deployments, and the
+    token is unique per store. Verification (validate_session_token,
+    below) re-derives the same signature from the store's current
+    password_hash, so it works identically regardless of which backend
+    (SQLite or Supabase) actually holds that row.
+
+    Args:
+        store_id: The just-authenticated store's primary key.
+
+    Returns:
+        The signed token string, meant to be handed to
+        core.session.save_persistent_session for storage in a browser
+        cookie. Contains no password or password hash - only store_id,
+        an expiry timestamp, and an HMAC-SHA256 signature (irreversible;
+        the password_hash used to create it cannot be recovered from it).
+
+    Raises:
+        DatabaseError: If store_id does not correspond to any store.
+            Should not happen in normal use (this is only ever called
+            immediately after that same store_id was just verified by
+            login()/signup()); defensive, not a normal-flow outcome.
+    """
+    row = _fetch_store_by_id(store_id)
+    if row is None:
+        raise DatabaseError(
+            f"create_session_token: no store found for store_id={store_id}."
+        )
+    expiry = int(time.time()) + SESSION_TOKEN_VALIDITY_DAYS * 86400
+    signature = _sign_session_token(store_id, expiry, row["password_hash"])
+    return f"{store_id}.{expiry}.{signature}"
+
+
+def validate_session_token(token: str) -> dict | None:
+    """Validate a token produced by create_session_token and, if valid,
+    return the session data needed to restore that store's session.
+
+    Called once per fresh app load (core.session.get_saved_session_token
+    -> here) before any login screen is shown, to implement "close the
+    browser, reopen the app, and land straight on the Dashboard". Must
+    never raise on malformed, tampered, or expired input - a saved
+    cookie is untrusted input arriving before any authentication has
+    happened, so any problem with it must fail closed (fall back to the
+    normal login screen), never crash app startup.
+
+    Args:
+        token: The token string as read from the saved browser cookie
+            (core.session.get_saved_session_token).
+
+    Returns:
+        A dict with keys "store_id", "store_name", "owner_name" - the
+        same shape login() returns - if the token is well-formed,
+        unexpired, and its signature matches the store's current
+        password_hash. None otherwise (malformed token, expired,
+        store no longer exists, or signature mismatch/tampering) -
+        deliberately not an exception, since an invalid saved session is
+        an ordinary, expected outcome (e.g. the store logged out on
+        another device, or the cookie is simply old), not a failure the
+        caller needs to handle specially.
+    """
+    try:
+        store_id_str, expiry_str, signature = token.split(".", 2)
+        store_id = int(store_id_str)
+        expiry = int(expiry_str)
+    except (ValueError, AttributeError):
+        return None
+
+    if time.time() > expiry:
+        return None
+
+    row = _fetch_store_by_id(store_id)
+    if row is None:
+        return None
+
+    expected_signature = _sign_session_token(store_id, expiry, row["password_hash"])
+    if not hmac.compare_digest(signature, expected_signature):
+        return None
+
+    return {
+        "store_id": row["store_id"],
+        "store_name": row["store_name"],
+        "owner_name": row["owner_name"],
+    }
+
+
+def _sign_session_token(store_id: int, expiry: int, password_hash: str) -> str:
+    """Compute the HMAC-SHA256 signature shared by create_session_token
+    and validate_session_token, so the two can never drift apart.
+    """
+    message = f"{store_id}.{expiry}".encode("utf-8")
+    key = password_hash.encode("utf-8")
+    return hmac.new(key, message, hashlib.sha256).hexdigest()
 #
 # signup() and login() call only these two functions for raw storage
 # access. Every other line in signup()/login() above is business logic
@@ -204,6 +323,22 @@ def _fetch_store_by_mobile(mobile_number: str):
     return _fetch_store_by_mobile_sqlite(mobile_number)
 
 
+def _fetch_store_by_id(store_id: int):
+    """Fetch a store row by primary key.
+
+    Used only by create_session_token/validate_session_token (Persistent
+    Login) - signup()/login() themselves only ever look a store up by
+    mobile_number, via _fetch_store_by_mobile above.
+
+    Returns:
+        A dict with keys store_id, store_name, owner_name, password_hash,
+        or None if no store exists with this store_id.
+    """
+    if ACTIVE_DB_BACKEND == "supabase":
+        return _fetch_store_by_id_supabase(store_id)
+    return _fetch_store_by_id_sqlite(store_id)
+
+
 # =====================================================================
 # SQLite implementations (active backend)
 # =====================================================================
@@ -230,6 +365,19 @@ def _fetch_store_by_mobile_sqlite(mobile_number: str):
             WHERE mobile_number = ?
             """,
             (mobile_number,),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def _fetch_store_by_id_sqlite(store_id: int):
+    with get_connection() as connection:
+        row = connection.execute(
+            """
+            SELECT store_id, store_name, owner_name, password_hash
+            FROM stores
+            WHERE store_id = ?
+            """,
+            (store_id,),
         ).fetchone()
         return dict(row) if row else None
 
@@ -292,6 +440,17 @@ def _fetch_store_by_mobile_supabase(mobile_number: str):
         _auth_stores_table()
         .select("store_id, store_name, owner_name, password_hash")
         .eq("mobile_number", mobile_number)
+        .execute()
+    )
+    rows = response.data
+    return dict(rows[0]) if rows else None
+
+
+def _fetch_store_by_id_supabase(store_id: int):
+    response = (
+        _auth_stores_table()
+        .select("store_id, store_name, owner_name, password_hash")
+        .eq("store_id", store_id)
         .execute()
     )
     rows = response.data

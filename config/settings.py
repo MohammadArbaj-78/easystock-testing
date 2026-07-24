@@ -108,6 +108,24 @@ GEMINI_TIMEOUT_SECONDS = 30
 # needs to reference session_state directly.
 SESSION_STATE_KEY = "easystock_session"
 
+# --- Persistent login (Remember Session) ---
+# How long a saved "remember me" browser cookie stays valid, in days.
+# The feature's requirement is "stay logged in until the user explicitly
+# logs out" - this is a long, generous ceiling rather than a short
+# sliding expiry, since the intent is indefinite persistence for
+# ordinary usage. It is still finite (not truly unbounded) because the
+# saved credential is a bearer token with no server-side revocation list
+# (see core/auth.py's create_session_token/validate_session_token) - an
+# unbounded one would keep working forever even if the cookie were ever
+# copied off the device, for no practical benefit at normal timescales.
+SESSION_TOKEN_VALIDITY_DAYS = 365
+
+# Name of the browser cookie the persistent session-restore token is
+# stored under. Defined once here; read by core/session.py (which
+# writes/clears it) and app.py (which reads it at startup via
+# st.context.cookies).
+SESSION_COOKIE_NAME = "easystock_session_token"
+
 # --- Database backend selection (SQLite -> Supabase migration, Phase 3) ---
 # The single, one-place switch for which backend a dual-backend
 # repository (currently only modules/products/repository.py, see its
