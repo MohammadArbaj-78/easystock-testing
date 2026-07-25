@@ -24,7 +24,8 @@ from core.session import (
     end_session,
     get_saved_session_token,
     save_persistent_session,
-    pop_persistent_session_token,
+    get_persistent_session_token,
+    queue_persistent_session_token,
     clear_persistent_session,
     queue_persistent_session_clear,
     pop_persistent_session_clear,
@@ -66,8 +67,6 @@ def render_main_app() -> None:
     """Render the main app shell for a logged-in store: sidebar
     navigation plus whichever module page is currently selected.
     """
-    _write_pending_persistent_session_cookie()
-
     with st.sidebar:
         st.markdown(f"### {get_current_store_name()}")
         st.caption(f"Owner: {get_current_owner_name()}")
@@ -189,18 +188,24 @@ def _render_mobile_sidebar_autoclose() -> None:
     )
 
 
-def _write_pending_persistent_session_cookie() -> None:
-    """Write a "Remember Session" cookie queued by a just-completed
-    login/signup (core.login_ui's queue_persistent_session_token), if
-    any. Called once at the top of render_main_app(), deliberately NOT
-    from the login/signup form handlers themselves - see
-    core.session.queue_persistent_session_token's docstring for why
-    writing it there raced st.rerun() and silently failed in real
-    browser usage.
+def _sync_persistent_session_cookie() -> None:
+    """Keep the browser's "Remember Session" cookie in sync with the
+    current session on every single render - not just once, right after
+    login. See core.session.get_persistent_session_token's docstring for
+    why a single fire-and-forget attempt is not reliably enough:
+    real-world propagation of a components.html()-injected cookie
+    write/clear is a documented, unresolved Streamlit limitation, so
+    this repeats the same idempotent action every render instead,
+    turning one low-probability opportunity into many. Called once,
+    unconditionally, at the very end of this file's routing, after the
+    screen for this render has already been decided.
     """
-    pending_token = pop_persistent_session_token()
-    if pending_token:
-        save_persistent_session(pending_token)
+    if is_logged_in():
+        token = get_persistent_session_token()
+        if token:
+            save_persistent_session(token)
+    else:
+        clear_persistent_session()
 
 
 def _restore_persistent_session_if_any() -> None:
@@ -210,34 +215,57 @@ def _restore_persistent_session_if_any() -> None:
     missing, expired, or invalid saved cookie just means "show the
     normal login screen", exactly as if the feature didn't exist.
     """
+    print("[PERSISTENT_LOGIN_DEBUG] _restore_persistent_session_if_any: entered")
     if is_logged_in():
+        print("[PERSISTENT_LOGIN_DEBUG] _restore_persistent_session_if_any: exiting early - already logged in")
         return
     saved_token = get_saved_session_token()
+    print(f"[PERSISTENT_LOGIN_DEBUG] _restore_persistent_session_if_any: saved_token received = {'<token present>' if saved_token else 'None'}")
     if not saved_token:
+        print("[PERSISTENT_LOGIN_DEBUG] _restore_persistent_session_if_any: exiting early - no saved token")
         return
     restored = validate_session_token(saved_token)
+    print(f"[PERSISTENT_LOGIN_DEBUG] _restore_persistent_session_if_any: validate_session_token output = {restored}")
     if restored is None:
+        print("[PERSISTENT_LOGIN_DEBUG] _restore_persistent_session_if_any: exiting early - token invalid (see validate_session_token logs above for exact reason)")
         return
     start_session(
         store_id=restored["store_id"],
         store_name=restored["store_name"],
         owner_name=restored["owner_name"],
     )
+    print("[PERSISTENT_LOGIN_DEBUG] _restore_persistent_session_if_any: start_session() called = YES")
+    # Keep this (restored) session's token available so
+    # _sync_persistent_session_cookie keeps re-asserting/refreshing the
+    # cookie on this session's later renders too, not just on a fresh
+    # login - the same reliability reasoning applies equally here.
+    queue_persistent_session_token(saved_token)
+    print("[PERSISTENT_LOGIN_DEBUG] _restore_persistent_session_if_any: exiting - restore completed successfully")
 
+
+print("[PERSISTENT_LOGIN_DEBUG] === app.py routing: entered ===")
 
 _just_logged_out = pop_persistent_session_clear()
+print(f"[PERSISTENT_LOGIN_DEBUG] app.py routing: _just_logged_out = {_just_logged_out}")
 
 if not _just_logged_out:
     # Only attempt to restore from a saved cookie when this render is
     # NOT the one immediately following a Logout click - otherwise the
-    # cookie (not cleared until the branch below runs) would still be
-    # sitting there and silently log the store back in, defeating the
-    # logout that was just requested.
+    # cookie (not yet cleared from this session's point of view) would
+    # still be sitting there and silently log the store back in,
+    # defeating the logout that was just requested.
     _restore_persistent_session_if_any()
+else:
+    print("[PERSISTENT_LOGIN_DEBUG] app.py routing: skipped _restore_persistent_session_if_any() because _just_logged_out is True")
+
+print(f"[PERSISTENT_LOGIN_DEBUG] app.py routing: session_state immediately before routing = {dict(st.session_state)}")
+print(f"[PERSISTENT_LOGIN_DEBUG] app.py routing: is_logged_in() result = {is_logged_in()}")
 
 if is_logged_in():
+    print("[PERSISTENT_LOGIN_DEBUG] app.py routing: screen rendered = MAIN APP (Dashboard)")
     render_main_app()
 else:
-    if _just_logged_out:
-        clear_persistent_session()
+    print("[PERSISTENT_LOGIN_DEBUG] app.py routing: screen rendered = LOGIN/SIGNUP")
     render_login_signup_screen()
+
+_sync_persistent_session_cookie()

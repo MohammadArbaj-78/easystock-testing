@@ -256,29 +256,47 @@ def validate_session_token(token: str) -> dict | None:
         another device, or the cookie is simply old), not a failure the
         caller needs to handle specially.
     """
+    print(f"[PERSISTENT_LOGIN_DEBUG] validate_session_token: entered - input token (first 15 chars) = {token[:15] if token else token!r}")
+
     try:
         store_id_str, expiry_str, signature = token.split(".", 2)
         store_id = int(store_id_str)
         expiry = int(expiry_str)
     except (ValueError, AttributeError):
+        print("[PERSISTENT_LOGIN_DEBUG] validate_session_token: output returned = None - reason: malformed token (could not parse store_id.expiry.signature)")
         return None
 
-    if time.time() > expiry:
+    now = time.time()
+    print(f"[PERSISTENT_LOGIN_DEBUG] validate_session_token: store_id extracted = {store_id}")
+    print(f"[PERSISTENT_LOGIN_DEBUG] validate_session_token: expiry extracted = {expiry}")
+    print(f"[PERSISTENT_LOGIN_DEBUG] validate_session_token: current timestamp = {now}")
+    print(f"[PERSISTENT_LOGIN_DEBUG] validate_session_token: expiry comparison - now > expiry ? {now > expiry} (now={now}, expiry={expiry}, diff={expiry - now})")
+
+    if now > expiry:
+        print("[PERSISTENT_LOGIN_DEBUG] validate_session_token: output returned = None - reason: token expired")
         return None
 
     row = _fetch_store_by_id(store_id)
+    print(f"[PERSISTENT_LOGIN_DEBUG] validate_session_token: _fetch_store_by_id({store_id}) result = {row}")
+    print(f"[PERSISTENT_LOGIN_DEBUG] validate_session_token: store found? {'YES' if row is not None else 'NO'}")
     if row is None:
+        print(f"[PERSISTENT_LOGIN_DEBUG] validate_session_token: output returned = None - reason: no store found for store_id={store_id}")
         return None
 
     expected_signature = _sign_session_token(store_id, expiry, row["password_hash"])
-    if not hmac.compare_digest(signature, expected_signature):
+    signature_match = hmac.compare_digest(signature, expected_signature)
+    print(f"[PERSISTENT_LOGIN_DEBUG] validate_session_token: signature validation = {'PASS' if signature_match else 'FAIL'}")
+    if not signature_match:
+        print(f"[PERSISTENT_LOGIN_DEBUG] validate_session_token: output returned = None - reason: signature mismatch (store_id={store_id})")
         return None
 
-    return {
+    result = {
         "store_id": row["store_id"],
         "store_name": row["store_name"],
         "owner_name": row["owner_name"],
     }
+    print(f"[PERSISTENT_LOGIN_DEBUG] validate_session_token: output returned = {result}")
+    return result
 
 
 def _sign_session_token(store_id: int, expiry: int, password_hash: str) -> str:
@@ -334,9 +352,13 @@ def _fetch_store_by_id(store_id: int):
         A dict with keys store_id, store_name, owner_name, password_hash,
         or None if no store exists with this store_id.
     """
+    print(f"[PERSISTENT_LOGIN_DEBUG] _fetch_store_by_id: entered - input store_id={store_id}, ACTIVE_DB_BACKEND={ACTIVE_DB_BACKEND!r}")
     if ACTIVE_DB_BACKEND == "supabase":
-        return _fetch_store_by_id_supabase(store_id)
-    return _fetch_store_by_id_sqlite(store_id)
+        result = _fetch_store_by_id_supabase(store_id)
+    else:
+        result = _fetch_store_by_id_sqlite(store_id)
+    print(f"[PERSISTENT_LOGIN_DEBUG] _fetch_store_by_id: output returned = {result}")
+    return result
 
 
 # =====================================================================
@@ -454,4 +476,5 @@ def _fetch_store_by_id_supabase(store_id: int):
         .execute()
     )
     rows = response.data
+    print(f"[PERSISTENT_LOGIN_DEBUG] _fetch_store_by_id_supabase: raw Supabase response.data = {rows}")
     return dict(rows[0]) if rows else None
