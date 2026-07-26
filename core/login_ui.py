@@ -14,8 +14,8 @@ with the project's separation between UI and logic.
 
 import streamlit as st
 
-from core.auth import signup, login, create_session_token
-from core.session import start_session, queue_persistent_session_token
+from core.auth import signup, login
+from core.session import start_session
 from core.exceptions import ValidationError, DuplicateMobileError, InvalidCredentialsError
 from config.settings import APP_NAME
 
@@ -60,7 +60,6 @@ def _render_login_form() -> None:
             store_name=store["store_name"],
             owner_name=store["owner_name"],
         )
-        queue_persistent_session_token(create_session_token(store["store_id"]))
         st.rerun()
     except (ValidationError, InvalidCredentialsError) as error:
         st.error(str(error))
@@ -99,7 +98,6 @@ def _render_signup_form() -> None:
             store_name=store["store_name"],
             owner_name=store["owner_name"],
         )
-        queue_persistent_session_token(create_session_token(store["store_id"]))
         st.success("Account created successfully!")
         st.rerun()
     except (ValidationError, DuplicateMobileError) as error:
