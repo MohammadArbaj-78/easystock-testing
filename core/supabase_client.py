@@ -13,7 +13,7 @@ locally, or the hosting platform's secrets UI when deployed) - not
 environment variables. Two secrets are required:
 
     SUPABASE_URL - the Supabase project's REST API base URL.
-    SUPABASE_KEY - the Supabase project's API key (anon or service role).
+    SUPABASE_ANON_KEY - the Supabase project's API key (anon or service role).
 
 Both must be present and non-blank, or SupabaseConfigError is raised
 immediately - this module never silently falls back to a missing or
@@ -47,7 +47,7 @@ _key: Optional[str] = None
 
 
 def _read_config() -> Tuple[str, str]:
-    """Read and validate SUPABASE_URL / SUPABASE_KEY from st.secrets.
+    """Read and validate SUPABASE_URL / SUPABASE_ANON_KEY from st.secrets.
 
     Returns:
         (url, key) as stripped, non-empty strings.
@@ -61,7 +61,7 @@ def _read_config() -> Tuple[str, str]:
         url = None
 
     try:
-        key = st.secrets["SUPABASE_KEY"]
+        key = st.secrets["SUPABASE_ANON_KEY"]
     except (KeyError, FileNotFoundError):
         key = None
 
@@ -74,7 +74,7 @@ def _read_config() -> Tuple[str, str]:
 
     if not key or not str(key).strip():
         raise SupabaseConfigError(
-            "SUPABASE_KEY is missing from Streamlit secrets. Add it to "
+            "SUPABASE_ANON_KEY is missing from Streamlit secrets. Add it to "
             ".streamlit/secrets.toml (or your deployment's secrets "
             "settings) before using the Supabase client."
         )
@@ -86,7 +86,7 @@ def get_supabase_client() -> Client:
     """Get the single shared Supabase client, creating it on first use.
 
     Raises:
-        SupabaseConfigError: If SUPABASE_URL or SUPABASE_KEY is missing
+        SupabaseConfigError: If SUPABASE_URL or SUPABASE_ANON_KEY is missing
             or blank in Streamlit secrets.
 
     Returns:
@@ -118,7 +118,7 @@ def verify_supabase_connection() -> bool:
     how to surface a connectivity failure.
 
     Raises:
-        SupabaseConfigError: If SUPABASE_URL or SUPABASE_KEY is missing
+        SupabaseConfigError: If SUPABASE_URL or SUPABASE_ANON_KEY is missing
             (propagated from get_supabase_client()).
 
     Returns:
