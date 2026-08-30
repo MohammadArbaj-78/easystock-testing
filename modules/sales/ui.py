@@ -343,13 +343,20 @@ def _render_sale_row(store_id: int, product: dict) -> None:
     the same rule established for the Review & Edit table applies
     here, and product_id already satisfies it without needing a
     synthetic id).
+
+    Stock shown/capped here is the FIFO-aware sellable total across
+    every lot (batch/expiry) of this medicine name - via
+    sales_service.get_sellable_stock - not just this one clicked
+    batch row's own quantity, since sell_product() itself now consumes
+    earliest-expiry-first across all of this medicine's lots.
     """
     product_id = product["product_id"]
-    stock = product["quantity"]
+    stock = sales_service.get_sellable_stock(store_id, product["name"])
 
     st.markdown(
         f"**{product['name']}**  •  Batch: {product['batch_number']}  •  "
-        f"Stock: {stock}  •  Expires: {product['expiry_date']}"
+        f"Stock: {stock}  •  Expires: {product['expiry_date']}  •  "
+        f"MRP: {product['mrp']}  •  Rate: {product['rate']}"
     )
 
     qty_key = f"sales_qty_{product_id}"

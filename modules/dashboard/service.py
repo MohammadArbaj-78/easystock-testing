@@ -2,17 +2,22 @@
 Dashboard business logic.
 
 This service answers one question: "what are this store's current
-inventory health numbers?" It contains no Streamlit code and no SQL -
-it calls modules.products.repository for data and applies the
-business rules (what counts as "expiring soon", how metrics are
-packaged) on top.
+inventory health numbers?" It contains no SQL - it calls
+modules.products.repository for data and applies the business rules
+(what counts as "expiring soon", how metrics are packaged) on top.
 
 Kept separate from repository.py because "how is data stored and
 fetched" (repository) and "what do these numbers mean for the business"
 (service) are different concerns that change for different reasons - a
 future change to the expiry window default shouldn't require touching
 SQL, and a future schema change shouldn't require touching this file.
+
+Imports streamlit only to read the Low Stock page's already-existing
+session-state selection (see get_dashboard_metrics) - there is
+otherwise no Streamlit code in this file.
 """
+
+import streamlit as st
 
 from modules.products import repository as products_repository
 from config.settings import DASHBOARD_EXPIRY_SOON_DAYS
@@ -41,16 +46,37 @@ def get_dashboard_metrics(store_id: int) -> dict:
         Counts and item lists are both returned so the UI can show a
         number on the metric card and, optionally, a detail list below
         it without a second round-trip to the service.
+
+        A returned/zeroed medicine (quantity == 0, see
+        modules.products.service.return_medicine) is excluded from
+        expired_items/expiring_soon_items and their counts here, the
+        same quantity-0 exclusion modules.alerts.service.get_categorized_alerts
+        already applies to the separate Expiry Alerts page - the two
+        pages read the same underlying repository data and must agree.
+        It stays in the database (and in Product Management) untouched;
+        this only affects which items surface as a dashboard alert.
+        Low Stock is intentionally unaffected by this filter - a
+        quantity-0 product is still meaningfully "low stock" and
+        low_stock_items/low_stock_count are unchanged.
     """
     total_products = products_repository.count_total_products(store_id)
 
-    expired_items = products_repository.get_expired_products(store_id)
+    expired_items = [
+        item for item in products_repository.get_expired_products(store_id)
+        if item["quantity"] != 0
+    ]
 
-    expiring_soon_items = products_repository.get_expiring_soon_products(
-        store_id, within_days=DASHBOARD_EXPIRY_SOON_DAYS
+    expiring_soon_items = [
+        item for item in products_repository.get_expiring_soon_products(
+            store_id, within_days=DASHBOARD_EXPIRY_SOON_DAYS
+        )
+        if item["quantity"] != 0
+    ]
+
+    low_stock_items = products_repository.get_low_stock_products(
+        store_id,
+        global_minimum=st.session_state.get("low_stock_global_minimum_value"),
     )
-
-    low_stock_items = products_repository.get_low_stock_products(store_id)
 
     return {
         "total_products": total_products,

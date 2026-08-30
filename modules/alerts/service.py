@@ -103,6 +103,12 @@ def get_categorized_alerts(store_id: int) -> dict:
     from utils.validators import parse_expiry_month_year
     today_local = date.today()
     for product in products_repository.get_expired_products(store_id):
+        if product["quantity"] == 0:
+            # A returned/zeroed medicine (see products_service.return_medicine)
+            # is no longer stocked, so it should no longer surface as an
+            # expiring/expired alert - it stays in the database (and in
+            # Product Management) untouched, this only affects this bucketing.
+            continue
         try:
             m, y = parse_expiry_month_year(product["expiry_date"])
             months_elapsed = (today_local.year - y) * 12 + (today_local.month - m)
@@ -133,6 +139,9 @@ def get_categorized_alerts(store_id: int) -> dict:
     sorted_windows = sorted(EXPIRY_ALERT_WINDOWS_DAYS)
 
     for product in all_expiring_soon:
+        if product["quantity"] == 0:
+            # Same reasoning as the expired-bucket skip above.
+            continue
         # Compute days until expiry using the canonical MM/YY parser.
         # Treat expiry as the last day of the expiry month so a product
         # with expiry "7/26" gets full credit for the whole of July 2026.

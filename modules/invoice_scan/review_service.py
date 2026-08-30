@@ -23,6 +23,7 @@ import uuid
 import streamlit as st
 
 from modules.invoice_scan.ocr_service import MEDICINE_FIELDS
+from modules.invoice_scan.validation import validate_medicines
 
 _SESSION_KEY = "invoice_review"
 
@@ -72,6 +73,14 @@ def initialise_review_session(
     for row in rows:
         row.setdefault("_row_id", uuid.uuid4().hex)
 
+    # Validation Layer: runs exactly once here, immediately after Gemini
+    # extraction and before the row ever reaches the editable Review
+    # table. Deterministic and advisory only - it attaches a temporary
+    # "_validation" flags dict to each row and never modifies any
+    # extracted field, never calls Gemini, and never blocks anything
+    # downstream (Review and Save behave exactly as before).
+    rows = validate_medicines(rows)
+
     st.session_state[_SESSION_KEY] = {
         "file_hash": file_hash,
         "source_file": source_filename,
@@ -108,25 +117,76 @@ def get_session_filename() -> str:
     return session.get("source_file", "") if session else ""
 
 
+def _clear_review_widget_keys() -> None:
+    """Remove every per-row widget key left behind in session_state -
+    both the editable text_input keys ("review_row_...") and the
+    per-row delete button keys ("delete_row_...").
+
+    Bug fix (Sprint 2.1): clear_session() previously swept only
+    "review_row_" keys. "delete_row_{row_id}" keys (one per medicine,
+    from each row's delete button) were never removed here, even
+    though delete_medicine() already cleans up both prefixes correctly
+    for a single deleted row. This is the single shared sweep used by
+    every full-session teardown so both prefixes are always handled
+    together, in one place.
+    """
+    stale_keys = [
+        k for k in list(st.session_state.keys())
+        if k.startswith("review_row_") or k.startswith("delete_row_")
+    ]
+    for k in stale_keys:
+        del st.session_state[k]
+
+
 def clear_session() -> None:
     """Remove the review session and all related widget keys.
 
-    Called when a different invoice is uploaded (new hash) or when the
-    user explicitly clicks 'Clear / New Invoice'.
+    Called when the user explicitly clicks 'Clear / New Invoice'. Also
+    removes the file_uploader widget key so the uploader resets to an
+    empty state immediately after st.rerun() - safe here specifically
+    because this path always runs on a rerun where the uploader has not
+    yet been re-instantiated with a new file.
 
-    Also removes the file_uploader widget key so the uploader resets to
-    an empty state immediately after st.rerun().
+    Not used for the automatic new-upload reset (a different file was
+    just uploaded, same script run) - see
+    reset_session_for_new_upload() for that case, which must NOT touch
+    "invoice_file_uploader" while it is already instantiated this run.
     """
     st.session_state.pop(_SESSION_KEY, None)
     # Remove the file uploader widget key so it resets to empty.
     st.session_state.pop("invoice_file_uploader", None)
-    # Remove all review table row widget keys.
-    stale_keys = [
-        k for k in list(st.session_state.keys())
-        if k.startswith("review_row_")
-    ]
-    for k in stale_keys:
-        del st.session_state[k]
+    _clear_review_widget_keys()
+
+
+def reset_session_for_new_upload() -> None:
+    """Completely destroy any previous review session before a new
+    invoice's extraction begins.
+
+    Bug fix (Sprint 2.1): a newly uploaded invoice (different SHA-256
+    hash from whatever session, if any, is currently active) must
+    always start from a completely clean state - the previous
+    session's medicine rows, their validation flags/warnings (both
+    live inside the same session dict removed here), OCR metadata,
+    cached save result, and every per-row widget key are all torn down
+    before the new extraction's initialise_review_session() call
+    creates a fresh session. This never requires the user to press
+    'Clear Review' - it runs automatically as part of the upload flow.
+
+    Deliberately does NOT touch "invoice_file_uploader": unlike
+    clear_session() (used for the explicit user-initiated Clear
+    button, on a rerun where the uploader is not yet re-instantiated),
+    this function runs in the same script run where the uploader
+    widget has already been instantiated with the newly uploaded file
+    - clearing its key here would fight the widget's own state
+    mid-run instead of simply replacing the review data underneath it.
+
+    The existing SHA-256 cache logic is unaffected: this is only ever
+    called when is_review_session_active(new_file_hash) is False (see
+    upload_ui.py) - an identical re-upload of the same file still
+    correctly reuses the cached session with no Gemini re-call.
+    """
+    st.session_state.pop(_SESSION_KEY, None)
+    _clear_review_widget_keys()
 
 
 def get_ocr_metadata() -> dict:
@@ -139,6 +199,24 @@ def get_medicines() -> list:
     """Return the current editable medicine list. Empty list if none."""
     session = st.session_state.get(_SESSION_KEY)
     return session.get("medicines", []) if session else []
+
+
+def get_medicines_with_live_warnings() -> list:
+    """Return the current medicine list with advisory validation flags
+    recomputed fresh from each row's CURRENT values, instead of the
+    stale "_validation" snapshot attached once in
+    initialise_review_session() at OCR time.
+
+    Warnings sprint: this does not change any warning RULE - it calls
+    the exact same validation.validate_medicines() used at session
+    init, on the exact same live list get_medicines() already returns
+    (mutated in place, same object), just on every call instead of
+    only once. Callers (review_ui.py) use this instead of
+    get_medicines() wherever advisory flags are read, so a warning
+    appears or disappears immediately as the reviewer edits a field,
+    on the very next rerun - never a click or extra action needed.
+    """
+    return validate_medicines(get_medicines())
 
 
 def update_medicine(index: int, field: str, value: str) -> None:
@@ -186,30 +264,41 @@ def add_empty_medicine() -> None:
 # ---------------------------------------------------------------------------
 
 def save_invoice_medicines(store_id: int) -> dict:
-    """Write all reviewed medicines to the products database.
+    """Write all reviewed medicines to the products database, using the
+    stock-lot identity/merge rules (see
+    modules.products.service's "Stock Lot identity & merge rules"
+    section - the single centralized place those rules live).
 
-    Called ONLY when the store owner clicks '💾 Save Inventory'. Until
+    Called ONLY when the store owner clicks '💾 Save Medicines'. Until
     that moment every edit, delete, and add is purely local.
 
-    Iterates the current medicine list and calls products_service.add_product
-    for each row. Rows that fail validation or already exist are collected
-    as skipped entries — partial success is better than all-or-nothing.
+    Iterates the current medicine list and calls
+    products_service.save_or_merge_invoice_lot for each row. A row
+    whose incoming batch number is blank and possibly matches an
+    existing lot with a real batch number is NOT saved yet - it is
+    collected as a "pending match" for the store owner to confirm
+    (see get_pending_matches/resolve_pending_match below) rather than
+    being silently merged or silently duplicated. Rows that fail
+    validation are collected as skipped entries — partial success is
+    better than all-or-nothing.
 
     Args:
         store_id: From core.session.get_current_store_id().
 
     Returns:
-        {"saved": int, "skipped": [{"row", "name", "error"}, ...]}
+        {"saved": int, "skipped": [{"row", "name", "error"}, ...],
+         "pending": int}
     """
-    from modules.products.service import add_product
+    from modules.products.service import save_or_merge_invoice_lot
     from core.exceptions import ValidationError
 
     medicines = get_medicines()
     saved = 0
     skipped = []
+    pending_matches = []
 
     for idx, row in enumerate(medicines):
-        form_data = {
+        lot_data = {
             "name":         row.get("name", ""),
             "batch_number": row.get("batch_number", ""),
             "expiry_date":  row.get("expiry_date", ""),
@@ -218,12 +307,18 @@ def save_invoice_medicines(store_id: int) -> dict:
             "rate":         row.get("rate", ""),
             "gst_percent":  row.get("gst_percent", ""),
             "purchase_date": "",
-            "_minimum_stock_threshold_enabled": False,
-            "minimum_stock_threshold": None,
         }
         try:
-            add_product(store_id, form_data)
-            saved += 1
+            outcome = save_or_merge_invoice_lot(store_id, lot_data)
+            if outcome["status"] == "needs_confirmation":
+                pending_matches.append({
+                    "row": idx + 1,
+                    "name": row.get("name", "(unnamed)"),
+                    "lot_data": lot_data,
+                    "match": outcome["match"],
+                })
+            else:
+                saved += 1
         except ValidationError as exc:
             skipped.append({
                 "row":   idx + 1,
@@ -237,9 +332,10 @@ def save_invoice_medicines(store_id: int) -> dict:
                 "error": f"Unexpected error: {exc}",
             })
 
-    result = {"saved": saved, "skipped": skipped}
+    result = {"saved": saved, "skipped": skipped, "pending": len(pending_matches)}
     if _SESSION_KEY in st.session_state:
         st.session_state[_SESSION_KEY]["save_result"] = result
+        st.session_state[_SESSION_KEY]["pending_matches"] = pending_matches
     return result
 
 
@@ -249,33 +345,119 @@ def get_save_result() -> dict | None:
     return session.get("save_result") if session else None
 
 
+def get_pending_matches() -> list:
+    """Return the "possible match found" rows left over from the last
+    Save that still need the store owner's Yes/Create New decision
+    (see save_invoice_medicines). Empty list if there are none, or no
+    session is active.
+    """
+    session = st.session_state.get(_SESSION_KEY)
+    return session.get("pending_matches", []) if session else []
+
+
+def resolve_pending_match(pending_index: int, decision: str) -> dict:
+    """Resolve one pending possible-match row after the store owner
+    clicks "Yes" (merge into the existing lot) or "Create New" (save
+    as its own new lot, batch number left blank).
+
+    Args:
+        pending_index: Index into get_pending_matches()'s list.
+        decision: "merge" or "create_new".
+
+    Returns:
+        The same outcome dict save_or_merge_invoice_lot returns
+        ({"status": "merged"/"created", "product_id": int}).
+
+    Raises:
+        ValidationError: If the row's data fails validation (should
+            not normally happen here, since it already passed once).
+    """
+    from modules.products.service import save_or_merge_invoice_lot
+    from core.session import get_current_store_id
+
+    pending = get_pending_matches()
+    entry = pending[pending_index]
+    store_id = get_current_store_id()
+
+    if decision == "merge":
+        outcome = save_or_merge_invoice_lot(
+            store_id, entry["lot_data"], merge_into_product_id=entry["match"]["product_id"]
+        )
+    else:
+        outcome = save_or_merge_invoice_lot(store_id, entry["lot_data"], force_new=True)
+
+    remaining = [p for i, p in enumerate(pending) if i != pending_index]
+    if _SESSION_KEY in st.session_state:
+        st.session_state[_SESSION_KEY]["pending_matches"] = remaining
+        save_result = st.session_state[_SESSION_KEY].get("save_result")
+        if save_result:
+            save_result["saved"] = save_result.get("saved", 0) + 1
+            save_result["pending"] = len(remaining)
+
+    return outcome
+
+
 # ---------------------------------------------------------------------------
 # Validation
 # ---------------------------------------------------------------------------
 
 def validate_medicine(row: dict) -> list:
-    """Validate one medicine row. Returns list of error strings (empty = valid)."""
+    """Validate one medicine row. Returns list of error strings (empty = valid).
+
+    Required fields (blank is ALWAYS a blocking error): Medicine Name,
+    Batch Number, Expiry, Quantity, MRP, Rate, GST %.
+
+    Stabilization sprint fix: Quantity/MRP/Rate/GST % were previously
+    only checked with "if val and not _is_numeric(val)" - meaning a
+    BLANK value for any of them silently passed validation, even though
+    they are required fields. That let a row with a filled-in name but
+    blank MRP/Rate/Qty/GST slip through with no blocking error at all
+    (no red highlight, Save not blocked) - now fixed: each of these four
+    fields is validated as "must be present, and if present, must be
+    numeric" - two separate, clearly worded errors depending on which
+    condition fails.
+
+    RED-validation sprint: Batch Number and Expiry were previously
+    optional (blank was valid; only an invalid Expiry *format* blocked
+    Save). Both are now required, same as the other five fields - blank
+    now blocks Save for either. Expiry's existing format check is
+    unchanged and still applies whenever a value is present.
+
+    Warnings sprint: message wording only was rewritten to be short and
+    owner-friendly (e.g. "Medicine name is required." instead of
+    "Medicine Name cannot be empty."). No field's required/optional
+    status or trigger condition changed - same fields, same blank/
+    invalid checks, same order. modules/invoice_scan/review_ui.py's
+    _BLOCKING_FIELD_INFO was updated in lockstep so field highlighting
+    still matches each message.
+    """
     errors = []
 
     name = row.get("name", "").strip()
     if not name:
-        errors.append("Medicine Name cannot be empty.")
+        errors.append("Medicine name is required.")
+
+    batch = row.get("batch_number", "").strip()
+    if not batch:
+        errors.append("Batch number is required.")
 
     expiry = row.get("expiry_date", "").strip()
-    if expiry and not _is_valid_expiry(expiry):
-        errors.append(
-            "Expiry must be in Month/Year format (MM/YY, MM/YYYY or Month-YYYY)."
-        )
+    if not expiry:
+        errors.append("Expiry is required.")
+    elif not _is_valid_expiry(expiry):
+        errors.append("Enter a valid expiry date.")
 
-    for field_key, label in [
-        ("quantity", "Quantity"),
-        ("mrp", "MRP"),
-        ("rate", "Rate"),
-        ("gst_percent", "GST %"),
+    for field_key, required_label, invalid_label in [
+        ("quantity", "Quantity is required.", "Enter a valid quantity."),
+        ("mrp", "MRP is required.", "Enter a valid MRP."),
+        ("rate", "Rate is required.", "Enter a valid rate."),
+        ("gst_percent", "GST is required.", "Enter a valid GST value."),
     ]:
         val = row.get(field_key, "").strip()
-        if val and not _is_numeric(val):
-            errors.append(f"{label} must be a number (got '{val}').")
+        if not val:
+            errors.append(required_label)
+        elif not _is_numeric(val):
+            errors.append(invalid_label)
 
     return errors
 

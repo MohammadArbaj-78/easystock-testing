@@ -30,22 +30,6 @@ class ValidationError(EasyStockError):
     pass
 
 
-class DuplicateMobileError(EasyStockError):
-    """Raised on signup when the mobile number is already registered."""
-    pass
-
-
-class InvalidCredentialsError(EasyStockError):
-    """Raised on login when the mobile number + password combination is
-    invalid.
-
-    Deliberately does not distinguish "mobile not found" from "wrong
-    password" - revealing that distinction lets an attacker enumerate
-    which mobile numbers are registered.
-    """
-    pass
-
-
 class DatabaseError(EasyStockError):
     """Raised when a database operation fails unexpectedly.
 
@@ -78,15 +62,27 @@ class GeminiAPIError(EasyStockError):
 
 
 class SupabaseConfigError(EasyStockError):
-    """Raised when Supabase configuration (SUPABASE_URL / SUPABASE_KEY)
-    is missing or blank in Streamlit secrets.
+    """Raised when Supabase configuration (SUPABASE_URL / SUPABASE_KEY
+    for the business-data client, or SUPABASE_URL / SUPABASE_ANON_KEY
+    for the Auth client) is missing or blank in Streamlit secrets.
 
-    Phase 1 infrastructure only (core/supabase_client.py) - this is not
-    yet raised anywhere in the active application, since nothing calls
-    into the Supabase client yet. SQLite remains the active database.
     Raised instead of silently returning None/a broken client, matching
     every other exception in this file: a missing configuration value
     must be an explicit, catchable failure, never a value that could be
     mistaken for a working connection.
+    """
+    pass
+
+
+class SupabaseAuthError(EasyStockError):
+    """Raised when a Supabase Auth operation (sign up, sign in, sign
+    out) fails: invalid credentials, an already-registered email, a
+    password Supabase itself rejects, or any other Auth-level failure.
+
+    Wraps whatever the supabase-py/gotrue client raises into a single
+    EasyStock-specific type with a human-readable message, the same
+    pattern GeminiAPIError already uses for a different third-party
+    client - callers depend on one EasyStock exception type, never on
+    the underlying package's own exception classes.
     """
     pass

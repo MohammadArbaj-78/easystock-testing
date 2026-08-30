@@ -74,11 +74,24 @@ def _render_upload_section() -> None:
         unsafe_allow_html=True,
     )
 
+    # Final stabilization fix: once a review session is active, the
+    # uploader's own "browse/replace" control must not stay usable -
+    # previously it did, so picking a second file (even by mistake)
+    # would silently start reset_session_for_new_upload() and discard
+    # whatever was being reviewed. Disabling the widget while a session
+    # exists is the smallest possible fix: it doesn't add a new control
+    # or change the upload component's structure, and it doesn't touch
+    # SHA-256 cache/reset logic below at all - re-enabling happens
+    # naturally, with no extra code, the moment has_any_session()
+    # becomes False again (i.e. after "Clear Review").
+    session_already_active = review_service.has_any_session()
+
     uploaded_file = st.file_uploader(
         "Choose an invoice file or take a photo",
         type=["jpg", "jpeg", "png", "pdf"],
         label_visibility="collapsed",
         key="invoice_file_uploader",
+        disabled=session_already_active,
     )
 
     # --- Navigation persistence: show cached review when file_uploader is None ---
@@ -101,18 +114,37 @@ def _render_upload_section() -> None:
     file_bytes = uploaded_file.getvalue()
     file_hash = review_service.compute_file_hash(file_bytes)
 
-    # If the hash changed (different invoice), clear the previous session
-    # immediately so stale widget keys from the old review table don't
-    # bleed into the new one.
-    if not review_service.is_review_session_active(file_hash):
-        review_service.clear_session()
-
     try:
         result = process_invoice_upload(uploaded_file, store_id)
-        _render_success_and_preview(uploaded_file, file_hash, result)
     except ValidationError as error:
+        # Stabilization fix: the file itself was rejected (wrong type,
+        # too large, etc.) BEFORE we ever touch the review session. The
+        # store owner's current valid review, if any, for a different
+        # file must be left exactly as it was - the reset below only
+        # ever runs once we know this is a real, accepted upload, so a
+        # single invalid/mistaken upload attempt can no longer wipe a
+        # perfectly good in-progress review.
         st.error(str(error))
         _render_empty_state()
+        return
+
+    # The upload itself is valid. Only now do we check whether it's a
+    # different invoice from whatever session (if any) is currently
+    # active, and if so, destroy that previous session completely
+    # before this new upload's extraction begins - automatically, with
+    # no "Clear Review" click required. Uses reset_session_for_new_upload()
+    # rather than clear_session(): the latter also resets the
+    # file_uploader's own widget key, which must not happen here since
+    # that widget has already been instantiated with this new file
+    # earlier in this same script run (see
+    # review_service.reset_session_for_new_upload's docstring). An
+    # identical re-upload of the same file (hash unchanged) still
+    # correctly reuses the cached session below - the SHA-256 cache
+    # logic itself is untouched.
+    if not review_service.is_review_session_active(file_hash):
+        review_service.reset_session_for_new_upload()
+
+    _render_success_and_preview(uploaded_file, file_hash, result)
 
 
 def _render_empty_state() -> None:

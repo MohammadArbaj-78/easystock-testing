@@ -16,29 +16,57 @@ import json
 import os
 import time
 from pathlib import Path
-
+from PIL import Image, ImageOps, ImageEnhance
 import google.genai as genai
 from google.genai import types as genai_types
-from dotenv import load_dotenv
-from PIL import Image
 
-from config.settings import GEMINI_MODEL, GEMINI_TIMEOUT_SECONDS
+from config.settings import DEBUG_PREPROCESSING, GEMINI_MODEL, GEMINI_TIMEOUT_SECONDS
 from core.exceptions import GeminiAPIError, OCRError
 from utils.file_utils import get_image_preview, get_pdf_preview
 
-# Load .env once at import time. No-op if key is already in environment
-# (e.g. Streamlit Cloud injects secrets as env vars).
-load_dotenv()
+# .env is loaded once, at import time, by config/settings.py itself (the
+# earliest-imported module in the app) - not here. See that file's own
+# comment for why loading it there, rather than here, is what makes
+# environment-derived settings (like DEBUG_PREPROCESSING) actually work
+# regardless of import order.
 
 # ---------------------------------------------------------------------------
 # Schema
 # ---------------------------------------------------------------------------
 
+def _emergent_preprocess(raw: bytes) -> Image.Image:
+    img = Image.open(io.BytesIO(raw))
+    img = ImageOps.exif_transpose(img)
+
+    if img.mode != "RGB":
+        img = img.convert("RGB")
+
+    max_side = 2200
+
+    if max(img.size) > max_side:
+        ratio = max_side / max(img.size)
+        img = img.resize(
+            (
+                int(img.size[0] * ratio),
+                int(img.size[1] * ratio),
+            ),
+            Image.LANCZOS,
+        )
+
+    img = ImageEnhance.Contrast(img).enhance(1.15)
+
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=92)
+
+    return Image.open(io.BytesIO(buf.getvalue())).convert("RGB")
+
 MEDICINE_FIELDS = [
     "name",
     "batch_number",
     "expiry_date",
-    "quantity",
+    "qty",
+    "free",
+    "tqt",
     "mrp",
     "rate",
     "gst_percent",
@@ -48,145 +76,34 @@ MEDICINE_FIELDS = [
 # Prompt
 # ---------------------------------------------------------------------------
 
+_PROMPT_FIELDS = ["name", "batch_number", "expiry_date", "qty", "free", "mrp", "rate", "gst_percent"]
+
 _EXTRACTION_PROMPT = f"""
-You are an invoice data extraction assistant for a medical store inventory system.
+You are an expert at reading Indian medical-store GST purchase invoices from photos.
 
-Your task is to extract ONLY the medicine / product line items from this invoice image.
+The image is a photo of ONE invoice. It may be rotated, skewed, folded, low-contrast, or have a busy background. First mentally correct the orientation, locate the main line-item TABLE, read its HEADER ROW, identify the column boundaries, then read each medicine row.
 
-═══════════════════════════════════════════════
-STRICT EXTRACTION RULES — READ FIRST
-═══════════════════════════════════════════════
+Extract EVERY medicine line item (one object per row). For each row return EXACTLY these fields:
 
-GENERAL RULES
-- Never guess any value.
-- Never infer missing data.
-- Never fabricate text.
-- If a field is unreadable, return an empty string.
-- Never combine two medicine rows.
-- Never split one medicine row into multiple rows.
-- Preserve invoice row order exactly.
-- Return one output row for one invoice row.
+- "name": value from the PRODUCT NAME / PRODUCT / ITEM NAME column. Not HSN, batch, packaging, manufacturer, qty, mrp or rate. Preserve it as printed.
+- "batch_number": value from the BATCH NO / BATCH column. Not HSN, invoice no, product code, or expiry. Preserve letters and digits exactly.
+- "expiry_date": value from the EXP / EXPIRY column, kept in the invoice's own month/year form (e.g. "2/29", "08/27", "05/27", "11/28"). Do NOT reformat.
+- "qty": value from the QTY / QUANTITY column (actual purchased/paid quantity). NEVER put the FREE, TQT, or a packaging number here. If both QTY and FREE exist, put only the QTY value here.
+- "free": value from the FREE column (bonus/free quantity). If there is no free column or it is empty/zero, set it to "0". Do NOT mix this up with the paid QTY.
+- "mrp": value from the MRP / M.R.P column. Not RATE, not amount, not taxable value.
+- "rate": value from the RATE column. Do NOT substitute MRP. MRP and Rate are separate.
+- "gst_percent": the percentage from the GST / GST % column (e.g. "5", "12", "18"). Do NOT use CGST/SGST amounts, GST total amount, or discount %.
 
-MEDICINE NAME
-- Copy exactly as printed.
-- Preserve spelling.
-- Preserve strength if printed.
-- Do not normalize.
-- Do not expand abbreviations.
-- Do not remove symbols.
+CRITICAL RULES:
+1. Keep row-to-column alignment perfect. A medicine must never receive another row's batch/expiry/mrp/qty.
+2. Distinguish look-alike characters carefully: O vs 0, I vs 1, S vs 5, B vs 8, decimal points, and the slash in expiry.
+3. Do NOT invent, calculate, or infer any missing value. If a field is not clearly readable, set it to "" (empty string). Never copy a value from another row to fill a gap.
+4. Only extract the medicine line items - ignore header/address/totals/tax-summary sections.
 
-BATCH
-- Copy exactly.
-- Never invent.
-- Never repair damaged text.
-- Leave blank if unreadable.
+Return ONLY valid JSON, no markdown, no commentary. Return a single JSON array (not an object), one element per medicine row, with EXACTLY these keys per object:
+{json.dumps(_PROMPT_FIELDS)}
 
-EXPIRY
-- Copy exactly.
-- Never calculate.
-- Never estimate.
-- Never convert formats.
-- Leave blank if unreadable.
-
-QUANTITY
-- Copy exactly.
-- Never estimate.
-- Never infer from packing.
-- Leave blank if unreadable.
-
-IMPORTANT
-If one field on a row is unreadable, do NOT discard the entire medicine.
-Return that row with the remaining readable fields filled in and the
-unreadable field(s) left as an empty string.
-
-═══════════════════════════════════════════════
-ROW INDEPENDENCE — MOST CRITICAL RULE
-═══════════════════════════════════════════════
-Every medicine object in the JSON must contain ONLY values from its own physical row
-in the invoice table.
-
-NEVER copy, borrow, or shift any value from a neighbouring row — above or below.
-NEVER merge two adjacent rows into one object.
-NEVER use a Batch Number, Expiry, Quantity, Rate, or MRP from a different row.
-
-Before returning the JSON, verify every object one final time:
-  - Medicine Name, Batch Number, Expiry, Quantity, Rate, MRP and GST must all
-    belong to the SAME physical row in the invoice table.
-  - If any value was taken from a different row, correct it before returning.
-
-═══════════════════════════════════════════════
-BATCH NUMBER — CRITICAL ACCURACY RULES
-═══════════════════════════════════════════════
-The Batch Number is the most error-prone field. Follow these rules exactly:
-
-1. Read the Batch Number ONLY from the "Batch No" column of the SAME row as the
-   medicine name. Never take it from the row above or the row below.
-
-2. Copy the batch number character by character exactly as printed:
-   - Batch numbers may contain both letters AND digits (e.g. MPL254372, CN2175065, SPH251176).
-   - Preserve every letter (uppercase and lowercase).
-   - Preserve every digit.
-   - Preserve every hyphen, slash or special character.
-   - Never autocorrect spelling.
-   - Never swap visually similar characters. Forbidden substitutions:
-       O ↔ 0  (letter O vs digit zero)
-       I ↔ 1  (letter I vs digit one)
-       B ↔ 8  (letter B vs digit eight)
-       S ↔ 5  (letter S vs digit five)
-       Z ↔ 2  (letter Z vs digit two)
-   - Never add, remove or rearrange characters.
-
-3. If the batch number in a row is:
-   - Partially obscured, smudged, or cut off → return ""
-   - Unclear or low confidence → return ""
-   - Completely missing from that row → return ""
-   Never guess. Never infer. Return "" instead of a wrong value.
-
-4. After reading all rows, scan your output for duplicate batch numbers that are
-   adjacent (e.g. rows 3 and 4 both have "CN2175065"). This is almost certainly a
-   row-shift error — re-check BOTH rows on the invoice image and correct the
-   batch number before returning JSON.
-
-═══════════════════════════════════════════════
-GENERAL EXTRACTION RULES
-═══════════════════════════════════════════════
-1. Return ONLY a valid JSON array. No markdown, no backticks, no explanation.
-2. Each element must be a JSON object with EXACTLY these keys:
-   {json.dumps(MEDICINE_FIELDS)}
-3. Extract ONLY medicine/product rows. Skip:
-   - Invoice totals, subtotals, grand totals
-   - GST summaries and tax breakdowns
-   - Shipping or handling charges
-   - Addresses, phone numbers, store names
-   - Column headers or blank rows
-4. If a field is not visible or not applicable, use an empty string "".
-5. expiry_date: use the format found in the invoice (e.g. "03/2026" or "Mar-2026").
-6. quantity: extract the number only (e.g. "10", not "10 strips").
-7. mrp: extract the number only, no currency symbol.
-8. Do NOT normalize, autocorrect or reformat medicine names or batch numbers.
-   Return exactly what appears on the invoice.
-9. If no medicines found, return: []
-10. If the image is unreadable or not an invoice, return: []
-
-═══════════════════════════════════════════════
-FINAL VERIFICATION (do this before returning)
-═══════════════════════════════════════════════
-For every object in the array, confirm:
-  ✓ Name, Batch Number, Expiry, Quantity, Rate, MRP, GST all come from the SAME row.
-  ✓ No Batch Number was copied from an adjacent row.
-  ✓ No adjacent objects share an identical Batch Number (unless the invoice itself
-    genuinely shows the same batch number on two separate line items).
-  ✓ No field was inferred, guessed, or autocompleted.
-
-Example output (2 medicines — illustrative only, do not copy these values):
-[
-  {{"name": "Paracetamol 500mg", "batch_number": "MPL254372", "expiry_date": "06/2026",
-    "quantity": "100", "mrp": "25.50", "rate": "20.00", "gst_percent": "12"}},
-  {{"name": "Amoxicillin 250mg", "batch_number": "CN2175065", "expiry_date": "12/2025",
-    "quantity": "50", "mrp": "85.00", "rate": "70.00", "gst_percent": "5"}}
-]
-
-Now extract all medicines from the invoice image provided.
+If no medicines are found, or the image is unreadable / not an invoice, return: []
 """
 
 # ---------------------------------------------------------------------------
@@ -291,6 +208,50 @@ def _parse_and_validate_response(raw_text: str) -> list:
 # Public API
 # ---------------------------------------------------------------------------
 
+def _apply_quantity_formula(medicines: list) -> list:
+    """Compute the internal "quantity" value from each row's qty/free/tqt
+    fields and overwrite it onto the row, in place.
+
+    Runs immediately after extraction and before the Review Session is
+    initialised (called from extract_medicines_from_file(), before its
+    result is returned to the caller) - so review_service.py's session
+    lifecycle is never touched by this feature.
+
+    Formula:
+        if tqt is present:    quantity = tqt
+        elif free is present: quantity = qty + free
+        else:                 quantity = qty
+
+    Only "quantity" is written - qty/free/tqt are left as-is on the
+    row. Everything downstream of extract_medicines_from_file() (Review
+    Session, Review UI, Validation, Save, Database) continues to read
+    "quantity" exactly as before this feature.
+    """
+    for row in medicines:
+        tqt = str(row.get("tqt", "")).strip()
+        if tqt:
+            row["quantity"] = tqt
+            continue
+
+        free = str(row.get("free", "")).strip()
+        qty = str(row.get("qty", "")).strip()
+
+        if free:
+            try:
+                total = float(qty or 0) + float(free)
+                row["quantity"] = str(int(total)) if total == int(total) else str(total)
+            except ValueError:
+                # Non-numeric qty/free - fall back to qty as-is so the
+                # unchanged downstream validation surfaces the problem
+                # the same way it always has for a bad quantity value.
+                row["quantity"] = qty
+            continue
+
+        row["quantity"] = qty
+
+    return medicines
+
+
 def _build_genai_client(api_key: str):
     """Create and return a google.genai Client.
 
@@ -306,9 +267,12 @@ def extract_medicines_from_file(file_obj) -> dict:
     Flow:
         1. Load API key from environment.
         2. Convert file to PIL Image (reusing file_utils).
-        3. Send to Gemini Vision with the JSON-only prompt.
-        4. Parse and validate the response.
-        5. Return a result dict (no DB writes).
+        3. Preprocess the image once using _emergent_preprocess().
+           If preprocessing fails, fall back to the original image.
+        4. Send the (preprocessed or original) image to Gemini Vision
+           with the JSON-only prompt.
+        5. Parse and validate the response.
+        6. Return a result dict (no DB writes).
 
     Args:
         file_obj: A Streamlit UploadedFile (JPG/JPEG/PNG/PDF).
@@ -328,25 +292,46 @@ def extract_medicines_from_file(file_obj) -> dict:
     api_key = _get_api_key()
     pil_image = _file_to_pil_image(file_obj)
 
+    # OCR Architecture v1.0: run preprocessing exactly once, before
+    # Gemini ever sees the image. preprocess_image() is itself
+    # designed to never raise (QUALITY_RULES.md Section 8), but this
+    # try/except is kept as an explicit second safeguard here too -
+    # preprocessing must never be able to block extraction, under any
+    # circumstance. On any failure, fall back to the original uploaded
+    # image, completely unprocessed - exactly what Gemini received before
+    # preprocessing existed.
+    try:
+      raw_bytes = file_obj.getvalue()
+      image_for_gemini = _emergent_preprocess(raw_bytes)
+      preprocess_result = None
+    except Exception:
+      image_for_gemini = pil_image
+      preprocess_result = None
+
     # Convert PIL Image to PNG bytes for the Gemini SDK.
     buf = io.BytesIO()
-    pil_image.save(buf, format="PNG")
+    image_for_gemini.save(buf, format="PNG")
     image_bytes = buf.getvalue()
 
     client = _build_genai_client(api_key)
 
     start_time = time.monotonic()
 
+    # Gemini receives the (preprocessed or original) invoice image and
+    # the extraction prompt only - no OCR hint. Exactly one Gemini call
+    # per invoice.
+    contents = [
+        genai_types.Part.from_bytes(
+            data=image_bytes,
+            mime_type="image/png",
+        ),
+        _EXTRACTION_PROMPT,
+    ]
+
     try:
         response = client.models.generate_content(
             model=GEMINI_MODEL,
-            contents=[
-                genai_types.Part.from_bytes(
-                    data=image_bytes,
-                    mime_type="image/png",
-                ),
-                _EXTRACTION_PROMPT,
-            ],
+            contents=contents,
         )
     except Exception as exc:
         exc_str = str(exc).lower()
@@ -389,7 +374,18 @@ def extract_medicines_from_file(file_obj) -> dict:
             "Please try with a different invoice image."
         )
 
+    # Debug only (Phase 8.5): save the exact, unmodified raw Gemini
+    # response - before any parsing/validation - into the same debug
+    # session folder preprocessing already created. Never used by
+    # production code; exists purely so a real regression can be
+    # inspected against exactly what Gemini actually returned. Written
+    # only when a debug_folder exists at all (i.e. DEBUG_PREPROCESSING
+    # was on AND preprocessing succeeded enough to create one) - no
+    # folder means nothing is written here, matching "only save files
+    # that actually exist."
+
     medicines = _parse_and_validate_response(raw_text)
+    medicines = _apply_quantity_formula(medicines)
 
     return {
         "medicines": medicines,

@@ -17,8 +17,23 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 from core.database import initialize_database
-from core.auth import signup
 from modules.products import service as products_service
+
+
+def signup(store_name: str, owner_name: str, mobile_number: str, password: str) -> int:
+    """Create a store row directly via SQLite, bypassing Supabase Auth
+    (core.supabase_auth) - this project's authentication provider since
+    the Supabase Auth migration. See tests/test_expiry_alerts.py's
+    identical helper for the full rationale.
+    """
+    from core.database import get_connection
+    with get_connection() as connection:
+        cursor = connection.execute(
+            "INSERT INTO stores (store_name, owner_name, mobile_number, password_hash) "
+            "VALUES (?, ?, ?, ?)",
+            (store_name, owner_name, mobile_number, "test-only-not-a-real-hash"),
+        )
+        return cursor.lastrowid
 
 
 @pytest.fixture

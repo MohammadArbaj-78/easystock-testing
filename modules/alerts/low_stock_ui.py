@@ -18,8 +18,10 @@ import streamlit as st
 from modules.alerts import low_stock_service
 from config.alert_theme import render_alert_banner
 from core.session import get_current_store_id
+from config.settings import DEFAULT_LOW_STOCK_THRESHOLD
 
 FILTER_OPTION_ALL = "All"
+GLOBAL_MINIMUM_OPTIONS = list(range(1, 11))  # Requirement 5: strictly 1-10
 
 
 def render_low_stock_alerts_page() -> None:
@@ -27,19 +29,46 @@ def render_low_stock_alerts_page() -> None:
     st.subheader("📦 Low Stock Alerts")
 
     store_id = get_current_store_id()
-    counts = low_stock_service.get_low_stock_counts(store_id)
+
+    # Requirement 5: session-only (not persisted to the database - see
+    # the investigation's recommendation), defaulting to the existing
+    # DEFAULT_LOW_STOCK_THRESHOLD so a store that never touches this
+    # dropdown sees identical behavior to before this feature existed.
+    # A product's own custom minimum_stock_threshold still always wins
+    # over this - unchanged, enforced entirely inside
+    # products_repository's existing COALESCE/effective-threshold logic.
+    global_minimum = st.session_state.get(
+        "low_stock_global_minimum_value", DEFAULT_LOW_STOCK_THRESHOLD
+    )
+
+    counts = low_stock_service.get_low_stock_counts(store_id, global_minimum=global_minimum)
 
     if counts["total"] == 0:
         st.success("All products are sufficiently stocked. Nothing to reorder right now.")
+        # The dropdown is still rendered below the empty-state message in
+        # every other branch of this function; here there's nothing to
+        # filter yet, so - matching the existing early-return for "no
+        # results at all" - the page stops here, same as before this
+        # feature (this early return already existed; only the
+        # get_low_stock_counts() call above it now takes global_minimum).
+        _render_global_minimum_dropdown()
         return
 
-    selected_severity = _render_filter_dropdown(counts)
+    filter_col, minimum_col = st.columns(2)
+    with filter_col:
+        selected_severity = _render_filter_dropdown(counts)
+    with minimum_col:
+        global_minimum = _render_global_minimum_dropdown()
+
     search_term = st.text_input(
         "Search by medicine name or batch number",
         placeholder="e.g. Paracetamol or B001",
+        key="low_stock_search_term",
     )
 
-    buckets = low_stock_service.get_low_stock_alerts(store_id, search_term=search_term)
+    buckets = low_stock_service.get_low_stock_alerts(
+        store_id, search_term=search_term, global_minimum=global_minimum
+    )
 
     # Apply severity filter after fetching (search is applied inside
     # get_low_stock_alerts; severity filter is applied here since it's
@@ -58,6 +87,34 @@ def render_low_stock_alerts_page() -> None:
     for severity in low_stock_service.ALL_SEVERITIES:
         if buckets[severity]:
             _render_severity_section(severity, buckets[severity])
+
+
+def _render_global_minimum_dropdown() -> int:
+    """Render the "Minimum Stock Limit" dropdown (Requirement 5) and
+    return the currently selected value (1-10).
+
+    Backed by st.session_state (key "low_stock_global_minimum") so the
+    selection survives a rerun within the current session (e.g.
+    changing the severity filter or typing a search term) without a
+    database change - session-only, per the investigation's
+    recommendation, since no existing per-store settings storage exists
+    to persist this beyond the session without a schema change.
+
+    Changing this dropdown triggers a normal Streamlit rerun (like any
+    other widget), which immediately re-fetches low-stock results with
+    the new value - no extra plumbing needed for the "refresh
+    immediately" requirement.
+    """
+    current = st.session_state.get("low_stock_global_minimum_value", DEFAULT_LOW_STOCK_THRESHOLD)
+    index = GLOBAL_MINIMUM_OPTIONS.index(current) if current in GLOBAL_MINIMUM_OPTIONS else 0
+    selected = st.selectbox(
+        "Minimum stock limit",
+        GLOBAL_MINIMUM_OPTIONS,
+        index=index,
+        key="low_stock_global_minimum_widget",
+    )
+    st.session_state["low_stock_global_minimum_value"] = selected
+    return selected
 
 
 def _render_filter_dropdown(counts: dict) -> str | None:
@@ -121,7 +178,7 @@ def _render_low_stock_row(product: dict, severity: str) -> None:
 
     Args:
         product: Dict with name, batch_number, quantity,
-            effective_threshold.
+            effective_threshold, mrp, rate.
         severity: One of low_stock_service.SEVERITY_* constants.
     """
     color = low_stock_service.SEVERITY_DISPLAY[severity]["color"]
@@ -131,7 +188,9 @@ def _render_low_stock_row(product: dict, severity: str) -> None:
     message = (
         f"{product['name']} &nbsp;•&nbsp; "
         f"Batch: {product['batch_number']} &nbsp;•&nbsp; "
-        f"Qty: {qty} / Min: {threshold}"
+        f"Qty: {qty} / Min: {threshold} &nbsp;•&nbsp; "
+        f"MRP: {product.get('mrp')} &nbsp;•&nbsp; "
+        f"Rate: {product.get('rate')}"
     )
 
     # render_alert_banner takes an alert_type key from alert_theme's

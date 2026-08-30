@@ -14,8 +14,10 @@ never here.
 import streamlit as st
 
 from modules.alerts import service as alerts_service
+from modules.products import service as products_service
 from config.alert_theme import ALERT_TYPE_DISPLAY, render_alert_banner
 from core.session import get_current_store_id
+from core.exceptions import ValidationError
 
 
 # Maps the human-readable filter dropdown option back to the
@@ -37,6 +39,7 @@ def render_expiry_alerts_page() -> None:
     search_term = st.text_input(
         "Search by medicine name or batch number",
         placeholder="e.g. Paracetamol or B001",
+        key="expiry_alerts_search_term",
     )
 
     filtered_buckets = alerts_service.get_filtered_alerts(
@@ -54,7 +57,7 @@ def render_expiry_alerts_page() -> None:
     for alert_type in alerts_service.ALL_ALERT_TYPES:
         products = filtered_buckets[alert_type]
         if products:
-            _render_alert_section(alert_type, products)
+            _render_alert_section(store_id, alert_type, products)
 
 
 def _render_filter_dropdown(store_id: int) -> str:
@@ -84,7 +87,7 @@ def _render_filter_dropdown(store_id: int) -> str:
     return option_to_alert_type[selected_label]
 
 
-def _render_alert_section(alert_type: str, products: list) -> None:
+def _render_alert_section(store_id: int, alert_type: str, products: list) -> None:
     """Render one color-coded section (e.g. all Expired products) as a
     colored header followed by a list of product rows.
 
@@ -93,6 +96,7 @@ def _render_alert_section(alert_type: str, products: list) -> None:
     color constant.
 
     Args:
+        store_id: The currently logged-in store's ID.
         alert_type: One of the ALERT_TYPE_* constants.
         products: The list of product dicts in this bucket.
     """
@@ -105,24 +109,61 @@ def _render_alert_section(alert_type: str, products: list) -> None:
     )
 
     for product in products:
-        _render_alert_product_row(product, alert_type)
+        _render_alert_product_row(store_id, product, alert_type)
 
     st.write("")  # spacing gap between sections
 
 
-def _render_alert_product_row(product: dict, alert_type: str) -> None:
-    """Render a single product row using render_alert_banner from
-    config.alert_theme so the visual structure is identical to the
-    Dashboard's warning card - same border, padding, border-radius.
+def _render_alert_product_row(store_id: int, product: dict, alert_type: str) -> None:
+    """Render a single product as an expander (collapsed by default),
+    matching the same click-to-open interaction Product Management uses
+    for its own rows: the summary is visible at a glance, and actions
+    (here, just "Return Medicine") are hidden until the row is opened.
+
+    Also offers a "Return Medicine" action inside the expander: sets
+    this product's stock quantity to 0 (reusing
+    products_service.return_medicine(), which itself reuses the
+    existing edit_product() update path) for when the owner has
+    physically pulled an expired medicine to send back to the
+    supplier. The record itself, and every other field, is preserved -
+    this only zeroes quantity. Once quantity is 0, the product is
+    filtered out of every alert bucket by alerts_service (see
+    get_categorized_alerts), so it disappears from this screen on the
+    next render - no separate removal step is needed here.
 
     Args:
-        product: Dict with name, batch_number, expiry_date, quantity.
+        store_id: The currently logged-in store's ID.
+        product: Dict with product_id, name, batch_number, expiry_date,
+            quantity, mrp, rate.
         alert_type: One of the ALERT_TYPE_* constants.
     """
-    message = (
-        f"{product['name']} &nbsp;•&nbsp; "
-        f"Batch: {product['batch_number']} &nbsp;•&nbsp; "
-        f"Expires: {product['expiry_date']} &nbsp;•&nbsp; "
-        f"Qty: {product['quantity']}"
+    summary = (
+        f"{product['name']}  •  Batch: {product['batch_number']}  •  "
+        f"Expires: {product['expiry_date']}  •  Qty: {product['quantity']}  •  "
+        f"MRP: {product['mrp']}  •  Rate: {product['rate']}"
     )
-    st.markdown(render_alert_banner(message, alert_type), unsafe_allow_html=True)
+
+    with st.expander(summary):
+        message = (
+            f"{product['name']} &nbsp;•&nbsp; "
+            f"Batch: {product['batch_number']} &nbsp;•&nbsp; "
+            f"Expires: {product['expiry_date']} &nbsp;•&nbsp; "
+            f"Qty: {product['quantity']} &nbsp;•&nbsp; "
+            f"MRP: {product['mrp']} &nbsp;•&nbsp; "
+            f"Rate: {product['rate']}"
+        )
+        st.markdown(render_alert_banner(message, alert_type), unsafe_allow_html=True)
+
+        if product["quantity"] == 0:
+            return
+
+        if st.button(
+            "↩️ Return Medicine",
+            key=f"return_medicine_{product['product_id']}",
+        ):
+            try:
+                products_service.return_medicine(store_id, product["product_id"])
+                st.success(f"'{product['name']}' returned - stock set to 0.")
+                st.rerun()
+            except ValidationError as error:
+                st.error(str(error))

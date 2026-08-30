@@ -21,7 +21,13 @@ import streamlit as st
 from config.settings import SESSION_STATE_KEY
 
 
-def start_session(store_id: int, store_name: str, owner_name: str) -> None:
+def start_session(
+    store_id: int,
+    store_name: str,
+    owner_name: str,
+    access_token: str = None,
+    refresh_token: str = None,
+) -> None:
     """Begin an authenticated session for a store after successful login
     or signup.
 
@@ -31,11 +37,23 @@ def start_session(store_id: int, store_name: str, owner_name: str) -> None:
             show a greeting without an extra database lookup on every
             rerun.
         owner_name: The owner's display name.
+        access_token: The current Supabase Auth session's access token,
+            if any (optional and defaults to None so any other existing
+            caller of this function continues to work unchanged) -
+            stored here, the same place store_id/store_name/owner_name
+            already live, so a normal Streamlit rerun/navigation reuses
+            it automatically via st.session_state's own persistence,
+            with no second, Python-only session mechanism introduced to
+            imitate Supabase's.
+        refresh_token: The session's refresh token, if any - stored
+            alongside access_token for the same reason.
     """
     st.session_state[SESSION_STATE_KEY] = {
         "store_id": store_id,
         "store_name": store_name,
         "owner_name": owner_name,
+        "access_token": access_token,
+        "refresh_token": refresh_token,
     }
 
 
@@ -108,6 +126,26 @@ def get_current_owner_name() -> str:
             "get_current_owner_name() called with no active session."
         )
     return st.session_state[SESSION_STATE_KEY]["owner_name"]
+
+
+def get_current_access_token() -> str:
+    """Get the current Supabase Auth session's access token, for
+    core.supabase_auth.sign_out() to call at logout.
+
+    Returns:
+        The access token stored at login, or None if the active
+        session has none (e.g. a session started without Supabase
+        Auth, which should no longer happen in normal use post-
+        migration, but this stays lenient rather than raising).
+
+    Raises:
+        RuntimeError: If called with no active session.
+    """
+    if not is_logged_in():
+        raise RuntimeError(
+            "get_current_access_token() called with no active session."
+        )
+    return st.session_state[SESSION_STATE_KEY].get("access_token")
 
 
 def end_session() -> None:

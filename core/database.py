@@ -102,6 +102,53 @@ def initialize_database() -> None:
             """
         )
 
+        # Supabase Auth migration: stores.mobile_number/password_hash
+        # above are the old custom-authentication columns - left in
+        # place unchanged (existing rows, existing NOT NULL/UNIQUE
+        # constraints) rather than dropped or altered, since removing
+        # or loosening either is not required to add Supabase Auth
+        # alongside the existing business schema. The one new column
+        # actually needed is this one: it links a store's row to the
+        # Supabase Auth user who owns it, which is the only way
+        # store_id-based scoping (every repository in the app depends
+        # on get_current_store_id()) can keep working once Supabase, not
+        # this table, is the source of truth for "who is this". Added
+        # via ALTER TABLE (checked first via PRAGMA table_info, since
+        # SQLite's CREATE TABLE IF NOT EXISTS is a no-op against a
+        # stores table that already exists from before this column was
+        # introduced) so existing databases upgrade in place without a
+        # separate migration step - this runs every startup, is a no-op
+        # once the column exists, and touches no other table.
+        existing_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(stores)").fetchall()
+        }
+        if "supabase_user_id" not in existing_columns:
+            # Requirement 3 fix: the PRAGMA check above and this ALTER
+            # TABLE are a classic check-then-act race, not protected by
+            # any lock - if initialize_database() is entered twice in
+            # close succession (Streamlit is known to sometimes execute
+            # a script's top level more than once during a cold start),
+            # both calls can see the column missing before either one's
+            # ALTER TABLE commits, and the second one then fails with
+            # "duplicate column name: supabase_user_id". That failure
+            # was surfacing as a real (if harmless and self-healing on
+            # the very next rerun) red error box under Login/Signup.
+            # Only that exact, narrow race is handled here - any other
+            # sqlite3.OperationalError (a genuine schema/database
+            # problem) is re-raised unchanged and must still surface
+            # normally, exactly as before this fix.
+            try:
+                connection.execute("ALTER TABLE stores ADD COLUMN supabase_user_id TEXT")
+            except sqlite3.OperationalError as error:
+                if "duplicate column name" not in str(error).lower():
+                    raise
+        connection.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_stores_supabase_user_id
+            ON stores (supabase_user_id)
+            """
+        )
+
         # Column names here mirror config/product_schema.py's field keys
         # exactly, so repository code can map between dict rows and
         # schema-defined fields without a translation layer. minimum_stock

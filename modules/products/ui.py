@@ -49,6 +49,7 @@ def _render_product_list() -> None:
     search_term = st.text_input(
         "Search by medicine name or batch number",
         placeholder="e.g. Paracetamol or B001",
+        key="products_search_term",
     )
 
     products = products_service.search_products(store_id, search_term)
@@ -78,7 +79,8 @@ def _render_product_row(store_id: int, product: dict) -> None:
     """
     summary = (
         f"{product['name']}  •  Batch: {product['batch_number']}  •  "
-        f"Qty: {product['quantity']}  •  Expires: {product['expiry_date']}"
+        f"Qty: {product['quantity']}  •  Expires: {product['expiry_date']}  •  "
+        f"MRP: {product['mrp']}  •  Rate: {product['rate']}"
     )
 
     with st.expander(summary):
@@ -171,9 +173,28 @@ def _render_edit_form(store_id: int, product: dict) -> None:
 
 
 def _render_add_product_form() -> None:
-    """Render the Add New Product form."""
+    """Render the Add New Product form.
+
+    Bug fix: does NOT use st.form(..., clear_on_submit=True). That
+    parameter clears every widget inside the form as soon as it is
+    submitted - success or failure alike, entirely inside Streamlit's
+    own widget machinery, before this function's own code below ever
+    gets a chance to check whether add_product() actually succeeded.
+    That meant a validation failure (e.g. one required field left
+    blank) silently wiped every field the store owner had already
+    filled in, forcing them to retype the whole form. The form now
+    only clears explicitly, via the same two-phase sentinel pattern
+    _render_custom_threshold_checkbox already uses for the checkbox
+    outside this form - and only on the success path below, so a
+    validation failure leaves every already-entered field exactly as
+    the user left it.
+    """
     store_id = get_current_store_id()
     field_key_prefix = "add"
+
+    # Success-path reset sentinel, checked before any widget below is
+    # instantiated - see _clear_add_product_form_fields's docstring.
+    _clear_add_product_form_fields(field_key_prefix)
 
     # Rendered before st.form opens - see _render_custom_threshold_checkbox's
     # docstring for why.
@@ -182,7 +203,7 @@ def _render_add_product_form() -> None:
         key_prefix=field_key_prefix,
     )
 
-    with st.form("add_product_form", clear_on_submit=True):
+    with st.form("add_product_form"):
         form_data = _render_schema_driven_fields(
             prefill=None,
             key_prefix=field_key_prefix,
@@ -209,9 +230,39 @@ def _render_add_product_form() -> None:
         # widget key, and clear the flag - so st.checkbox sees no existing
         # key and correctly falls back to value=False (unchecked).
         st.session_state["_reset_threshold_checkbox"] = True
+        # Same two-phase sentinel, for the form's own fields (name,
+        # batch, expiry, mrp, rate, gst_percent, minimum_stock_threshold)
+        # - see _clear_add_product_form_fields.
+        st.session_state["_reset_add_product_form"] = True
         st.rerun()
     except ValidationError as error:
         st.error(str(error))
+
+
+def _clear_add_product_form_fields(key_prefix: str) -> None:
+    """Reset every Add Product field widget to empty, but ONLY when the
+    '_reset_add_product_form' sentinel is set (i.e. only right after a
+    successful add_product() call - see _render_add_product_form).
+
+    Must be called before _render_schema_driven_fields/st.form open on
+    this render, same reasoning as _render_custom_threshold_checkbox's
+    own sentinel: Streamlit restores each keyed widget's value from
+    session_state before the script body runs, so a widget key must be
+    removed before that widget is instantiated for its default (empty)
+    value to actually show - popping it after rendering, or after
+    st.rerun() fires, is too late.
+
+    A validation failure (ValidationError from add_product) never sets
+    this sentinel, so on that path every field widget's key is left
+    exactly as the user typed it - nothing here runs, and
+    _render_schema_driven_fields re-renders with the user's own values
+    still in session_state, exactly as any other Streamlit widget
+    normally behaves outside a clear_on_submit form.
+    """
+    if not st.session_state.pop("_reset_add_product_form", False):
+        return
+    for field in PRODUCT_FIELDS:
+        st.session_state.pop(f"{key_prefix}_{field.key}", None)
 
 
 def _render_custom_threshold_checkbox(existing_value, key_prefix: str) -> bool:

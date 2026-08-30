@@ -97,24 +97,34 @@ def get_expiring_soon_products(store_id: int, within_days: int) -> list:
     return _get_expiring_soon_products_sqlite(store_id, within_days)
 
 
-def get_low_stock_products(store_id: int) -> list:
+def get_low_stock_products(store_id: int, global_minimum: int = None) -> list:
     """Get all products whose quantity is at or below their minimum
     stock threshold.
 
     A product with no per-product threshold set (NULL in the database)
-    falls back to DEFAULT_LOW_STOCK_THRESHOLD.
+    falls back to global_minimum (Requirement 5) - or, if that is not
+    given, to the existing DEFAULT_LOW_STOCK_THRESHOLD, exactly as
+    before this feature. Every existing caller (e.g.
+    modules/dashboard/service.py) that does not pass global_minimum is
+    completely unaffected by this change.
 
     Args:
         store_id: The store to check.
+        global_minimum: Optional override for the store-wide default
+            threshold, used only by the Low Stock page's dropdown
+            (modules/alerts/low_stock_service.py). A product's own
+            non-NULL minimum_stock_threshold always wins over this,
+            unchanged.
 
     Returns:
         A list of dicts, one per low-stock product, each containing
         product_id, name, batch_number, quantity, and the effective
         threshold that was compared against.
     """
+    effective_default = global_minimum if global_minimum is not None else DEFAULT_LOW_STOCK_THRESHOLD
     if ACTIVE_DB_BACKEND == "supabase":
-        return _get_low_stock_products_supabase(store_id)
-    return _get_low_stock_products_sqlite(store_id)
+        return _get_low_stock_products_supabase(store_id, effective_default)
+    return _get_low_stock_products_sqlite(store_id, effective_default)
 
 
 def get_all_products(store_id: int, search_term: str = None) -> list:
@@ -337,24 +347,29 @@ def _filter_expiring_soon_rows(rows: list, within_days: int) -> list:
     return result
 
 
-def _filter_low_stock_rows(rows: list) -> list:
+def _filter_low_stock_rows(rows: list, effective_default: int = None) -> list:
     """Given raw product rows (dicts) with quantity and
     minimum_stock_threshold, return only those at or below their
-    effective threshold (per-product if set, else
-    DEFAULT_LOW_STOCK_THRESHOLD), sorted by quantity ascending.
+    effective threshold (per-product if set, else effective_default -
+    or, if that is not given, DEFAULT_LOW_STOCK_THRESHOLD, exactly as
+    before this feature), sorted by quantity ascending.
     """
+    if effective_default is None:
+        effective_default = DEFAULT_LOW_STOCK_THRESHOLD
     result = []
     for raw_row in rows:
         row = dict(raw_row)
         effective_threshold = row.get("minimum_stock_threshold")
         if effective_threshold is None:
-            effective_threshold = DEFAULT_LOW_STOCK_THRESHOLD
+            effective_threshold = effective_default
         if row["quantity"] <= effective_threshold:
             result.append({
                 "product_id": row["product_id"],
                 "name": row["name"],
                 "batch_number": row["batch_number"],
                 "quantity": row["quantity"],
+                "mrp": row.get("mrp"),
+                "rate": row.get("rate"),
                 "effective_threshold": effective_threshold,
             })
     result.sort(key=lambda r: r["quantity"])
@@ -378,7 +393,7 @@ def _count_total_products_sqlite(store_id: int) -> int:
 def _get_expired_products_sqlite(store_id: int) -> list:
     with get_connection() as connection:
         rows = connection.execute(
-            "SELECT product_id, name, batch_number, expiry_date, quantity "
+            "SELECT product_id, name, batch_number, expiry_date, quantity, mrp, rate "
             "FROM products WHERE store_id = ?",
             (store_id,),
         ).fetchall()
@@ -388,14 +403,14 @@ def _get_expired_products_sqlite(store_id: int) -> list:
 def _get_expiring_soon_products_sqlite(store_id: int, within_days: int) -> list:
     with get_connection() as connection:
         rows = connection.execute(
-            "SELECT product_id, name, batch_number, expiry_date, quantity "
+            "SELECT product_id, name, batch_number, expiry_date, quantity, mrp, rate "
             "FROM products WHERE store_id = ?",
             (store_id,),
         ).fetchall()
     return _filter_expiring_soon_rows(rows, within_days)
 
 
-def _get_low_stock_products_sqlite(store_id: int) -> list:
+def _get_low_stock_products_sqlite(store_id: int, effective_default: int) -> list:
     with get_connection() as connection:
         rows = connection.execute(
             """
@@ -404,13 +419,15 @@ def _get_low_stock_products_sqlite(store_id: int) -> list:
                 name,
                 batch_number,
                 quantity,
+                mrp,
+                rate,
                 COALESCE(minimum_stock_threshold, ?) AS effective_threshold
             FROM products
             WHERE store_id = ?
               AND quantity <= COALESCE(minimum_stock_threshold, ?)
             ORDER BY quantity ASC
             """,
-            (DEFAULT_LOW_STOCK_THRESHOLD, store_id, DEFAULT_LOW_STOCK_THRESHOLD),
+            (effective_default, store_id, effective_default),
         ).fetchall()
         return [dict(row) for row in rows]
 
@@ -543,6 +560,37 @@ def _reduce_stock_sqlite(store_id: int, product_id: int, quantity: int) -> None:
                 "or the product could not be found."
             )
 
+        # Zero-quantity duplicate cleanup: this decrement may have just
+        # taken this row to 0. If another row of the same medicine name
+        # (this store, case-insensitive, same COLLATE NOCASE convention
+        # used elsewhere in this file) still has stock, this row is now
+        # a redundant duplicate - delete it. If no such sibling exists,
+        # leave it untouched at 0, exactly as before, so a future
+        # invoice for the same batch/expiry can still find and reuse it
+        # (see products/service.py's zero-quantity merge rules). Runs
+        # inside the same connection/transaction as the decrement above,
+        # so it commits or rolls back together with it - no separate,
+        # non-atomic follow-up write.
+        row = connection.execute(
+            "SELECT name, quantity FROM products WHERE store_id = ? AND product_id = ?",
+            (store_id, product_id),
+        ).fetchone()
+        if row is not None and row["quantity"] == 0:
+            sibling = connection.execute(
+                """
+                SELECT 1 FROM products
+                WHERE store_id = ? AND name = ? COLLATE NOCASE
+                  AND product_id != ? AND quantity > 0
+                LIMIT 1
+                """,
+                (store_id, row["name"], product_id),
+            ).fetchone()
+            if sibling is not None:
+                connection.execute(
+                    "DELETE FROM products WHERE store_id = ? AND product_id = ?",
+                    (store_id, product_id),
+                )
+
 
 # =====================================================================
 # Supabase implementations (Phase 2 - prepared, not yet active)
@@ -580,7 +628,7 @@ def _count_total_products_supabase(store_id: int) -> int:
 def _get_expired_products_supabase(store_id: int) -> list:
     response = (
         _supabase_products_table()
-        .select("product_id, name, batch_number, expiry_date, quantity")
+        .select("product_id, name, batch_number, expiry_date, quantity, mrp, rate")
         .eq("store_id", store_id)
         .execute()
     )
@@ -590,14 +638,14 @@ def _get_expired_products_supabase(store_id: int) -> list:
 def _get_expiring_soon_products_supabase(store_id: int, within_days: int) -> list:
     response = (
         _supabase_products_table()
-        .select("product_id, name, batch_number, expiry_date, quantity")
+        .select("product_id, name, batch_number, expiry_date, quantity, mrp, rate")
         .eq("store_id", store_id)
         .execute()
     )
     return _filter_expiring_soon_rows(response.data, within_days)
 
 
-def _get_low_stock_products_supabase(store_id: int) -> list:
+def _get_low_stock_products_supabase(store_id: int, effective_default: int) -> list:
     # PostgREST has no COALESCE-in-WHERE equivalent for the effective
     # threshold fallback, so - like the expiry queries above - the
     # comparison happens in Python via the shared _filter_low_stock_rows
@@ -605,11 +653,11 @@ def _get_low_stock_products_supabase(store_id: int) -> list:
     # pre-filtered SQL result set.
     response = (
         _supabase_products_table()
-        .select("product_id, name, batch_number, quantity, minimum_stock_threshold")
+        .select("product_id, name, batch_number, quantity, mrp, rate, minimum_stock_threshold")
         .eq("store_id", store_id)
         .execute()
     )
-    return _filter_low_stock_rows(response.data)
+    return _filter_low_stock_rows(response.data, effective_default)
 
 
 def _get_all_products_supabase(store_id: int, search_term: str = None) -> list:
@@ -732,3 +780,36 @@ def _reduce_stock_supabase(store_id: int, product_id: int, quantity: int) -> Non
             "Unable to sell this quantity - not enough stock available, "
             "or the product could not be found."
         )
+
+    # Zero-quantity duplicate cleanup - Supabase equivalent of the
+    # SQLite path's cleanup in _reduce_stock_sqlite above. After a
+    # successful decrement, if this row is now at 0 and another row of
+    # the same medicine name (this store, case-insensitive - ilike with
+    # no wildcard characters in the pattern does a case-insensitive
+    # exact match, the same idiom _get_all_products_supabase already
+    # uses for its search filter) still has stock, delete this
+    # now-redundant row. Reuses this file's existing helpers
+    # (_get_product_by_id_supabase, _delete_product_supabase,
+    # _supabase_products_table) rather than adding new Supabase-side
+    # schema or RPC surface - the RPC docstring above already marks
+    # that as out of scope for this repository-only phase. This is a
+    # second round-trip rather than one atomic transaction (PostgREST
+    # has no client-callable multi-statement transaction without new
+    # RPC surface), but the decrement above has already committed by
+    # this point regardless, so this is strictly a follow-up cleanup of
+    # a row already confirmed at 0 - if it can't be verified, it is
+    # left alone, matching the SQLite path's own same caution.
+    current = _get_product_by_id_supabase(store_id, product_id)
+    if current is not None and current["quantity"] == 0:
+        sibling_response = (
+            _supabase_products_table()
+            .select("product_id")
+            .eq("store_id", store_id)
+            .ilike("name", current["name"])
+            .neq("product_id", product_id)
+            .gt("quantity", 0)
+            .limit(1)
+            .execute()
+        )
+        if sibling_response.data:
+            _delete_product_supabase(store_id, product_id)

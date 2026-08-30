@@ -62,18 +62,24 @@ def _get_severity(quantity: int, effective_threshold: int) -> str:
     return SEVERITY_LOW
 
 
-def get_low_stock_alerts(store_id: int, search_term: str = None) -> dict:
+def get_low_stock_alerts(store_id: int, search_term: str = None, global_minimum: int = None) -> dict:
     """Fetch low-stock products for a store, grouped by severity tier,
     optionally filtered by a name/batch search term.
 
     Reuses products_repository.get_low_stock_products - the same
     function Dashboard uses for its Low Stock count, so this page's
-    list and Dashboard's count are guaranteed to agree.
+    list and Dashboard's count are guaranteed to agree (Dashboard never
+    passes global_minimum, so it is completely unaffected by this
+    parameter - see Requirement 5).
 
     Args:
         store_id: The currently logged-in store's ID.
         search_term: Optional text, matched case-insensitively as a
             substring against name or batch_number.
+        global_minimum: Optional store-wide default threshold override
+            (1-10, selected via the Low Stock page's dropdown). A
+            product's own custom minimum_stock_threshold always wins
+            over this - unchanged existing behavior.
 
     Returns:
         A dict keyed by SEVERITY_* constants, each value a list of
@@ -81,7 +87,7 @@ def get_low_stock_alerts(store_id: int, search_term: str = None) -> dict:
         sorted by quantity ascending within each tier (most urgent
         first), so the store owner sees the emptiest shelves at the top.
     """
-    all_low_stock = products_repository.get_low_stock_products(store_id)
+    all_low_stock = products_repository.get_low_stock_products(store_id, global_minimum=global_minimum)
 
     if search_term and search_term.strip():
         term = search_term.strip().lower()
@@ -100,18 +106,20 @@ def get_low_stock_alerts(store_id: int, search_term: str = None) -> dict:
     return buckets
 
 
-def get_low_stock_counts(store_id: int) -> dict:
+def get_low_stock_counts(store_id: int, global_minimum: int = None) -> dict:
     """Get just the count per severity tier for the filter dropdown's
     labels, without fetching full product details.
 
     Args:
         store_id: The currently logged-in store's ID.
+        global_minimum: Optional store-wide default threshold override
+            - see get_low_stock_alerts.
 
     Returns:
         A dict keyed by SEVERITY_* constants, values are int counts.
         Also includes a "total" key for the summary header.
     """
-    buckets = get_low_stock_alerts(store_id)
+    buckets = get_low_stock_alerts(store_id, global_minimum=global_minimum)
     counts = {severity: len(products) for severity, products in buckets.items()}
     counts["total"] = sum(counts.values())
     return counts

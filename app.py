@@ -11,15 +11,21 @@ routing, that's a sign logic is leaking into the wrong layer.
 import streamlit as st
 import streamlit.components.v1 as components
 
-from config.settings import APP_NAME
+from config.settings import APP_NAME, LOCALSTORAGE_REFRESH_TOKEN_KEY
 from core.database import initialize_database
-from core.session import is_logged_in, get_current_store_name, get_current_owner_name, end_session
+from core.session import (
+    is_logged_in, get_current_store_name, get_current_owner_name,
+    get_current_access_token, start_session, end_session,
+)
+from core.supabase_auth import sign_out, restore_session
+from core.exceptions import SupabaseAuthError, SupabaseConfigError
 from core.login_ui import render_login_signup_screen
 from modules.dashboard.ui import render_dashboard
 from modules.products.ui import render_products_page
 from modules.alerts.ui import render_expiry_alerts_page
 from modules.alerts.low_stock_ui import render_low_stock_alerts_page
 from modules.invoice_scan.upload_ui import render_invoice_scan_page
+from modules.invoice_scan import review_service
 from modules.sales.ui import render_sales_page
 
 st.set_page_config(
@@ -58,11 +64,49 @@ def render_main_app() -> None:
         selected_page = st.radio("Navigate", list(NAV_PAGES.keys()), label_visibility="collapsed")
         st.divider()
         if st.button("Logout", use_container_width=True):
+            # Stabilization fix (P0): logout must destroy ALL review
+            # state, not just the auth session - review data belongs
+            # only to a logged-in store's Invoice Scan screen, and must
+            # never survive into whatever the next login sees. Safe to
+            # call unconditionally even if no review session exists
+            # (review_service.clear_session() is a no-op in that case).
+            # This is safe to run in the SAME script run that also
+            # calls end_session(): after end_session(), is_logged_in()
+            # becomes False, so app.py routes to the login screen this
+            # rerun - the Invoice Scan page (and its file_uploader
+            # widget) is never instantiated this run, so clear_session()
+            # resetting that widget key here cannot conflict with it.
+            review_service.clear_session()
+            # Migration: logout must explicitly end the Supabase Auth
+            # session too, not just this app's own st.session_state -
+            # otherwise a stale Supabase session could still be sitting
+            # in the Supabase client's own memory after this app
+            # considers the user logged out. Read before end_session()
+            # clears it; sign_out() itself never raises (see its own
+            # docstring), so this can never block logout from
+            # completing.
+            sign_out(get_current_access_token())
             end_session()
+            # Requirement 2: also clear the persisted refresh token from
+            # the browser's localStorage - otherwise the startup-
+            # restoration block below would silently log the user back
+            # in on their very next visit, defeating an explicit logout.
+            _clear_persisted_refresh_token()
             st.rerun()
 
         _render_mobile_sidebar_css()
         _render_mobile_sidebar_autoclose()
+
+    # Final stabilization fix: the v2.13.4 "isolation" guard that used to
+    # sit here (clearing the review session on every navigation away from
+    # Invoice Scan) has been REMOVED. It is explicitly no longer wanted:
+    # the review must now survive page navigation and remain available
+    # until the user clicks "Clear Review" or uploads a genuinely new
+    # (different-hash) invoice - navigation alone must never clear it.
+    # Logout above still calls review_service.clear_session() - that is
+    # a deliberate, separate teardown (a fresh login must never see a
+    # previous session's leftover review) and is unaffected by this
+    # change. SHA-256 caching in upload_ui.py is untouched either way.
 
     st.title(f"📦 {APP_NAME}")
     NAV_PAGES[selected_page]()
@@ -171,7 +215,97 @@ def _render_mobile_sidebar_autoclose() -> None:
     )
 
 
+def _clear_persisted_refresh_token() -> None:
+    """Clear the browser's persisted Supabase refresh token
+    (Requirement 2), called on explicit Logout so a stale token can
+    never silently re-authenticate the user on their next visit.
+    """
+    components.html(
+        f"""
+        <script>
+        try {{
+            localStorage.removeItem({LOCALSTORAGE_REFRESH_TOKEN_KEY!r});
+        }} catch (e) {{ /* best-effort - logout already succeeded either way */ }}
+        </script>
+        """,
+        height=0,
+    )
+
+
+def _attempt_session_restoration() -> None:
+    """Requirement 2: on a fresh Streamlit connection (a full browser
+    close/reopen, not just a rerun/navigation - those already work via
+    st.session_state and never reach this function, since is_logged_in()
+    is already True for them) with no active session, check whether the
+    browser has a previously-saved Supabase refresh token and, if so,
+    silently restore the session instead of showing the login screen.
+
+    Mechanism: st.query_params is the only way this Python code can
+    receive a value the browser's own localStorage holds (a plain
+    components.html() call is one-way, Python -> browser only) - so a
+    tiny JS snippet checks localStorage and, if a token is found,
+    redirects the browser to the same URL with that token appended as
+    a query parameter, triggering one fresh page load Python CAN read.
+    That redirect is only attempted when no such query parameter is
+    already present, so this cannot loop: either restoration succeeds
+    (session starts, query param cleared, normal app renders) or it
+    fails (the query param is cleared AND the stale localStorage token
+    is cleared below), and either way the next load has nothing left to
+    retry.
+
+    The token appears in the URL for exactly one redirect, is read once,
+    and is cleared immediately after - it is never logged, never stored
+    anywhere else, and this function returns normally (falling through
+    to the login screen) on any failure, since an invalid/expired
+    stored token must never crash the app.
+    """
+    token_param = st.query_params.get("rt")
+
+    if token_param:
+        # A restoration attempt is already in flight - try it once, then
+        # clear the query param either way so this can never loop.
+        try:
+            store = restore_session(token_param)
+            start_session(
+                store_id=store["store_id"],
+                store_name=store["store_name"],
+                owner_name=store["owner_name"],
+                access_token=store["access_token"],
+                refresh_token=store["refresh_token"],
+            )
+            st.query_params.clear()
+            st.rerun()
+        except (SupabaseAuthError, SupabaseConfigError):
+            # Invalid/expired/unconfigured - discard the stale token so
+            # it is never retried, and fall through to the login screen.
+            st.query_params.clear()
+            _clear_persisted_refresh_token()
+        return
+
+    # No restoration in flight yet - ask the browser whether it has a
+    # saved token at all, only once per fresh page load.
+    components.html(
+        f"""
+        <script>
+        try {{
+            var token = localStorage.getItem({LOCALSTORAGE_REFRESH_TOKEN_KEY!r});
+            var params = new URLSearchParams(window.parent.location.search);
+            if (token && !params.has("rt")) {{
+                params.set("rt", token);
+                window.parent.location.search = params.toString();
+            }}
+        }} catch (e) {{
+            // localStorage unavailable, or no token saved - fall through
+            // to the normal login screen, exactly as before this feature.
+        }}
+        </script>
+        """,
+        height=0,
+    )
+
+
 if is_logged_in():
     render_main_app()
 else:
+    _attempt_session_restoration()
     render_login_signup_screen()

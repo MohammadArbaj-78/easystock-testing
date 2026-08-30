@@ -129,19 +129,22 @@ def _render_detail_sections(metrics: dict) -> None:
             for item in metrics["low_stock_items"]:
                 st.write(
                     f"**{item['name']}** (Batch: {item['batch_number']}) - "
-                    f"Qty: {item['quantity']} / Threshold: {item['effective_threshold']}"
+                    f"Qty: {item['quantity']} / Threshold: {item['effective_threshold']} - "
+                    f"MRP: {item.get('mrp')} - Rate: {item.get('rate')}"
                 )
 
 
 def _render_item_table(items: list) -> None:
-    """Render a simple list of products with name, batch, and expiry.
+    """Render a simple list of products with name, batch, expiry, and
+    price info.
 
     Args:
         items: List of product dicts with name, batch_number,
-            expiry_date, quantity keys.
+            expiry_date, quantity, mrp, rate keys.
     """
     for item in items:
         st.write(
             f"**{item['name']}** (Batch: {item['batch_number']}) - "
-            f"Expires: {item['expiry_date']} - Qty: {item['quantity']}"
+            f"Expires: {item['expiry_date']} - Qty: {item['quantity']} - "
+            f"MRP: {item.get('mrp')} - Rate: {item.get('rate')}"
         )

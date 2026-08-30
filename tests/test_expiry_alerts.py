@@ -9,9 +9,31 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 from core.database import initialize_database
-from core.auth import signup
 from modules.products import service as products_service
 from modules.alerts import service as alerts_service
+
+
+def signup(store_name: str, owner_name: str, mobile_number: str, password: str) -> int:
+    """Create a store row directly via SQLite, bypassing Supabase Auth
+    (core.supabase_auth) - this project's authentication provider since
+    the Supabase Auth migration. A real signup now requires a live
+    network call to Supabase, which this offline test suite cannot make
+    (no `supabase` package installed here, no network access) - these
+    tests only need a store_id to exist to test Expiry Alerts business
+    logic, not authentication itself, so a direct insert matching the
+    `stores` table's actual schema (core/database.py) is used instead,
+    the same pattern tests/test_four_fixes.py already established.
+    `password` is accepted only to keep this helper's signature
+    unchanged for every existing call site below.
+    """
+    from core.database import get_connection
+    with get_connection() as connection:
+        cursor = connection.execute(
+            "INSERT INTO stores (store_name, owner_name, mobile_number, password_hash) "
+            "VALUES (?, ?, ?, ?)",
+            (store_name, owner_name, mobile_number, "test-only-not-a-real-hash"),
+        )
+        return cursor.lastrowid
 
 
 @pytest.fixture
