@@ -15,6 +15,7 @@ import io
 import json
 import os
 import time
+import base64
 from pathlib import Path
 from PIL import Image, ImageOps, ImageEnhance
 import google.genai as genai
@@ -35,7 +36,7 @@ from utils.file_utils import get_image_preview, get_pdf_preview
 # ---------------------------------------------------------------------------
 
 
-def _emergent_preprocess(raw: bytes) -> Image.Image:
+def _emergent_preprocess(raw: bytes) -> str:
     img = Image.open(io.BytesIO(raw))
     img = ImageOps.exif_transpose(img)
 
@@ -59,7 +60,7 @@ def _emergent_preprocess(raw: bytes) -> Image.Image:
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=92)
 
-    return Image.open(io.BytesIO(buf.getvalue())).convert("RGB")
+    return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 MEDICINE_FIELDS = [
     "name",
@@ -302,17 +303,17 @@ def extract_medicines_from_file(file_obj) -> dict:
     # image, completely unprocessed - exactly what Gemini received before
     # preprocessing existed.
     try:
-      raw_bytes = file_obj.getvalue()
-      image_for_gemini = _emergent_preprocess(raw_bytes)
-      preprocess_result = None
+        raw_bytes = file_obj.getvalue()
+        preprocessed_base64 = _emergent_preprocess(raw_bytes)
+        image_bytes = base64.b64decode(preprocessed_base64)
+        image_mime_type = "image/jpeg"
+        preprocess_result = None
     except Exception:
-      image_for_gemini = pil_image
-      preprocess_result = None
-
-    # Convert PIL Image to PNG bytes for the Gemini SDK.
-    buf = io.BytesIO()
-    image_for_gemini.save(buf, format="PNG")
-    image_bytes = buf.getvalue()
+        buf = io.BytesIO()
+        pil_image.save(buf, format="PNG")
+        image_bytes = buf.getvalue()
+        image_mime_type = "image/png"
+        preprocess_result = None
 
     client = _build_genai_client(api_key)
 
@@ -324,7 +325,7 @@ def extract_medicines_from_file(file_obj) -> dict:
     contents = [
         genai_types.Part.from_bytes(
             data=image_bytes,
-            mime_type="image/png",
+            mime_type=image_mime_type,
         ),
         _EXTRACTION_PROMPT,
     ]
