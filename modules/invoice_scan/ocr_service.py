@@ -15,6 +15,7 @@ import io
 import json
 import os
 import time
+import base64
 from pathlib import Path
 from PIL import Image, ImageOps, ImageEnhance
 import google.genai as genai
@@ -34,31 +35,50 @@ from utils.file_utils import get_image_preview, get_pdf_preview
 # Schema
 # ---------------------------------------------------------------------------
 
-def _emergent_preprocess(raw: bytes) -> Image.Image:
+def _emergent_preprocess(raw: bytes) -> str:
+    """Light preprocessing: auto-orient via EXIF, mild contrast boost, cap size. Returns base64 JPEG."""
     img = Image.open(io.BytesIO(raw))
-    img = ImageOps.exif_transpose(img)
-
+    img = ImageOps.exif_transpose(img)  # auto-rotate based on EXIF
     if img.mode != "RGB":
         img = img.convert("RGB")
-
+    # cap the longest side to keep payload reasonable while preserving detail
     max_side = 2200
-
     if max(img.size) > max_side:
         ratio = max_side / max(img.size)
-        img = img.resize(
-            (
-                int(img.size[0] * ratio),
-                int(img.size[1] * ratio),
-            ),
-            Image.LANCZOS,
-        )
-
+        img = img.resize((int(img.size[0] * ratio), int(img.size[1] * ratio)), Image.LANCZOS)
+    # mild contrast enhancement (does not destroy the original)
     img = ImageEnhance.Contrast(img).enhance(1.15)
-
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=92)
+    return base64.b64encode(buf.getvalue()).decode("utf-8")
 
-    return Image.open(io.BytesIO(buf.getvalue())).convert("RGB")
+
+
+# def _emergent_preprocess(raw: bytes) -> Image.Image:
+#     img = Image.open(io.BytesIO(raw))
+#     img = ImageOps.exif_transpose(img)
+
+#     if img.mode != "RGB":
+#         img = img.convert("RGB")
+
+#     max_side = 2200
+
+#     if max(img.size) > max_side:
+#         ratio = max_side / max(img.size)
+#         img = img.resize(
+#             (
+#                 int(img.size[0] * ratio),
+#                 int(img.size[1] * ratio),
+#             ),
+#             Image.LANCZOS,
+#         )
+
+#     img = ImageEnhance.Contrast(img).enhance(1.15)
+
+#     buf = io.BytesIO()
+#     img.save(buf, format="JPEG", quality=92)
+
+#     return Image.open(io.BytesIO(buf.getvalue())).convert("RGB")
 
 MEDICINE_FIELDS = [
     "name",
