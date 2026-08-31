@@ -395,32 +395,78 @@ def _friendly_auth_error(error: Exception, context: str) -> str:
 
 
 # =====================================================================
-# Local store-row lookup/creation - the only place this module touches
-# the `stores` table directly, via the same core.database.get_connection()
-# every other repository/service in the app already uses.
+# Supabase store-row lookup/creation - the only place this module
+# touches the `stores` table directly, via core.supabase_client's
+# shared client (the same one modules/products/repository.py and
+# modules/sales/repository.py already use for products/sales_history).
+# Confirmed schema: store_id (bigint, PK), created_at, store_name
+# (nullable), owner_name (nullable), UID (uuid, nullable, FK to
+# auth.users.id).
 # =====================================================================
 
 
 def _create_store_row(store_name: str, owner_name: str, email: str, supabase_user_id: str) -> int:
-    with get_connection() as connection:
-        cursor = connection.execute(
-            """
-            INSERT INTO stores (store_name, owner_name, mobile_number, password_hash, supabase_user_id)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (store_name, owner_name, email, "SUPABASE_AUTH_MANAGED", supabase_user_id),
+    """Insert the new store into Supabase's `stores` table, linked to
+    the Auth user via the `UID` column - the Supabase-hosted
+    replacement for the old local-SQLite store row (that table's
+    confirmed schema is store_id, created_at, store_name, owner_name,
+    UID - no email/mobile column). `email` is accepted only for
+    call-site compatibility with sign_up_and_create_store(), which
+    already passes it - it is not written here, since there is nowhere
+    in the confirmed schema to put it and Supabase Auth already owns
+    that value on the auth.users row itself.
+
+    Raises:
+        DatabaseError: If the insert fails for any reason other than a
+            missing/blank Supabase configuration - converted here the
+            same way core.database.get_connection() used to convert a
+            raw sqlite3.Error, so the existing
+            "except DatabaseError" handling in sign_up_and_create_store()
+            keeps working unchanged.
+        SupabaseConfigError: Propagated as-is (not converted) if
+            SUPABASE_URL/SUPABASE_KEY are missing - matches how every
+            other Supabase-config failure in this file is handled, and
+            is already caught by login_ui.py's UI-layer except clause.
+    """
+    from core.supabase_client import get_supabase_client
+
+    try:
+        response = (
+            get_supabase_client()
+            .table("stores")
+            .insert({
+                "store_name": store_name,
+                "owner_name": owner_name,
+                "UID": supabase_user_id,
+            })
+            .execute()
         )
-        return cursor.lastrowid
+    except SupabaseConfigError:
+        raise
+    except Exception as error:
+        raise DatabaseError(str(error)) from error
+
+    if not response.data:
+        raise DatabaseError("Supabase stores insert returned no row.")
+
+    return response.data[0]["store_id"]
 
 
 def _fetch_store_by_supabase_user_id(supabase_user_id: str):
-    with get_connection() as connection:
-        row = connection.execute(
-            """
-            SELECT store_id, store_name, owner_name
-            FROM stores
-            WHERE supabase_user_id = ?
-            """,
-            (supabase_user_id,),
-        ).fetchone()
-        return dict(row) if row else None
+    """Look up the store linked to this Auth user via Supabase's
+    `stores.UID` column - the Supabase-hosted replacement for the old
+    local-SQLite lookup by `supabase_user_id`. Returns the same shape
+    as before (store_id, store_name, owner_name) so callers
+    (sign_in_and_resolve_store, restore_session) are unaffected.
+    """
+    from core.supabase_client import get_supabase_client
+
+    response = (
+        get_supabase_client()
+        .table("stores")
+        .select("store_id, store_name, owner_name")
+        .eq("UID", supabase_user_id)
+        .limit(1)
+        .execute()
+    )
+    return response.data[0] if response.data else None
