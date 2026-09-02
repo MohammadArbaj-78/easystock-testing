@@ -253,6 +253,23 @@ def _attempt_session_restoration() -> None:
     is cleared below), and either way the next load has nothing left to
     retry.
 
+    The redirect itself cannot be triggered directly from this
+    component's own script: components.html() renders inside a
+    sandboxed iframe (allow-scripts + allow-same-origin, but no
+    allow-top-navigation/-by-user-activation), and browsers explicitly
+    block a sandboxed frame from navigating the top-level window - this
+    silently broke restoration before (confirmed with real-browser
+    testing; the browser logs a console security warning, not a
+    catchable JS exception, so the surrounding try/catch below never
+    saw it). The fix: instead of navigating window.parent directly,
+    the script below injects a small <script> element into
+    window.parent.document itself - because allow-same-origin permits
+    full DOM access to the parent document, and a script that executes
+    as part of the PARENT's own document (rather than originating from
+    the sandboxed iframe) is not subject to the top-navigation
+    restriction. Verified with a real headless-Chromium reproduction
+    against the exact same sandbox attributes before this change.
+
     The token appears in the URL for exactly one redirect, is read once,
     and is cleared immediately after - it is never logged, never stored
     anywhere else, and this function returns normally (falling through
@@ -292,7 +309,14 @@ def _attempt_session_restoration() -> None:
             var params = new URLSearchParams(window.parent.location.search);
             if (token && !params.has("rt")) {{
                 params.set("rt", token);
-                window.parent.location.search = params.toString();
+                var newSearch = params.toString();
+                // Cannot navigate window.parent directly from inside this
+                // sandboxed iframe (see docstring above) - inject a
+                // <script> into the parent document instead, so the
+                // navigation runs as the parent's own, unsandboxed script.
+                var bridge = window.parent.document.createElement("script");
+                bridge.textContent = "window.location.search = " + JSON.stringify(newSearch) + ";";
+                window.parent.document.body.appendChild(bridge);
             }}
         }} catch (e) {{
             // localStorage unavailable, or no token saved - fall through
