@@ -64,16 +64,7 @@ def render_main_app() -> None:
         st.markdown(f"### {get_current_store_name()}")
         st.caption(f"Owner: {get_current_owner_name()}")
         st.divider()
-        selected_page = st.radio(
-            "Navigate",
-            list(NAV_PAGES.keys()),
-            index=list(NAV_PAGES.keys()).index(
-                st.session_state.get("last_selected_page", list(NAV_PAGES.keys())[0])
-            ),
-            label_visibility="collapsed"
-        )
-
-        st.session_state["last_selected_page"] = selected_page
+        selected_page = st.radio("Navigate", list(NAV_PAGES.keys()), label_visibility="collapsed")
         st.divider()
         if st.button("Logout", use_container_width=True):
             # Stabilization fix (P0): logout must destroy ALL review
