@@ -14,7 +14,6 @@ repository, never here.
 """
 
 import streamlit as st
-import streamlit.components.v1 as components
 
 from modules.alerts import low_stock_service
 from config.alert_theme import render_alert_banner
@@ -38,35 +37,7 @@ def render_low_stock_alerts_page() -> None:
     # A product's own custom minimum_stock_threshold still always wins
     # over this - unchanged, enforced entirely inside
     # products_repository's existing COALESCE/effective-threshold logic.
-    if "low_stock_global_minimum_value" not in st.session_state:
-        token_param = st.query_params.get("lsm")
     
-        if token_param is not None:
-            st.session_state["low_stock_global_minimum_value"] = int(token_param)
-            del st.query_params["lsm"]
-        else:
-            components.html(
-                """
-                <script>
-                try {
-                    var saved = localStorage.getItem("easystock_low_stock_minimum");
-                    var params = new URLSearchParams(window.parent.location.search);
-    
-                    if (saved && !params.has("lsm")) {
-                        params.set("lsm", saved);
-                        var newSearch = params.toString();
-    
-                        var bridge = window.parent.document.createElement("script");
-                        bridge.textContent =
-                            "window.location.search = " +
-                            JSON.stringify(newSearch) + ";";
-                        window.parent.document.body.appendChild(bridge);
-                    }
-                } catch (e) {}
-                </script>
-                """,
-                height=0,
-            )
     global_minimum = st.session_state.get(
         "low_stock_global_minimum_value", DEFAULT_LOW_STOCK_THRESHOLD
     )
@@ -144,15 +115,7 @@ def _render_global_minimum_dropdown() -> int:
         key="low_stock_global_minimum_widget",
     )
     st.session_state["low_stock_global_minimum_value"] = selected
-    components.html(
-        f"""
-        <script>
-        try {{ localStorage.setItem("easystock_low_stock_minimum", {selected!r}); }}
-        catch (e) {{ }}
-        </script>
-        """,
-        height=0,
-    )
+    
     return selected
 
 
