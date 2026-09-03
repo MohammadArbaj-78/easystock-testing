@@ -78,7 +78,7 @@ MEDICINE_FIELDS = [
 # Prompt
 # ---------------------------------------------------------------------------
 
-# _PROMPT_FIELDS = ["name", "batch_number", "expiry_date", "qty", "free", "mrp", "rate", "gst_percent"]
+_PROMPT_FIELDS = ["name", "batch_number", "expiry_date", "qty", "free", "mrp", "rate", "gst_percent"]
 
 _EXTRACTION_PROMPT = f"""
 You are an expert at reading Indian medical-store GST purchase invoices from photos.
@@ -102,8 +102,8 @@ CRITICAL RULES:
 3. Do NOT invent, calculate, or infer any missing value. If a field is not clearly readable, set it to "" (empty string). Never copy a value from another row to fill a gap.
 4. Only extract the medicine line items - ignore header/address/totals/tax-summary sections.
 
-Return ONLY valid JSON, no markdown, no commentary, in this exact shape:
-{"rows": [{"medicine_name": "", "batch_no": "", "expiry": "", "qty": "", "free_qty": "", "mrp": "", "rate": "", "gst": ""}]}
+Return ONLY valid JSON, no markdown, no commentary. Return a single JSON array (not an object), one element per medicine row, with EXACTLY these keys per object:
+{json.dumps(_PROMPT_FIELDS)}
 
 If no medicines are found, or the image is unreadable / not an invoice, return: []
 """
