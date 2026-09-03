@@ -19,7 +19,10 @@ from core.session import (
 )
 from core.supabase_auth import sign_out, restore_session
 from core.exceptions import SupabaseAuthError, SupabaseConfigError
-from core.login_ui import render_login_signup_screen
+from core.login_ui import (
+    render_login_signup_screen,
+    _persist_refresh_token_to_browser,
+)
 from modules.dashboard.ui import render_dashboard
 from modules.products.ui import render_products_page
 from modules.alerts.ui import render_expiry_alerts_page
@@ -290,6 +293,7 @@ def _attempt_session_restoration() -> None:
                 access_token=store["access_token"],
                 refresh_token=store["refresh_token"],
             )
+            _persist_refresh_token_to_browser(store["refresh_token"])
             st.query_params.clear()
             st.rerun()
         except (SupabaseAuthError, SupabaseConfigError):
