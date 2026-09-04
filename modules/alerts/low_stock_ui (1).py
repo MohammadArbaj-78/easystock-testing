@@ -14,6 +14,7 @@ repository, never here.
 """
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 from modules.alerts import low_stock_service
 from config.alert_theme import render_alert_banner
@@ -23,12 +24,69 @@ from config.settings import DEFAULT_LOW_STOCK_THRESHOLD
 FILTER_OPTION_ALL = "All"
 GLOBAL_MINIMUM_OPTIONS = list(range(1, 11))  # Requirement 5: strictly 1-10
 
+# Browser-level persistence (localStorage) for the global minimum
+# selection, so it survives a full browser close/reopen - distinct
+# key/param names from the Auth restoration bridge in app.py
+# (LOCALSTORAGE_REFRESH_TOKEN_KEY / "rt"), scoped entirely to this file.
+# Per-browser only, not per-account - see render_low_stock_alerts_page()'s
+# docstring.
+_LOCALSTORAGE_LOW_STOCK_MINIMUM_KEY = "easystock_low_stock_minimum"
+_QUERY_PARAM_LOW_STOCK_MINIMUM = "lsm"
+
 
 def render_low_stock_alerts_page() -> None:
-    """Render the Low Stock Alerts screen."""
+    """Render the Low Stock Alerts screen.
+
+    Browser-level persistence: the global minimum selection is restored
+    from localStorage on a genuinely fresh connection (browser closed
+    and reopened) via the same script-injection bridge technique
+    already proven for Supabase Auth restoration in app.py - a
+    sandboxed components.html() iframe cannot navigate the top-level
+    window directly, so a small <script> is injected into
+    window.parent.document instead, which then executes as the
+    parent's own (unsandboxed) script. Uses entirely distinct
+    localStorage/query-param names from the Auth bridge, and only ever
+    runs while already logged in (this page is only reachable inside
+    render_main_app()), so it can never race with app.py's own
+    restoration flow. This is per-browser persistence only - the same
+    account on a different browser/device will not see this value; see
+    the investigation this was based on for that distinction.
+    """
     st.subheader("📦 Low Stock Alerts")
 
     store_id = get_current_store_id()
+
+    if "low_stock_global_minimum_value" not in st.session_state:
+        restored_param = st.query_params.get(_QUERY_PARAM_LOW_STOCK_MINIMUM)
+        if restored_param is not None:
+            try:
+                st.session_state["low_stock_global_minimum_value"] = int(restored_param)
+            except (TypeError, ValueError):
+                pass
+            del st.query_params[_QUERY_PARAM_LOW_STOCK_MINIMUM]
+        else:
+            components.html(
+                f"""
+                <script>
+                try {{
+                    var saved = localStorage.getItem({_LOCALSTORAGE_LOW_STOCK_MINIMUM_KEY!r});
+                    var params = new URLSearchParams(window.parent.location.search);
+                    if (saved && !params.has({_QUERY_PARAM_LOW_STOCK_MINIMUM!r})) {{
+                        params.set({_QUERY_PARAM_LOW_STOCK_MINIMUM!r}, saved);
+                        var newSearch = params.toString();
+                        var bridge = window.parent.document.createElement("script");
+                        bridge.textContent = "window.location.search = " + JSON.stringify(newSearch) + ";";
+                        window.parent.document.body.appendChild(bridge);
+                    }}
+                }} catch (e) {{
+                    // No saved value, or localStorage unavailable - the
+                    // existing DEFAULT_LOW_STOCK_THRESHOLD applies below,
+                    // exactly as before this feature.
+                }}
+                </script>
+                """,
+                height=0,
+            )
 
     # Requirement 5: session-only (not persisted to the database - see
     # the investigation's recommendation), defaulting to the existing
@@ -37,7 +95,6 @@ def render_low_stock_alerts_page() -> None:
     # A product's own custom minimum_stock_threshold still always wins
     # over this - unchanged, enforced entirely inside
     # products_repository's existing COALESCE/effective-threshold logic.
-    
     global_minimum = st.session_state.get(
         "low_stock_global_minimum_value", DEFAULT_LOW_STOCK_THRESHOLD
     )
@@ -115,7 +172,17 @@ def _render_global_minimum_dropdown() -> int:
         key="low_stock_global_minimum_widget",
     )
     st.session_state["low_stock_global_minimum_value"] = selected
-    
+
+    components.html(
+        f"""
+        <script>
+        try {{ localStorage.setItem({_LOCALSTORAGE_LOW_STOCK_MINIMUM_KEY!r}, {selected!r}); }}
+        catch (e) {{ /* best-effort, same as the Auth refresh-token persistence */ }}
+        </script>
+        """,
+        height=0,
+    )
+
     return selected
 
 
