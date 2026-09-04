@@ -35,32 +35,63 @@ from utils.file_utils import get_image_preview, get_pdf_preview
 # Schema
 # ---------------------------------------------------------------------------
 
-
 def _emergent_preprocess(raw: bytes) -> str:
+    """Prepare a photo for a VISION model (not classic OCR).
+    - fix EXIF orientation
+    - keep enough resolution so tiny batch/expiry digits survive
+    - adaptive lighting fix (dark AND washed-out photos)
+    - mild sharpen for faint dot-matrix / carbon-copy print
+    We do NOT binarize/threshold - that hurts LLM vision.
+    """
     img = Image.open(io.BytesIO(raw))
     img = ImageOps.exif_transpose(img)
 
     if img.mode != "RGB":
         img = img.convert("RGB")
 
-    max_side = 2200
-
+    # was 2200 - too low for dense 15-20 item bills; 3000 keeps digits legible
+    max_side = 3000
     if max(img.size) > max_side:
         ratio = max_side / max(img.size)
         img = img.resize(
-            (
-                int(img.size[0] * ratio),
-                int(img.size[1] * ratio),
-            ),
+            (int(img.size[0] * ratio), int(img.size[1] * ratio)),
             Image.LANCZOS,
         )
 
-    img = ImageEnhance.Contrast(img).enhance(1.15)
+    # adaptive, replaces the old fixed Contrast(1.15)
+    img = ImageOps.autocontrast(img, cutoff=1)
+    # modest sharpen - recovers faint print without artifacts
+    img = ImageEnhance.Sharpness(img).enhance(1.5)
 
     buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=92)
-
+    img.save(buf, format="JPEG", quality=95)  # 95 keeps small digits crisp
     return base64.b64encode(buf.getvalue()).decode("utf-8")
+
+# def _emergent_preprocess(raw: bytes) -> str:
+#     img = Image.open(io.BytesIO(raw))
+#     img = ImageOps.exif_transpose(img)
+
+#     if img.mode != "RGB":
+#         img = img.convert("RGB")
+
+#     max_side = 2200
+
+#     if max(img.size) > max_side:
+#         ratio = max_side / max(img.size)
+#         img = img.resize(
+#             (
+#                 int(img.size[0] * ratio),
+#                 int(img.size[1] * ratio),
+#             ),
+#             Image.LANCZOS,
+#         )
+
+#     img = ImageEnhance.Contrast(img).enhance(1.15)
+
+#     buf = io.BytesIO()
+#     img.save(buf, format="JPEG", quality=92)
+
+#     return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 MEDICINE_FIELDS = [
     "name",
@@ -107,6 +138,18 @@ Return ONLY valid JSON, no markdown, no commentary. Return a single JSON array (
 
 If no medicines are found, or the image is unreadable / not an invoice, return: []
 """
+
+# Forces Gemini to return clean, complete JSON matching exactly these 8 keys.
+# This (not the prompt text) is what kills bad-JSON / missing-field failures.
+_RESPONSE_SCHEMA = genai_types.Schema(
+    type=genai_types.Type.ARRAY,
+    items=genai_types.Schema(
+        type=genai_types.Type.OBJECT,
+        properties={f: genai_types.Schema(type=genai_types.Type.STRING) for f in _PROMPT_FIELDS},
+        required=list(_PROMPT_FIELDS),
+        property_ordering=list(_PROMPT_FIELDS),
+    ),
+)
 
 # ---------------------------------------------------------------------------
 # Key loading
@@ -334,6 +377,11 @@ def extract_medicines_from_file(file_obj) -> dict:
         response = client.models.generate_content(
             model=GEMINI_MODEL,
             contents=contents,
+            config=genai_types.GenerateContentConfig(
+                temperature=0,                       # deterministic reads (no random digit flips)
+                response_mime_type="application/json",
+                response_schema=_RESPONSE_SCHEMA,    # forces clean, complete JSON
+            ),
         )
     except Exception as exc:
         exc_str = str(exc).lower()
