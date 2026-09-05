@@ -228,10 +228,18 @@ def sign_up_and_create_store(store_name: str, owner_name: str, email: str, passw
             ) from error
         raise SupabaseAuthError(f"Account created, but saving store details failed: {error}") from error
 
+    store = _fetch_store_by_supabase_user_id(session["user_id"])
+
+    if store is None:
+        raise SupabaseAuthError(
+            "Account was created, but the store could not be resolved."
+        )
+    
     return {
-        "store_id": store_id,
-        "store_name": clean_store_name,
-        "owner_name": clean_owner_name,
+        "store_id": store["store_id"],
+        "store_name": store["store_name"],
+        "owner_name": store["owner_name"],
+        "low_stock_minimum": store["low_stock_minimum"],
         "access_token": session["access_token"],
         "refresh_token": session["refresh_token"],
     }
@@ -280,6 +288,7 @@ def sign_in_and_resolve_store(email: str, password: str) -> dict:
         "store_id": store["store_id"],
         "store_name": store["store_name"],
         "owner_name": store["owner_name"],
+        "low_stock_minimum": store["low_stock_minimum"],
         "access_token": session["access_token"],
         "refresh_token": session["refresh_token"],
     }
@@ -357,6 +366,7 @@ def restore_session(refresh_token: str) -> dict:
         "store_id": store["store_id"],
         "store_name": store["store_name"],
         "owner_name": store["owner_name"],
+        "low_stock_minimum": store["low_stock_minimum"],
         "access_token": session["access_token"],
         "refresh_token": session["refresh_token"],
     }
@@ -451,6 +461,23 @@ def _create_store_row(store_name: str, owner_name: str, email: str, supabase_use
 
     return response.data[0]["store_id"]
 
+def update_store_low_stock_minimum(store_id: int, value: int) -> None:
+    """Update the global Low Stock minimum for one store."""
+
+    from core.supabase_client import get_supabase_client
+
+    try:
+        (
+            get_supabase_client()
+            .table("stores")
+            .update({"low_stock_minimum": value})
+            .eq("store_id", store_id)
+            .execute()
+        )
+    except SupabaseConfigError:
+        raise
+    except Exception as error:
+        raise DatabaseError(str(error)) from error
 
 def _fetch_store_by_supabase_user_id(supabase_user_id: str):
     """Look up the store linked to this Auth user via Supabase's
@@ -464,7 +491,7 @@ def _fetch_store_by_supabase_user_id(supabase_user_id: str):
     response = (
         get_supabase_client()
         .table("stores")
-        .select("store_id, store_name, owner_name")
+        .select("store_id, store_name, owner_name, low_stock_minimum")
         .eq("UID", supabase_user_id)
         .limit(1)
         .execute()

@@ -97,6 +97,7 @@ def _render_login_form() -> None:
             owner_name=store["owner_name"],
             access_token=store["access_token"],
             refresh_token=store["refresh_token"],
+            low_stock_minimum=store["low_stock_minimum"],
         )
         _persist_refresh_token_to_browser(store["refresh_token"])
         st.rerun()
@@ -133,6 +134,7 @@ def _render_signup_form() -> None:
             owner_name=store["owner_name"],
             access_token=store["access_token"],
             refresh_token=store["refresh_token"],
+            low_stock_minimum=store["low_stock_minimum"],
         )
         _persist_refresh_token_to_browser(store["refresh_token"])
         st.success("Account created successfully!")

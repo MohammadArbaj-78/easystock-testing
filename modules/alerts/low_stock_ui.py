@@ -17,7 +17,12 @@ import streamlit as st
 
 from modules.alerts import low_stock_service
 from config.alert_theme import render_alert_banner
-from core.session import get_current_store_id
+from core.session import (
+    get_current_store_id,
+    get_current_low_stock_minimum,
+    set_current_low_stock_minimum,
+)
+from core.supabase_auth import update_store_low_stock_minimum
 from config.settings import DEFAULT_LOW_STOCK_THRESHOLD
 
 FILTER_OPTION_ALL = "All"
@@ -38,9 +43,7 @@ def render_low_stock_alerts_page() -> None:
     # over this - unchanged, enforced entirely inside
     # products_repository's existing COALESCE/effective-threshold logic.
     
-    global_minimum = st.session_state.get(
-        "low_stock_global_minimum_value", DEFAULT_LOW_STOCK_THRESHOLD
-    )
+    global_minimum = get_current_low_stock_minimum()
 
     counts = low_stock_service.get_low_stock_counts(store_id, global_minimum=global_minimum)
 
@@ -106,7 +109,7 @@ def _render_global_minimum_dropdown() -> int:
     the new value - no extra plumbing needed for the "refresh
     immediately" requirement.
     """
-    current = st.session_state.get("low_stock_global_minimum_value", DEFAULT_LOW_STOCK_THRESHOLD)
+    current = get_current_low_stock_minimum()
     index = GLOBAL_MINIMUM_OPTIONS.index(current) if current in GLOBAL_MINIMUM_OPTIONS else 0
     selected = st.selectbox(
         "Minimum stock limit",
@@ -114,7 +117,12 @@ def _render_global_minimum_dropdown() -> int:
         index=index,
         key="low_stock_global_minimum_widget",
     )
-    st.session_state["low_stock_global_minimum_value"] = selected
+    if selected != current:
+        update_store_low_stock_minimum(
+            get_current_store_id(),
+            selected,
+        )
+        set_current_low_stock_minimum(selected)
     
     return selected
 

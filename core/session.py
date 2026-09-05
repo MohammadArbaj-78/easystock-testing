@@ -27,6 +27,7 @@ def start_session(
     owner_name: str,
     access_token: str = None,
     refresh_token: str = None,
+    low_stock_minimum: int = 2,
 ) -> None:
     """Begin an authenticated session for a store after successful login
     or signup.
@@ -54,6 +55,7 @@ def start_session(
         "owner_name": owner_name,
         "access_token": access_token,
         "refresh_token": refresh_token,
+        "low_stock_minimum": low_stock_minimum,
     }
 
 
@@ -93,6 +95,25 @@ def get_current_store_id() -> int:
         )
     return st.session_state[SESSION_STATE_KEY]["store_id"]
 
+def get_current_low_stock_minimum() -> int:
+    """Get the current store's global Low Stock minimum."""
+
+    if not is_logged_in():
+        raise RuntimeError(
+            "get_current_low_stock_minimum() called with no active session."
+        )
+
+    return st.session_state[SESSION_STATE_KEY].get("low_stock_minimum", 2)
+
+def set_current_low_stock_minimum(value: int) -> None:
+    """Update the current session's Low Stock minimum."""
+
+    if not is_logged_in():
+        raise RuntimeError(
+            "set_current_low_stock_minimum() called with no active session."
+        )
+
+    st.session_state[SESSION_STATE_KEY]["low_stock_minimum"] = value
 
 def get_current_store_name() -> str:
     """Get the store_name of the currently logged-in store, for display
