@@ -17,7 +17,8 @@ session-state selection (see get_dashboard_metrics) - there is
 otherwise no Streamlit code in this file.
 """
 
-import streamlit as st
+from core.session import get_current_low_stock_minimum
+
 
 from modules.products import repository as products_repository
 from config.settings import DASHBOARD_EXPIRY_SOON_DAYS
@@ -75,7 +76,7 @@ def get_dashboard_metrics(store_id: int) -> dict:
 
     low_stock_items = products_repository.get_low_stock_products(
         store_id,
-        global_minimum=st.session_state.get("low_stock_global_minimum_value"),
+        global_minimum=get_current_low_stock_minimum(),
     )
 
     return {
