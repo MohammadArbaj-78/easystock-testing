@@ -1,4 +1,4 @@
-    """
+"""
 Products repository - data access layer for the products table.
 
 Originally built minimal (read-only) to support Dashboard. Now extended
