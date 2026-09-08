@@ -231,7 +231,7 @@ def sell_product(store_id: int, product_id: int, quantity: int) -> int:
     for lot in lots:
         if remaining_to_sell <= 0:
             break
-        take = min(lot["quantity"], remaining_to_sell)
+        take = int(min(lot["quantity"], remaining_to_sell))
 
         # The real anti-oversell guard: an atomic conditional UPDATE,
         # not a separate "is quantity <= product['quantity']" check
