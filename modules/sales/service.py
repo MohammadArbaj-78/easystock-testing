@@ -226,6 +226,7 @@ def sell_product(store_id: int, product_id: int, quantity: int) -> int:
 
     remaining_to_sell = quantity
     last_sale_id = None
+    zeroed_product_ids = []
 
     for lot in lots:
         if remaining_to_sell <= 0:
@@ -240,6 +241,9 @@ def sell_product(store_id: int, product_id: int, quantity: int) -> int:
         # this per-lot call is what actually enforces it.
         products_repository.reduce_stock(store_id, lot["product_id"], take)
 
+        if take == lot["quantity"]:
+            zeroed_product_ids.append(lot["product_id"])
+
         last_sale_id = sales_repository.record_sale(
             store_id=store_id,
             product_id=lot["product_id"],
@@ -249,6 +253,13 @@ def sell_product(store_id: int, product_id: int, quantity: int) -> int:
         )
 
         remaining_to_sell -= take
+
+    # Zero-quantity duplicate cleanup runs ONLY here, after every
+    # reduce_stock()/record_sale() pair above has already completed -
+    # deleting a lot before its own sale record is inserted would break
+    # that insert with a foreign-key error (product_id no longer exists).
+    for product_id in zeroed_product_ids:
+        products_repository.cleanup_zero_quantity_duplicate(store_id, product_id)
 
     return last_sale_id
 

@@ -1,4 +1,4 @@
-"""
+    """
 Products repository - data access layer for the products table.
 
 Originally built minimal (read-only) to support Dashboard. Now extended
@@ -560,38 +560,6 @@ def _reduce_stock_sqlite(store_id: int, product_id: int, quantity: int) -> None:
                 "or the product could not be found."
             )
 
-        # Zero-quantity duplicate cleanup: this decrement may have just
-        # taken this row to 0. If another row of the same medicine name
-        # (this store, case-insensitive, same COLLATE NOCASE convention
-        # used elsewhere in this file) still has stock, this row is now
-        # a redundant duplicate - delete it. If no such sibling exists,
-        # leave it untouched at 0, exactly as before, so a future
-        # invoice for the same batch/expiry can still find and reuse it
-        # (see products/service.py's zero-quantity merge rules). Runs
-        # inside the same connection/transaction as the decrement above,
-        # so it commits or rolls back together with it - no separate,
-        # non-atomic follow-up write.
-        row = connection.execute(
-            "SELECT name, quantity FROM products WHERE store_id = ? AND product_id = ?",
-            (store_id, product_id),
-        ).fetchone()
-        if row is not None and row["quantity"] == 0:
-            sibling = connection.execute(
-                """
-                SELECT 1 FROM products
-                WHERE store_id = ? AND name = ? COLLATE NOCASE
-                  AND product_id != ? AND quantity > 0
-                LIMIT 1
-                """,
-                (store_id, row["name"], product_id),
-            ).fetchone()
-            if sibling is not None:
-                connection.execute(
-                    "DELETE FROM products WHERE store_id = ? AND product_id = ?",
-                    (store_id, product_id),
-                )
-
-
 # =====================================================================
 # Supabase implementations (Phase 2 - prepared, not yet active)
 #
@@ -780,25 +748,46 @@ def _reduce_stock_supabase(store_id: int, product_id: int, quantity: int) -> Non
             "Unable to sell this quantity - not enough stock available, "
             "or the product could not be found."
         )
+    
 
-    # Zero-quantity duplicate cleanup - Supabase equivalent of the
-    # SQLite path's cleanup in _reduce_stock_sqlite above. After a
-    # successful decrement, if this row is now at 0 and another row of
-    # the same medicine name (this store, case-insensitive - ilike with
-    # no wildcard characters in the pattern does a case-insensitive
-    # exact match, the same idiom _get_all_products_supabase already
-    # uses for its search filter) still has stock, delete this
-    # now-redundant row. Reuses this file's existing helpers
-    # (_get_product_by_id_supabase, _delete_product_supabase,
-    # _supabase_products_table) rather than adding new Supabase-side
-    # schema or RPC surface - the RPC docstring above already marks
-    # that as out of scope for this repository-only phase. This is a
-    # second round-trip rather than one atomic transaction (PostgREST
-    # has no client-callable multi-statement transaction without new
-    # RPC surface), but the decrement above has already committed by
-    # this point regardless, so this is strictly a follow-up cleanup of
-    # a row already confirmed at 0 - if it can't be verified, it is
-    # left alone, matching the SQLite path's own same caution.
+def cleanup_zero_quantity_duplicate(store_id: int, product_id: int) -> None:
+    """After a sale has fully recorded, delete a lot that this sale
+    reduced to 0 IF another lot of the same medicine name still has
+    stock. Called only after sales_history's insert for this exact
+    product_id has already completed - deleting any earlier (inside
+    reduce_stock) would break that insert with a foreign-key error,
+    since sales_history.product_id references this same row.
+    """
+    if ACTIVE_DB_BACKEND == "supabase":
+        _cleanup_zero_quantity_duplicate_supabase(store_id, product_id)
+    else:
+        _cleanup_zero_quantity_duplicate_sqlite(store_id, product_id)
+
+
+def _cleanup_zero_quantity_duplicate_sqlite(store_id: int, product_id: int) -> None:
+    with get_connection() as connection:
+        row = connection.execute(
+            "SELECT name, quantity FROM products WHERE store_id = ? AND product_id = ?",
+            (store_id, product_id),
+        ).fetchone()
+        if row is not None and row["quantity"] == 0:
+            sibling = connection.execute(
+                """
+                SELECT 1 FROM products
+                WHERE store_id = ? AND name = ? COLLATE NOCASE
+                  AND product_id != ? AND quantity > 0
+                LIMIT 1
+                """,
+                (store_id, row["name"], product_id),
+            ).fetchone()
+            if sibling is not None:
+                connection.execute(
+                    "DELETE FROM products WHERE store_id = ? AND product_id = ?",
+                    (store_id, product_id),
+                )
+
+
+def _cleanup_zero_quantity_duplicate_supabase(store_id: int, product_id: int) -> None:
     current = _get_product_by_id_supabase(store_id, product_id)
     if current is not None and current["quantity"] == 0:
         sibling_response = (
