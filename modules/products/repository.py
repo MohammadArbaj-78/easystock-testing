@@ -740,7 +740,7 @@ def _reduce_stock_supabase(store_id: int, product_id: int, quantity: int) -> Non
     from core.supabase_client import get_supabase_client
     response = get_supabase_client().rpc(
         "reduce_product_stock",
-        {"p_store_id": store_id, "p_product_id": product_id, "p_quantity": quantity},
+        {"p_store_id": store_id, "p_product_id": product_id, "p_quantity": int(quantity)},
     ).execute()
     rows_affected = response.data
     if not rows_affected:
