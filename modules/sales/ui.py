@@ -374,7 +374,7 @@ def _render_sale_row(store_id: int, product: dict) -> None:
         with minus_col:
             if st.button("−", key=f"sales_minus_{product_id}", disabled=(quantity <= 1), use_container_width=True):
                 st.session_state[qty_key] = quantity - 1
-                st.rerun()
+                # st.rerun()
 
         with qty_col:
             st.markdown(f"**{quantity}**")
@@ -382,7 +382,7 @@ def _render_sale_row(store_id: int, product: dict) -> None:
         with plus_col:
             if st.button("+", key=f"sales_plus_{product_id}", disabled=(quantity >= stock), use_container_width=True):
                 st.session_state[qty_key] = quantity + 1
-                st.rerun()
+                # st.rerun()
 
         with sell_col:
             if st.button(
@@ -396,7 +396,7 @@ def _render_sale_row(store_id: int, product: dict) -> None:
                     sales_service.sell_product(store_id, product_id, quantity)
                     st.session_state[qty_key] = 1
                     st.success(f"Sold {quantity} × {product['name']}.")
-                    st.rerun()
+                    # st.rerun()
                 except ValidationError as error:
                     st.error(str(error))
 
