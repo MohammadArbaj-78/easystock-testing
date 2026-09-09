@@ -98,7 +98,7 @@ def render_main_app() -> None:
             st.rerun()
 
         _render_mobile_sidebar_css()
-        _render_mobile_sidebar_autoclose()
+        _render_mobile_sidebar_autoclose(selected_page)
 
     # Final stabilization fix: the v2.13.4 "isolation" guard that used to
     # sit here (clearing the review session on every navigation away from
@@ -144,7 +144,7 @@ def _render_mobile_sidebar_css() -> None:
     )
 
 
-def _render_mobile_sidebar_autoclose() -> None:
+def _render_mobile_sidebar_autoclose(current_page: str) -> None:
     """Auto-close the sidebar after tapping a nav item, on mobile only.
 
     Streamlit has no public Python API to collapse the sidebar, so this
@@ -170,48 +170,49 @@ def _render_mobile_sidebar_autoclose() -> None:
     never on first page load, before the user has tapped anything.
     """
     components.html(
-        """
+        f"""
         <script>
-        (function() {
-            try {
+        // current page: {current_page}
+        (function() {{
+            try {{
                 var doc = window.parent.document;
                 var STORAGE_KEY = "easystock_last_nav_selection";
 
-                function getSelectedLabel() {
+                function getSelectedLabel() {{
                     var checked = doc.querySelector(
                         '[data-testid="stSidebar"] [role="radiogroup"] input:checked'
                     );
                     if (!checked) return null;
                     var label = checked.closest('label');
                     return label ? label.innerText.trim() : null;
-                }
+                }}
 
-                function collapseSidebarIfMobile() {
+                function collapseSidebarIfMobile() {{
                     if (window.parent.innerWidth > 768) return;
                     var selectors = [
                         '[data-testid="stSidebarCollapseButton"] button',
                         '[data-testid="stSidebarCollapseButton"]',
                         '[data-testid="stSidebar"] button[kind="header"]'
                     ];
-                    for (var i = 0; i < selectors.length; i++) {
+                    for (var i = 0; i < selectors.length; i++) {{
                         var el = doc.querySelector(selectors[i]);
-                        if (el) { el.click(); break; }
-                    }
-                }
+                        if (el) {{ el.click(); break; }}
+                    }}
+                }}
 
                 var current = getSelectedLabel();
                 var last = window.parent.sessionStorage.getItem(STORAGE_KEY);
-                if (current && last && current !== last) {
+                if (current && last && current !== last) {{
                     collapseSidebarIfMobile();
-                }
-                if (current) {
+                }}
+                if (current) {{
                     window.parent.sessionStorage.setItem(STORAGE_KEY, current);
-                }
-            } catch (e) {
+                }}
+            }} catch (e) {{
                 // Fail silently - this is a best-effort mobile enhancement
                 // and must never break navigation if it can't run.
-            }
-        })();
+            }}
+        }})();
         </script>
         """,
         height=0,
