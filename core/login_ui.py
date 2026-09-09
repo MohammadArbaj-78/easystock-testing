@@ -22,6 +22,7 @@ to log in again - see _persist_refresh_token_to_browser()'s own
 docstring for why this needs a small JS bridge rather than pure Python.
 """
 
+import time
 import streamlit as st
 import streamlit.components.v1 as components
 
@@ -100,6 +101,7 @@ def _render_login_form() -> None:
             low_stock_minimum=store["low_stock_minimum"],
         )
         _persist_refresh_token_to_browser(store["refresh_token"])
+        time.sleep(0.4)
         st.rerun()
     except (ValidationError, SupabaseAuthError, SupabaseConfigError) as error:
         st.error(str(error))
@@ -137,6 +139,7 @@ def _render_signup_form() -> None:
             low_stock_minimum=store["low_stock_minimum"],
         )
         _persist_refresh_token_to_browser(store["refresh_token"])
+        time.sleep(0.4)
         st.success("Account created successfully!")
         st.rerun()
     except (ValidationError, SupabaseAuthError, SupabaseConfigError) as error:
