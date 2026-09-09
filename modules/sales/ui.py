@@ -351,7 +351,10 @@ def _render_sale_row(store_id: int, product: dict) -> None:
     earliest-expiry-first across all of this medicine's lots.
     """
     product_id = product["product_id"]
-    stock = sales_service.get_sellable_stock(store_id, product["name"])
+    stock_key = f"sales_stock_{product_id}"
+    if stock_key not in st.session_state:
+        st.session_state[stock_key] = sales_service.get_sellable_stock(store_id, product["name"])
+    stock = st.session_state[stock_key]
 
     st.markdown(
         f"**{product['name']}**  •  Batch: {product['batch_number']}  •  "
@@ -395,6 +398,7 @@ def _render_sale_row(store_id: int, product: dict) -> None:
                 try:
                     sales_service.sell_product(store_id, product_id, quantity)
                     st.session_state[qty_key] = 1
+                    st.session_state.pop(stock_key, None)
                     st.success(f"Sold {quantity} × {product['name']}.")
                     st.rerun()
                 except ValidationError as error:
