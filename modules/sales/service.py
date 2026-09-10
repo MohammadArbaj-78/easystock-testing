@@ -227,6 +227,7 @@ def sell_product(store_id: int, product_id: int, quantity: int) -> int:
     remaining_to_sell = quantity
     last_sale_id = None
     zeroed_product_ids = []
+    zeroed_names = {}
 
     for lot in lots:
         if remaining_to_sell <= 0:
@@ -243,6 +244,7 @@ def sell_product(store_id: int, product_id: int, quantity: int) -> int:
 
         if take == lot["quantity"]:
             zeroed_product_ids.append(lot["product_id"])
+            zeroed_names[lot["product_id"]] = lot["name"]
 
         last_sale_id = sales_repository.record_sale(
             store_id=store_id,
@@ -253,13 +255,38 @@ def sell_product(store_id: int, product_id: int, quantity: int) -> int:
         )
 
         remaining_to_sell -= take
-
     # Zero-quantity duplicate cleanup runs ONLY here, after every
     # reduce_stock()/record_sale() pair above has already completed -
     # deleting a lot before its own sale record is inserted would break
     # that insert with a foreign-key error (product_id no longer exists).
     for product_id in zeroed_product_ids:
         products_repository.cleanup_zero_quantity_duplicate(store_id, product_id)
+
+    # cleanup_zero_quantity_duplicate() above only deletes a zeroed lot
+    # when ANOTHER lot of the same name still has stock - it correctly
+    # does nothing when this exact sale zeroed EVERY lot of a name at
+    # once (no lot was left as a "stocked sibling"), so every one of
+    # them survives instead of the usual single remaining zero-quantity
+    # row. This only handles that specific case: names where 2+ lots
+    # were zeroed by THIS sale. Re-checks each row still exists right
+    # before deleting (the loop above may have already removed some of
+    # them via an unrelated, still-stocked lot elsewhere) so this never
+    # tries to delete an already-deleted row. Keeps exactly one
+    # survivor per name, deletes the rest.
+    zeroed_by_name = {}
+    for product_id in zeroed_product_ids:
+        name_key = zeroed_names[product_id].strip().lower()
+        zeroed_by_name.setdefault(name_key, []).append(product_id)
+
+    for product_ids in zeroed_by_name.values():
+        if len(product_ids) < 2:
+            continue
+        survivors = [
+            pid for pid in product_ids
+            if products_repository.get_product_by_id(store_id, pid) is not None
+        ]
+        for product_id in survivors[1:]:
+            products_repository.delete_product(store_id, product_id)
 
     return last_sale_id
 
