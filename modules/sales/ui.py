@@ -69,6 +69,7 @@ UI file's own layering rule (UI -> Service -> Repository).
 import streamlit as st
 from datetime import datetime, timezone
 
+from core.cache_utils import get_cache_epoch, bump_cache_epoch
 from modules.sales import service as sales_service
 from core.session import get_current_store_id
 from core.exceptions import ValidationError
@@ -275,13 +276,17 @@ def _render_suggestion_tile(product: dict) -> None:
     )
 
 
+@st.cache_data(ttl=30)
+def _get_frequently_sold_cached(store_id: int, _epoch: int) -> list:
+    return sales_service.get_frequently_sold(store_id)
+
 def _render_frequently_sold(store_id: int) -> None:
     """Render the "⭐ Frequently Sold" section shown when the search box
     is empty: top sellers that are still in stock, each clicking exactly
     like a search suggestion.
     """
-    frequently_sold = sales_service.get_frequently_sold(store_id)
-
+    frequently_sold = _get_frequently_sold_cached(store_id, get_cache_epoch())
+    
     if not frequently_sold:
         return
 
@@ -399,6 +404,7 @@ def _render_sale_row(store_id: int, product: dict) -> None:
                     sales_service.sell_product(store_id, product_id, quantity)
                     st.session_state[qty_key] = 1
                     st.session_state.pop(stock_key, None)
+                    bump_cache_epoch()
                     st.success(f"Sold {quantity} × {product['name']}.")
                     st.rerun()
                 except ValidationError as error:
