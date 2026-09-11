@@ -107,15 +107,28 @@ def get_frequently_sold(store_id: int) -> list:
         SALES_FREQUENTLY_SOLD_LIMIT of them. Empty list if this store
         has no sales history yet.
     """
+    from modules.products.service import get_lots_by_name_sorted_by_expiry
+
     candidate_ids = sales_repository.get_top_sold_product_ids(
         store_id, SALES_FREQUENTLY_SOLD_CANDIDATE_LIMIT
     )
 
+    seen_names = set()
     results = []
     for product_id in candidate_ids:
         product = products_repository.get_product_by_id(store_id, product_id)
-        if product is not None and product["quantity"] > 0:
-            results.append(product)
+        if product is None or product["quantity"] <= 0:
+            continue
+
+        name_key = product["name"].strip().lower()
+        if name_key in seen_names:
+            continue
+        seen_names.add(name_key)
+
+        fifo_lots = get_lots_by_name_sorted_by_expiry(store_id, product["name"])
+        if fifo_lots:
+            results.append(fifo_lots[0])
+
         if len(results) >= SALES_FREQUENTLY_SOLD_LIMIT:
             break
 
