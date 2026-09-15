@@ -24,10 +24,21 @@ from core.session import (
 )
 from core.supabase_auth import update_store_low_stock_minimum
 from config.settings import DEFAULT_LOW_STOCK_THRESHOLD
+from core.cache_utils import get_cache_epoch
 
 FILTER_OPTION_ALL = "All"
 GLOBAL_MINIMUM_OPTIONS = list(range(1, 11))  # Requirement 5: strictly 1-10
 
+
+@st.cache_data(ttl=20, show_spinner=False)
+def _get_low_stock_counts_cached(store_id: int, global_minimum: int, _epoch: int) -> dict:
+    return low_stock_service.get_low_stock_counts(store_id, global_minimum=global_minimum)
+
+@st.cache_data(ttl=20, show_spinner=False)
+def _get_low_stock_alerts_cached(store_id: int, search_term: str, global_minimum: int, _epoch: int) -> dict:
+    return low_stock_service.get_low_stock_alerts(
+        store_id, search_term=search_term, global_minimum=global_minimum
+    )
 
 def render_low_stock_alerts_page() -> None:
     """Render the Low Stock Alerts screen."""
@@ -45,7 +56,7 @@ def render_low_stock_alerts_page() -> None:
     
     global_minimum = get_current_low_stock_minimum()
 
-    counts = low_stock_service.get_low_stock_counts(store_id, global_minimum=global_minimum)
+    counts = _get_low_stock_counts_cached(store_id, global_minimum, get_cache_epoch())
 
     if counts["total"] == 0:
         st.success("All products are sufficiently stocked. Nothing to reorder right now.")
@@ -70,8 +81,8 @@ def render_low_stock_alerts_page() -> None:
         key="low_stock_search_term",
     )
 
-    buckets = low_stock_service.get_low_stock_alerts(
-        store_id, search_term=search_term, global_minimum=global_minimum
+    buckets = _get_low_stock_alerts_cached(
+        store_id, search_term, global_minimum, get_cache_epoch()
     )
 
     # Apply severity filter after fetching (search is applied inside

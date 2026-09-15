@@ -18,6 +18,7 @@ from modules.products import service as products_service
 from config.alert_theme import ALERT_TYPE_DISPLAY, render_alert_banner
 from core.session import get_current_store_id
 from core.exceptions import ValidationError
+from core.cache_utils import get_cache_epoch, bump_cache_epoch
 
 
 # Maps the human-readable filter dropdown option back to the
@@ -42,8 +43,8 @@ def render_expiry_alerts_page() -> None:
         key="expiry_alerts_search_term",
     )
 
-    filtered_buckets = alerts_service.get_filtered_alerts(
-        store_id, alert_type=selected_alert_type, search_term=search_term
+    filtered_buckets = _get_filtered_alerts_cached(
+        store_id, selected_alert_type, search_term, get_cache_epoch()
     )
 
     total_matching = sum(len(products) for products in filtered_buckets.values())
@@ -60,6 +61,16 @@ def render_expiry_alerts_page() -> None:
             _render_alert_section(store_id, alert_type, products)
 
 
+@st.cache_data(ttl=20, show_spinner=False)
+def _get_alert_counts_cached(store_id: int, _epoch: int) -> dict:
+    return alerts_service.get_alert_counts(store_id)
+
+@st.cache_data(ttl=20, show_spinner=False)
+def _get_filtered_alerts_cached(store_id: int, alert_type, search_term: str, _epoch: int) -> dict:
+    return alerts_service.get_filtered_alerts(
+        store_id, alert_type=alert_type, search_term=search_term
+    )
+
 def _render_filter_dropdown(store_id: int) -> str:
     """Render the alert-type filter dropdown, with live counts per
     option so a store owner can see where attention is needed before
@@ -72,7 +83,7 @@ def _render_filter_dropdown(store_id: int) -> str:
         The selected ALERT_TYPE_* constant, or None if "All Alerts" is
         selected.
     """
-    counts = alerts_service.get_alert_counts(store_id)
+    counts = _get_alert_counts_cached(store_id, get_cache_epoch())
 
     options = [FILTER_OPTION_ALL]
     option_to_alert_type = {FILTER_OPTION_ALL: None}
@@ -163,6 +174,7 @@ def _render_alert_product_row(store_id: int, product: dict, alert_type: str) -> 
         ):
             try:
                 products_service.return_medicine(store_id, product["product_id"])
+                bump_cache_epoch()
                 st.success(f"'{product['name']}' returned - stock set to 0.")
                 st.rerun()
             except ValidationError as error:
