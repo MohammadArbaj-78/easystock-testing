@@ -30,11 +30,11 @@ FILTER_OPTION_ALL = "All"
 GLOBAL_MINIMUM_OPTIONS = list(range(1, 11))  # Requirement 5: strictly 1-10
 
 
-@st.cache_data(ttl=20, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def _get_low_stock_counts_cached(store_id: int, global_minimum: int, _epoch: int) -> dict:
     return low_stock_service.get_low_stock_counts(store_id, global_minimum=global_minimum)
 
-@st.cache_data(ttl=20, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def _get_low_stock_alerts_cached(store_id: int, search_term: str, global_minimum: int, _epoch: int) -> dict:
     return low_stock_service.get_low_stock_alerts(
         store_id, search_term=search_term, global_minimum=global_minimum

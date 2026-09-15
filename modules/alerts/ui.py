@@ -61,11 +61,11 @@ def render_expiry_alerts_page() -> None:
             _render_alert_section(store_id, alert_type, products)
 
 
-@st.cache_data(ttl=20, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def _get_alert_counts_cached(store_id: int, _epoch: int) -> dict:
     return alerts_service.get_alert_counts(store_id)
 
-@st.cache_data(ttl=20, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def _get_filtered_alerts_cached(store_id: int, alert_type, search_term: str, _epoch: int) -> dict:
     return alerts_service.get_filtered_alerts(
         store_id, alert_type=alert_type, search_term=search_term

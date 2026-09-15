@@ -17,14 +17,19 @@ from modules.dashboard.service import get_dashboard_metrics
 from modules.alerts import service as alerts_service
 from config.alert_theme import render_alert_banner
 from core.session import get_current_store_id
+from core.cache_utils import get_cache_epoch
 
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _get_dashboard_metrics_cached(store_id: int, _epoch: int) -> dict:
+    return get_dashboard_metrics(store_id)
 
 def render_dashboard() -> None:
     """Render the Dashboard screen for the currently logged-in store."""
     st.subheader("📊 Dashboard")
 
     store_id = get_current_store_id()
-    metrics = get_dashboard_metrics(store_id)
+    metrics = _get_dashboard_metrics_cached(store_id, get_cache_epoch())
 
     if metrics["total_products"] == 0:
         st.info(
@@ -38,6 +43,9 @@ def render_dashboard() -> None:
     st.divider()
     _render_detail_sections(metrics)
 
+@st.cache_data(ttl=300, show_spinner=False)
+def _get_alert_counts_cached(store_id: int, _epoch: int) -> dict:
+    return alerts_service.get_alert_counts(store_id)
 
 def _render_expiring_soon_warning(store_id: int) -> None:
     """Show a single color-coded warning card for the most urgent
@@ -49,8 +57,8 @@ def _render_expiring_soon_warning(store_id: int) -> None:
     the same function Expiry Alerts uses for its product rows, so both
     pages are guaranteed to look and feel identical.
     """
-    counts = alerts_service.get_alert_counts(store_id)
-
+    counts = _get_alert_counts_cached(store_id, get_cache_epoch())
+    
     if counts.get(alerts_service.ALERT_TYPE_15_DAYS, 0) > 0:
         alert_type = alerts_service.ALERT_TYPE_15_DAYS
         message = f"{counts[alert_type]} product(s) expiring within 15 days — action needed soon."
