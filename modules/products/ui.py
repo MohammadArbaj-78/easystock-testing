@@ -22,6 +22,7 @@ from modules.products import service as products_service
 from config.product_schema import PRODUCT_FIELDS, FieldType
 from core.session import get_current_store_id
 from core.exceptions import ValidationError
+from core.cache_utils import get_cache_epoch, bump_cache_epoch
 
 
 def render_products_page() -> None:
@@ -40,6 +41,10 @@ def render_products_page() -> None:
         _render_add_product_form()
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def _search_products_cached(store_id: int, search_term: str, _epoch: int) -> list:
+    return products_service.search_products(store_id, search_term)
+
 def _render_product_list() -> None:
     """Render the searchable product list with edit/delete actions per
     row.
@@ -52,7 +57,7 @@ def _render_product_list() -> None:
         key="products_search_term",
     )
 
-    products = products_service.search_products(store_id, search_term)
+    products = _search_products_cached(store_id, search_term, get_cache_epoch())
 
     if not products:
         if search_term:
@@ -119,6 +124,7 @@ def _render_delete_button(store_id: int, product: dict) -> None:
             if st.button("Yes, Delete", key=f"confirm_yes_{product['product_id']}", use_container_width=True):
                 try:
                     products_service.remove_product(store_id, product["product_id"])
+                    bump_cache_epoch()
                     st.session_state.pop(confirm_key, None)
                     st.success(f"'{product['name']}' deleted.")
                     st.rerun()
@@ -165,6 +171,7 @@ def _render_edit_form(store_id: int, product: dict) -> None:
     if save_clicked:
         try:
             products_service.edit_product(store_id, product["product_id"], form_data)
+            bump_cache_epoch()
             st.session_state.pop(edit_key, None)
             st.success("Product updated.")
             st.rerun()
@@ -216,6 +223,7 @@ def _render_add_product_form() -> None:
 
     try:
         products_service.add_product(store_id, form_data)
+        bump_cache_epoch()
         st.success(f"'{form_data.get('name')}' added successfully.")
         # The checkbox lives outside the form, so clear_on_submit does
         # not affect it. A direct session_state.pop() + st.rerun() does
