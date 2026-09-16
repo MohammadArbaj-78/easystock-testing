@@ -14,6 +14,13 @@ def get_cache_epoch() -> int:
 
 
 def bump_cache_epoch() -> None:
-    """Call after ANY write (add/edit/delete/sell/invoice save) -
-    invalidates every cached read in this session immediately."""
+    """
+    Clear all Streamlit data caches after a successful
+    database write, then increment the cache epoch.
+    """
+
+    # Global: clear every @st.cache_data result.
+    st.cache_data.clear()
+
+    # Keep the existing epoch mechanism.
     st.session_state[_CACHE_EPOCH_KEY] = get_cache_epoch() + 1
