@@ -40,6 +40,7 @@ rendering is unaffected.
 import streamlit as st
 
 from modules.invoice_scan import review_service
+from core.cache_utils import bump_cache_epoch
 
 # Human-readable labels for the advisory (non-blocking) validation flags
 # attached by modules/invoice_scan/validation.py. Purely cosmetic - the
@@ -619,6 +620,7 @@ def _render_summary() -> None:
         skipped = result["skipped"]
 
         if saved > 0:
+            bump_cache_epoch()
             st.success(f"✅ {saved} medicine(s) saved successfully to inventory.")
 
         if skipped:
@@ -666,8 +668,10 @@ def _render_pending_matches() -> None:
             with col_yes:
                 if st.button("Yes, Merge", key=f"pending_merge_{idx}", use_container_width=True):
                     review_service.resolve_pending_match(idx, "merge")
+                    bump_cache_epoch()
                     st.rerun()
             with col_new:
                 if st.button("Create New", key=f"pending_create_{idx}", use_container_width=True):
                     review_service.resolve_pending_match(idx, "create_new")
+                    bump_cache_epoch()
                     st.rerun()
