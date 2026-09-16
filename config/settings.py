@@ -46,7 +46,7 @@ PASSWORD_MAX_LENGTH = 20
 # Maximum size for any uploaded invoice file. Checked in utils/file_utils.py
 # before the file is written to disk - never trust st.file_uploader's
 # maximal size alone since that's a client hint, not a server guarantee.
-UPLOADS_MAX_BYTES = 10 * 1024 * 1024  # 10 MB
+UPLOADS_MAX_BYTES = 25 * 1024 * 1024  # 25 MB
 
 # Extensions accepted for invoice upload. Lower-case, without the leading
 # dot. Checked against the uploaded filename before any file I/O. Centralised
