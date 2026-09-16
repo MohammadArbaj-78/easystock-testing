@@ -20,7 +20,7 @@ from core.session import get_current_store_id
 from core.cache_utils import get_cache_epoch
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=1, show_spinner=False)
 def _get_dashboard_metrics_cached(store_id: int, _epoch: int) -> dict:
     return get_dashboard_metrics(store_id)
 
@@ -43,7 +43,7 @@ def render_dashboard() -> None:
     st.divider()
     _render_detail_sections(metrics)
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=1, show_spinner=False)
 def _get_alert_counts_cached(store_id: int, _epoch: int) -> dict:
     return alerts_service.get_alert_counts(store_id)
 
