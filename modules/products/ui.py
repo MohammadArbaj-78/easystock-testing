@@ -41,7 +41,7 @@ def render_products_page() -> None:
         _render_add_product_form()
 
 
-@st.cache_data(ttl=1, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def _search_products_cached(store_id: int, search_term: str, _epoch: int) -> list:
     return products_service.search_products(store_id, search_term)
 

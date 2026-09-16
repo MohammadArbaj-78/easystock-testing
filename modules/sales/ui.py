@@ -276,7 +276,7 @@ def _render_suggestion_tile(product: dict) -> None:
     )
 
 
-@st.cache_data(ttl=1, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def _get_frequently_sold_cached(store_id: int, _epoch: int) -> list:    
     return sales_service.get_frequently_sold(store_id)
 
