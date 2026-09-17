@@ -200,16 +200,12 @@ def _render_mobile_sidebar_autoclose(current_page: str) -> None:
                     }}
                 }}
 
-                setTimeout(function() {{
-                    var current = getSelectedLabel();
-                    var last = window.parent.sessionStorage.getItem(STORAGE_KEY);
-                    if (current && last && current !== last) {{
-                        collapseSidebarIfMobile();
-                    }}
-                    if (current) {{
-                        window.parent.sessionStorage.setItem(STORAGE_KEY, current);
-                    }}
-                }}, 50);
+                var current = {current_page!r};
+                var last = window.parent.sessionStorage.getItem(STORAGE_KEY);
+                if (last && current !== last) {{
+                    collapseSidebarIfMobile();
+                }}
+                window.parent.sessionStorage.setItem(STORAGE_KEY, current);
             }} catch (e) {{
                 // Fail silently - this is a best-effort mobile enhancement
                 // and must never break navigation if it can't run.
