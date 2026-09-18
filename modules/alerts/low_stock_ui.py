@@ -75,14 +75,28 @@ def render_low_stock_alerts_page() -> None:
     with minimum_col:
         global_minimum = _render_global_minimum_dropdown()
 
-    search_term = st.text_input(
-        "Search by medicine name or batch number",
-        placeholder="e.g. Paracetamol or B001",
-        key="low_stock_search_term",
-    )
+    search_col, search_btn_col = st.columns([6, 1.3])
 
+    with search_col:
+        search_term = st.text_input(
+            "Search by medicine name or batch number",
+            placeholder="e.g. Paracetamol or B001",
+            key="low_stock_search_term",
+        )
+    
+    with search_btn_col:
+        st.button(
+            "🔎 Search",
+            key="low_stock_search_button",
+            type="primary",
+            use_container_width=True,
+        )
+    
     buckets = _get_low_stock_alerts_cached(
-        store_id, search_term, global_minimum, get_cache_epoch()
+        store_id,
+        search_term,
+        global_minimum,
+        get_cache_epoch(),
     )
 
     # Apply severity filter after fetching (search is applied inside

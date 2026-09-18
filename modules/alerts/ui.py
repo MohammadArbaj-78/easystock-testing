@@ -37,16 +37,30 @@ def render_expiry_alerts_page() -> None:
     store_id = get_current_store_id()
 
     selected_alert_type = _render_filter_dropdown(store_id)
-    search_term = st.text_input(
-        "Search by medicine name or batch number",
-        placeholder="e.g. Paracetamol or B001",
-        key="expiry_alerts_search_term",
-    )
 
+    search_col, search_btn_col = st.columns([6, 1.3])
+    
+    with search_col:
+        search_term = st.text_input(
+            "Search by medicine name or batch number",
+            placeholder="e.g. Paracetamol or B001",
+            key="expiry_alerts_search_term",
+        )
+    
+    with search_btn_col:
+        st.button(
+            "🔎 Search",
+            key="expiry_alerts_search_button",
+            type="primary",
+            use_container_width=True,
+        )
+    
     filtered_buckets = _get_filtered_alerts_cached(
-        store_id, selected_alert_type, search_term, get_cache_epoch()
+        store_id,
+        selected_alert_type,
+        search_term,
+        get_cache_epoch(),
     )
-
     total_matching = sum(len(products) for products in filtered_buckets.values())
     if total_matching == 0:
         if search_term or selected_alert_type:

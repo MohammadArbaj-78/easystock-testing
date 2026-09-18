@@ -161,16 +161,31 @@ def _render_sell_section() -> None:
     """
     store_id = get_current_store_id()
 
-    search_col, clear_col = st.columns([6, 1])
+    search_col, search_btn_col, clear_col = st.columns([5.5, 1.5, 0.8])
+
     with search_col:
         search_term = st.text_input(
             "Search by medicine name or batch number",
             placeholder="e.g. Paracetamol or B001",
             key="sales_search_term",
         )
+    
+    with search_btn_col:
+        st.button(
+            "🔎 Search",
+            key="sales_search_button",
+            type="primary",
+            use_container_width=True,
+        )
+    
     with clear_col:
-        st.button("❌", key="sales_clear_search", on_click=_clear_search, help="Clear search")
-
+        st.button(
+            "❌",
+            key="sales_clear_search",
+            on_click=_clear_search,
+            help="Clear search",
+            use_container_width=True,
+        )
     selected_product = _get_active_selection(store_id, search_term)
     if selected_product is not None:
         _render_sale_row(store_id, selected_product)
