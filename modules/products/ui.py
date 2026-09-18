@@ -51,14 +51,28 @@ def _render_product_list() -> None:
     """
     store_id = get_current_store_id()
 
-    search_term = st.text_input(
-        "Search by medicine name or batch number",
-        placeholder="e.g. Paracetamol or B001",
-        key="products_search_term",
+    search_col, search_btn_col = st.columns([6, 1.3])
+
+    with search_col:
+        search_term = st.text_input(
+            "Search by medicine name or batch number",
+            placeholder="e.g. Paracetamol or B001",
+            key="products_search_term",
+        )
+    
+    with search_btn_col:
+        st.button(
+            "🔎 Search",
+            key="products_search_button",
+            type="primary",
+            use_container_width=True,
+        )
+    
+    products = _search_products_cached(
+        store_id,
+        search_term,
+        get_cache_epoch(),
     )
-
-    products = _search_products_cached(store_id, search_term, get_cache_epoch())
-
     if not products:
         if search_term:
             st.info("No products match your search.")
