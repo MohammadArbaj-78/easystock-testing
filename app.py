@@ -297,10 +297,15 @@ def _attempt_session_restoration() -> None:
             st.query_params.clear()
             st.rerun()
         except (SupabaseAuthError, SupabaseConfigError):
-            # Invalid/expired/unconfigured - discard the stale token so
-            # it is never retried, and fall through to the login screen.
+            # Do NOT delete the browser's saved token here - Supabase
+            # refresh tokens are single-use, so a failed attempt could
+            # simply mean a concurrent reconnect already used it
+            # successfully and wrote a fresh, valid token moments ago.
+            # Deleting unconditionally here would wipe that good token
+            # instead of the genuinely dead one. If this token really
+            # is dead, it just fails harmlessly again next time, and a
+            # fresh login overwrites it anyway.
             st.query_params.clear()
-            _clear_persisted_refresh_token()
         return
 
     # No restoration in flight yet - ask the browser whether it has a
