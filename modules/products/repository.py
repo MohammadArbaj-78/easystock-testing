@@ -96,6 +96,41 @@ def get_expiring_soon_products(store_id: int, within_days: int) -> list:
         return _get_expiring_soon_products_supabase(store_id, within_days)
     return _get_expiring_soon_products_sqlite(store_id, within_days)
 
+def get_dashboard_snapshot(store_id: int, within_days: int, low_stock_global_minimum: int = None) -> dict:
+    """Single-fetch equivalent of calling count_total_products(),
+    get_expired_products(), get_expiring_soon_products(), and
+    get_low_stock_products() separately - built specifically for the
+    Dashboard, which needs all four every time it loads. The Supabase
+    path fetches this store's products ONCE and reuses the existing
+    filter helpers on that one in-memory list, instead of four
+    separate network round-trips fetching essentially the same table
+    four times - the real cause of Dashboard's slowdown on stores with
+    a large product count. The SQLite path is unaffected (local
+    queries have no meaningful per-call network cost) and simply calls
+    the existing functions, unchanged.
+    """
+    if ACTIVE_DB_BACKEND != "supabase":
+        return {
+            "total_products": count_total_products(store_id),
+            "expired_items": get_expired_products(store_id),
+            "expiring_soon_items": get_expiring_soon_products(store_id, within_days),
+            "low_stock_items": get_low_stock_products(store_id, global_minimum=low_stock_global_minimum),
+        }
+
+    response = (
+        _supabase_products_table()
+        .select("product_id, name, batch_number, expiry_date, quantity, mrp, rate, minimum_stock_threshold")
+        .eq("store_id", store_id)
+        .execute()
+    )
+    rows = response.data
+    return {
+        "total_products": len(rows),
+        "expired_items": _filter_expired_rows(rows),
+        "expiring_soon_items": _filter_expiring_soon_rows(rows, within_days),
+        "low_stock_items": _filter_low_stock_rows(rows, low_stock_global_minimum),
+    }
+
 
 def get_low_stock_products(store_id: int, global_minimum: int = None) -> list:
     """Get all products whose quantity is at or below their minimum

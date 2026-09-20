@@ -60,24 +60,25 @@ def get_dashboard_metrics(store_id: int) -> dict:
         quantity-0 product is still meaningfully "low stock" and
         low_stock_items/low_stock_count are unchanged.
     """
-    total_products = products_repository.count_total_products(store_id)
+    snapshot = products_repository.get_dashboard_snapshot(
+        store_id,
+        within_days=DASHBOARD_EXPIRY_SOON_DAYS,
+        low_stock_global_minimum=get_current_low_stock_minimum(),
+    )
+
+    total_products = snapshot["total_products"]
 
     expired_items = [
-        item for item in products_repository.get_expired_products(store_id)
+        item for item in snapshot["expired_items"]
         if item["quantity"] != 0
     ]
 
     expiring_soon_items = [
-        item for item in products_repository.get_expiring_soon_products(
-            store_id, within_days=DASHBOARD_EXPIRY_SOON_DAYS
-        )
+        item for item in snapshot["expiring_soon_items"]
         if item["quantity"] != 0
     ]
 
-    low_stock_items = products_repository.get_low_stock_products(
-        store_id,
-        global_minimum=get_current_low_stock_minimum(),
-    )
+    low_stock_items = snapshot["low_stock_items"]
 
     return {
         "total_products": total_products,

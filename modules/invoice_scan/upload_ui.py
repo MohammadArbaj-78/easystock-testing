@@ -235,7 +235,7 @@ def _render_ocr_section(uploaded_file, file_hash: str = None) -> None:
         return
 
     # --- First render for this file: call Gemini ---
-    with st.spinner("Extracting medicines using Gemini Vision…"):
+    with st.spinner("Extracting medicines ......."):
         try:
             ocr_result = extract_medicines_from_file(uploaded_file)
         except GeminiAPIError as exc:

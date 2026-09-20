@@ -400,7 +400,7 @@ def extract_medicines_from_file(file_obj) -> dict:
 
         if "quota" in exc_str or "rate" in exc_str or "429" in exc_str:
             raise GeminiAPIError(
-                "Gemini API rate limit reached. "
+                f"API quota/rate limit error: {exc}. "
                 "Please wait a moment and try again."
             ) from exc
 
