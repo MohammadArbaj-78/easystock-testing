@@ -82,11 +82,41 @@ def _render_product_list() -> None:
 
     st.caption(f"{len(products)} product(s)")
 
+    select_mode = st.checkbox("Select multiple to delete", key="products_select_mode")
+    if "products_selected_ids" not in st.session_state:
+        st.session_state["products_selected_ids"] = set()
+
+    if select_mode:
+        selected_ids = st.session_state["products_selected_ids"]
+        if selected_ids:
+            if st.button(f"🗑️ Delete Selected ({len(selected_ids)})", key="products_bulk_delete_btn", type="primary"):
+                st.session_state["products_bulk_confirm"] = True
+                st.rerun()
+
+        if st.session_state.get("products_bulk_confirm"):
+            st.warning(f"Delete {len(selected_ids)} selected product(s)? This cannot be undone.")
+            confirm_col, cancel_col = st.columns(2)
+            with confirm_col:
+                if st.button("Yes, Delete Selected", key="products_bulk_yes", use_container_width=True):
+                    for pid in list(selected_ids):
+                        try:
+                            products_service.remove_product(store_id, pid)
+                        except ValidationError:
+                            pass
+                    bump_cache_epoch()
+                    st.session_state["products_selected_ids"] = set()
+                    st.session_state.pop("products_bulk_confirm", None)
+                    st.success("Selected product(s) deleted.")
+                    st.rerun()
+            with cancel_col:
+                if st.button("Cancel", key="products_bulk_no", use_container_width=True):
+                    st.session_state.pop("products_bulk_confirm", None)
+                    st.rerun()
+
     for product in products:
-        _render_product_row(store_id, product)
+        _render_product_row(store_id, product, select_mode)
 
-
-def _render_product_row(store_id: int, product: dict) -> None:
+def _render_product_row(store_id: int, product: dict, select_mode: bool = False) -> None:
     """Render a single product as an expandable row with edit and
     delete actions.
 
@@ -95,12 +125,30 @@ def _render_product_row(store_id: int, product: dict) -> None:
     keeps the row compact when collapsed (name, batch, quantity at a
     glance) and full detail/actions available on tap, consistent with
     "minimal clicks, mobile-friendly" UI rules.
+
+    When select_mode is True (bulk-delete mode), a checkbox replaces
+    the expander for this row - the normal expander/edit/delete flow
+    below is completely unchanged and only ever runs when select_mode
+    is False, matching the existing default behavior exactly.
     """
     summary = (
         f"{product['name']}  •  Batch: {product['batch_number']}  •  "
         f"Qty: {product['quantity']}  •  Expires: {product['expiry_date']}  •  "
         f"MRP: {product['mrp']}  •  Rate: {product['rate']}"
     )
+
+    if select_mode:
+        selected_ids = st.session_state["products_selected_ids"]
+        checked = st.checkbox(
+            summary,
+            value=(product["product_id"] in selected_ids),
+            key=f"select_{product['product_id']}",
+        )
+        if checked:
+            selected_ids.add(product["product_id"])
+        else:
+            selected_ids.discard(product["product_id"])
+        return
 
     with st.expander(summary):
         edit_key = f"editing_product_{product['product_id']}"
