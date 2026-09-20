@@ -234,6 +234,27 @@ def _clear_persisted_refresh_token() -> None:
     )
 
 
+def _clear_persisted_refresh_token_if_unchanged(token_param: str) -> None:
+    """Clear the browser's persisted refresh token ONLY if it still
+    matches the exact token that just failed to restore - so a
+    genuinely dead token gets cleaned up (preventing it from
+    repeatedly interfering with fresh logins), while a token a
+    concurrent, successful restore has since overwritten with
+    something newer is left untouched.
+    """
+    components.html(
+        f"""
+        <script>
+        try {{
+            if (localStorage.getItem({LOCALSTORAGE_REFRESH_TOKEN_KEY!r}) === {token_param!r}) {{
+                localStorage.removeItem({LOCALSTORAGE_REFRESH_TOKEN_KEY!r});
+            }}
+        }} catch (e) {{ /* best-effort */ }}
+        </script>
+        """,
+        height=0,
+    )
+
 def _attempt_session_restoration() -> None:
     """Requirement 2: on a fresh Streamlit connection (a full browser
     close/reopen, not just a rerun/navigation - those already work via
@@ -297,10 +318,8 @@ def _attempt_session_restoration() -> None:
             st.query_params.clear()
             st.rerun()
         except (SupabaseAuthError, SupabaseConfigError):
-            # Invalid/expired/unconfigured - discard the stale token so
-            # it is never retried, and fall through to the login screen.
             st.query_params.clear()
-            _clear_persisted_refresh_token()
+            _clear_persisted_refresh_token_if_unchanged(token_param)
         return
 
     # No restoration in flight yet - ask the browser whether it has a
