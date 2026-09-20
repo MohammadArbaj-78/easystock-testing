@@ -70,10 +70,17 @@ def render_low_stock_alerts_page() -> None:
         return
 
     filter_col, minimum_col = st.columns(2)
-    with filter_col:
-        selected_severity = _render_filter_dropdown(counts)
     with minimum_col:
         global_minimum = _render_global_minimum_dropdown()
+
+    # Recompute with the JUST-selected minimum, before building the
+    # filter dropdown's per-severity numbers - otherwise those numbers
+    # would still reflect the PREVIOUS minimum for one extra render
+    # (the exact bug this fixes).
+    counts = _get_low_stock_counts_cached(store_id, global_minimum, get_cache_epoch())
+
+    with filter_col:
+        selected_severity = _render_filter_dropdown(counts)
 
     search_col, search_btn_col = st.columns([6, 1.3])
 
