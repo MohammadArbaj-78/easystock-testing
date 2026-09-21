@@ -41,7 +41,7 @@ def render_products_page() -> None:
         _render_add_product_form()
 
 
-PRODUCTS_PAGE_SIZE = 50
+PRODUCTS_PAGE_SIZE = 20
 
 
 @st.cache_data(show_spinner=False)

@@ -112,7 +112,18 @@ def render_main_app() -> None:
     # change. SHA-256 caching in upload_ui.py is untouched either way.
 
     st.title(f"📦 {APP_NAME}")
-    NAV_PAGES[selected_page]()
+    # Leaving Products / Low Stock puts each back on its first page
+    # (20 / 25 rows) the next time it is opened, instead of keeping the
+    # "Load more" size from the previous visit.
+    page_function = NAV_PAGES[selected_page]
+    if page_function is not render_products_page:
+        for key in ("products_visible_limit", "products_last_search"):
+            st.session_state.pop(key, None)
+    if page_function is not render_low_stock_alerts_page:
+        for key in ("low_stock_visible_limit", "low_stock_last_signature"):
+            st.session_state.pop(key, None)
+
+    page_function()
 
 
 def _render_mobile_sidebar_css() -> None:
