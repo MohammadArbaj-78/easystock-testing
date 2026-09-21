@@ -248,6 +248,10 @@ def search_products(store_id: int, search_term: str = None) -> list:
     """
     return products_repository.get_all_products(store_id, search_term)
 
+def search_products_page(store_id: int, search_term: str = None, limit: int = 50) -> dict:
+    """First `limit` products (optionally filtered by search term) plus
+    the total number of matches. Search always runs on ALL products."""
+    return products_repository.get_products_page(store_id, search_term, limit)
 
 def get_product(store_id: int, product_id: int) -> dict:
     """Get a single product by ID for editing.

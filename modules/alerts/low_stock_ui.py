@@ -30,6 +30,15 @@ FILTER_OPTION_ALL = "All"
 GLOBAL_MINIMUM_OPTIONS = list(range(1, 11))  # Requirement 5: strictly 1-10
 
 
+LOW_STOCK_PAGE_SIZE = 50
+
+
+def _load_more_low_stock() -> None:
+    st.session_state["low_stock_visible_limit"] = (
+        st.session_state.get("low_stock_visible_limit", LOW_STOCK_PAGE_SIZE)
+        + LOW_STOCK_PAGE_SIZE
+    )
+
 @st.cache_data(show_spinner=False)
 def _get_low_stock_counts_cached(store_id: int, global_minimum: int, _epoch: int) -> dict:
     return low_stock_service.get_low_stock_counts(store_id, global_minimum=global_minimum)
@@ -120,10 +129,28 @@ def render_low_stock_alerts_page() -> None:
         st.info("No products match the current filter/search.")
         return
 
-    for severity in low_stock_service.ALL_SEVERITIES:
-        if buckets[severity]:
-            _render_severity_section(severity, buckets[severity])
+    # A new search / severity filter / minimum starts again from page 1.
+    signature = (search_term, selected_severity, global_minimum)
+    if st.session_state.get("low_stock_last_signature") != signature:
+        st.session_state["low_stock_last_signature"] = signature
+        st.session_state["low_stock_visible_limit"] = LOW_STOCK_PAGE_SIZE
+    limit = st.session_state.get("low_stock_visible_limit", LOW_STOCK_PAGE_SIZE)
 
+    remaining = limit
+    for severity in low_stock_service.ALL_SEVERITIES:
+        if buckets[severity] and remaining > 0:
+            shown = buckets[severity][:remaining]
+            _render_severity_section(severity, shown, len(buckets[severity]))
+            remaining -= len(shown)
+
+    if total_visible > limit:
+        st.caption(f"Showing {limit} of {total_visible}")
+        st.button(
+            f"⬇️ Load {min(LOW_STOCK_PAGE_SIZE, total_visible - limit)} more",
+            key="low_stock_load_more",
+            use_container_width=True,
+            on_click=_load_more_low_stock,
+        )
 
 def _render_global_minimum_dropdown() -> int:
     """Render the "Minimum Stock Limit" dropdown (Requirement 5) and
@@ -181,7 +208,7 @@ def _render_filter_dropdown(counts: dict) -> str | None:
     return option_to_severity[selected_label]
 
 
-def _render_severity_section(severity: str, products: list) -> None:
+def _render_severity_section(severity: str, products: list, total_count: int = None) -> None:
     """Render one severity section: a colored header and one banner
     row per product.
 
@@ -196,7 +223,8 @@ def _render_severity_section(severity: str, products: list) -> None:
     # Expiry Alerts' red/orange/yellow palette for visual consistency).
     st.markdown(
         f"<h4 style='color:{display['color']}; margin-bottom:0.2rem;'>"
-        f"{display['icon']} {display['label']} ({len(products)})</h4>",
+        f"{display['icon']} {display['label']} "
+        f"({total_count if total_count is not None else len(products)})</h4>",
         unsafe_allow_html=True,
     )
 

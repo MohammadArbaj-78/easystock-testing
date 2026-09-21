@@ -41,9 +41,19 @@ def render_products_page() -> None:
         _render_add_product_form()
 
 
+PRODUCTS_PAGE_SIZE = 50
+
+
 @st.cache_data(show_spinner=False)
-def _search_products_cached(store_id: int, search_term: str, _epoch: int) -> list:
-    return products_service.search_products(store_id, search_term)
+def _search_products_page_cached(store_id: int, search_term: str, limit: int, _epoch: int) -> dict:
+    return products_service.search_products_page(store_id, search_term, limit)
+
+
+def _load_more_products() -> None:
+    st.session_state["products_visible_limit"] = (
+        st.session_state.get("products_visible_limit", PRODUCTS_PAGE_SIZE)
+        + PRODUCTS_PAGE_SIZE
+    )
 
 def _render_product_list() -> None:
     """Render the searchable product list with edit/delete actions per
@@ -68,11 +78,21 @@ def _render_product_list() -> None:
             use_container_width=True,
         )
     
-    products = _search_products_cached(
+    # A new search starts again from the first page.
+    if st.session_state.get("products_last_search") != search_term:
+        st.session_state["products_last_search"] = search_term
+        st.session_state["products_visible_limit"] = PRODUCTS_PAGE_SIZE
+    limit = st.session_state.get("products_visible_limit", PRODUCTS_PAGE_SIZE)
+
+    page = _search_products_page_cached(
         store_id,
         search_term,
+        limit,
         get_cache_epoch(),
     )
+    products = page["rows"]
+    total = page["total"]
+
     if not products:
         if search_term:
             st.info("No products match your search.")
@@ -80,7 +100,7 @@ def _render_product_list() -> None:
             st.info("No products yet. Add your first product in the 'Add New Product' tab.")
         return
 
-    st.caption(f"{len(products)} product(s)")
+    st.caption(f"Showing {len(products)} of {total} product(s)")
 
     select_mode = st.checkbox("Select multiple to delete", key="products_select_mode")
     if "products_selected_ids" not in st.session_state:
@@ -115,6 +135,14 @@ def _render_product_list() -> None:
 
     for product in products:
         _render_product_row(store_id, product, select_mode)
+
+    if total > len(products):
+        st.button(
+            f"⬇️ Load {min(PRODUCTS_PAGE_SIZE, total - len(products))} more",
+            key="products_load_more",
+            use_container_width=True,
+            on_click=_load_more_products,
+        )
 
 def _render_product_row(store_id: int, product: dict, select_mode: bool = False) -> None:
     """Render a single product as an expandable row with edit and

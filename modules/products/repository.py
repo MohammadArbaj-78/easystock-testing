@@ -182,6 +182,18 @@ def get_all_products(store_id: int, search_term: str = None) -> list:
     return _get_all_products_sqlite(store_id, search_term)
 
 
+def get_products_page(store_id: int, search_term: str = None, limit: int = 50) -> dict:
+    """Get the first `limit` products for a store (optionally filtered
+    by a name/batch search term), plus the TOTAL number of matching
+    products. The search runs in the database against ALL products.
+
+    Returns:
+        {"rows": [product dicts, ordered by name], "total": int}
+    """
+    if ACTIVE_DB_BACKEND == "supabase":
+        return _get_products_page_supabase(store_id, search_term, limit)
+    return _get_products_page_sqlite(store_id, search_term, limit)
+
 def get_product_by_id(store_id: int, product_id: int) -> dict:
     """Get a single product by ID, scoped to the requesting store.
 
@@ -487,6 +499,27 @@ def _get_all_products_sqlite(store_id: int, search_term: str = None) -> list:
             ).fetchall()
         return [dict(row) for row in rows]
 
+def _get_products_page_sqlite(store_id: int, search_term: str = None, limit: int = 50) -> dict:
+    with get_connection() as connection:
+        if search_term and search_term.strip():
+            pattern = f"%{search_term.strip()}%"
+            where = (
+                "WHERE store_id = ? AND (name LIKE ? COLLATE NOCASE "
+                "OR batch_number LIKE ? COLLATE NOCASE)"
+            )
+            params = (store_id, pattern, pattern)
+        else:
+            where = "WHERE store_id = ?"
+            params = (store_id,)
+
+        total = connection.execute(
+            f"SELECT COUNT(*) FROM products {where}", params
+        ).fetchone()[0]
+        rows = connection.execute(
+            f"SELECT * FROM products {where} ORDER BY name ASC, product_id ASC LIMIT ?",
+            params + (limit,),
+        ).fetchall()
+        return {"rows": [dict(row) for row in rows], "total": total}
 
 def _get_product_by_id_sqlite(store_id: int, product_id: int) -> dict:
     with get_connection() as connection:
@@ -620,7 +653,7 @@ def _supabase_products_table():
 # PostgREST returns at most 1000 rows per request by default. Any read
 # that needs "all rows for this store" must page through them, otherwise
 # stores with 1000+ products silently get truncated data (wrong counts).
-_SUPABASE_PAGE_SIZE = 5
+_SUPABASE_PAGE_SIZE = 1000
 
 
 def _fetch_all_rows(build_query) -> list:
@@ -695,6 +728,36 @@ def _get_all_products_supabase(store_id: int, search_term: str = None) -> list:
         return query.order("name", desc=False).order("product_id", desc=False)
 
     return [dict(row) for row in _fetch_all_rows(build)]
+
+def _get_products_page_supabase(store_id: int, search_term: str = None, limit: int = 50) -> dict:
+    def build():
+        query = (
+            _supabase_products_table()
+            .select("*", count="exact")
+            .eq("store_id", store_id)
+        )
+        if search_term and search_term.strip():
+            term = search_term.strip().replace(",", "\\,")
+            pattern = f"%{term}%"
+            query = query.or_(f"name.ilike.{pattern},batch_number.ilike.{pattern}")
+        return query.order("name", desc=False).order("product_id", desc=False)
+
+    # One request normally (limit <= 1000). If more than 1000 rows have
+    # been loaded via "Load more", fetch in chunks of 1000 (PostgREST cap).
+    rows = []
+    total = 0
+    start = 0
+    while start < limit:
+        end = min(start + _SUPABASE_PAGE_SIZE, limit) - 1
+        response = build().range(start, end).execute()
+        batch = response.data or []
+        if start == 0:
+            total = response.count or 0
+        rows.extend(dict(row) for row in batch)
+        if len(batch) < (end - start + 1):
+            break
+        start = end + 1
+    return {"rows": rows, "total": total}
 
 def _get_product_by_id_supabase(store_id: int, product_id: int) -> dict:
     response = (
