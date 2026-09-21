@@ -16,20 +16,24 @@ import streamlit as st
 from modules.dashboard.service import get_dashboard_metrics
 from modules.alerts import service as alerts_service
 from config.alert_theme import render_alert_banner
-from core.session import get_current_store_id
+from core.session import get_current_store_id, get_current_low_stock_minimum
 from core.cache_utils import get_cache_epoch
 
 
 @st.cache_data(show_spinner=False)
-def _get_dashboard_metrics_cached(store_id: int, _epoch: int) -> dict:
-    return get_dashboard_metrics(store_id)
+def _get_dashboard_metrics_cached(store_id: int, low_stock_minimum: int, _epoch: int) -> dict:
+    return get_dashboard_metrics(store_id, low_stock_minimum)
 
 def render_dashboard() -> None:
     """Render the Dashboard screen for the currently logged-in store."""
     st.subheader("📊 Dashboard")
 
     store_id = get_current_store_id()
-    metrics = _get_dashboard_metrics_cached(store_id, get_cache_epoch())
+    metrics = _get_dashboard_metrics_cached(
+        store_id,
+        get_current_low_stock_minimum(),
+        get_cache_epoch(),
+    )
 
     if metrics["total_products"] == 0:
         st.info(

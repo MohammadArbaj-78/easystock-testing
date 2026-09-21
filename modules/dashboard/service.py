@@ -24,7 +24,7 @@ from modules.products import repository as products_repository
 from config.settings import DASHBOARD_EXPIRY_SOON_DAYS
 
 
-def get_dashboard_metrics(store_id: int) -> dict:
+def get_dashboard_metrics(store_id: int, low_stock_minimum: int = None) -> dict:
     """Compute the four headline metrics for a store's dashboard.
 
     Args:
@@ -63,7 +63,11 @@ def get_dashboard_metrics(store_id: int) -> dict:
     snapshot = products_repository.get_dashboard_snapshot(
         store_id,
         within_days=DASHBOARD_EXPIRY_SOON_DAYS,
-        low_stock_global_minimum=get_current_low_stock_minimum(),
+        low_stock_global_minimum=(
+            low_stock_minimum
+            if low_stock_minimum is not None
+            else get_current_low_stock_minimum()
+        ),
     )
 
     total_products = snapshot["total_products"]
