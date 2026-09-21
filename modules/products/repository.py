@@ -117,13 +117,12 @@ def get_dashboard_snapshot(store_id: int, within_days: int, low_stock_global_min
             "low_stock_items": get_low_stock_products(store_id, global_minimum=low_stock_global_minimum),
         }
 
-    response = (
-        _supabase_products_table()
+    rows = _fetch_all_rows(
+        lambda: _supabase_products_table()
         .select("product_id, name, batch_number, expiry_date, quantity, mrp, rate, minimum_stock_threshold")
         .eq("store_id", store_id)
-        .execute()
+        .order("product_id", desc=False)
     )
-    rows = response.data
     return {
         "total_products": len(rows),
         "expired_items": _filter_expired_rows(rows),
@@ -618,6 +617,34 @@ def _supabase_products_table():
     return get_supabase_client().table("products")
 
 
+# PostgREST returns at most 1000 rows per request by default. Any read
+# that needs "all rows for this store" must page through them, otherwise
+# stores with 1000+ products silently get truncated data (wrong counts).
+_SUPABASE_PAGE_SIZE = 5
+
+
+def _fetch_all_rows(build_query) -> list:
+    """Fetch every row of a query by paging with .range().
+
+    build_query must be a zero-argument function returning a FRESH query
+    each call (including a stable .order("product_id") so pages never
+    overlap or skip rows).
+    """
+    rows = []
+    start = 0
+    while True:
+        batch = (
+            build_query()
+            .range(start, start + _SUPABASE_PAGE_SIZE - 1)
+            .execute()
+            .data
+        ) or []
+        rows.extend(batch)
+        if len(batch) < _SUPABASE_PAGE_SIZE:
+            break
+        start += _SUPABASE_PAGE_SIZE
+    return rows
+
 def _count_total_products_supabase(store_id: int) -> int:
     response = (
         _supabase_products_table()
@@ -629,54 +656,45 @@ def _count_total_products_supabase(store_id: int) -> int:
 
 
 def _get_expired_products_supabase(store_id: int) -> list:
-    response = (
-        _supabase_products_table()
+    rows = _fetch_all_rows(
+        lambda: _supabase_products_table()
         .select("product_id, name, batch_number, expiry_date, quantity, mrp, rate")
         .eq("store_id", store_id)
-        .execute()
+        .order("product_id", desc=False)
     )
-    return _filter_expired_rows(response.data)
+    return _filter_expired_rows(rows)
 
 
 def _get_expiring_soon_products_supabase(store_id: int, within_days: int) -> list:
-    response = (
-        _supabase_products_table()
+    rows = _fetch_all_rows(
+        lambda: _supabase_products_table()
         .select("product_id, name, batch_number, expiry_date, quantity, mrp, rate")
         .eq("store_id", store_id)
-        .execute()
+        .order("product_id", desc=False)
     )
-    return _filter_expiring_soon_rows(response.data, within_days)
+    return _filter_expiring_soon_rows(rows, within_days)
 
 
 def _get_low_stock_products_supabase(store_id: int, effective_default: int) -> list:
-    # PostgREST has no COALESCE-in-WHERE equivalent for the effective
-    # threshold fallback, so - like the expiry queries above - the
-    # comparison happens in Python via the shared _filter_low_stock_rows
-    # helper, against every row for this store rather than a
-    # pre-filtered SQL result set.
-    response = (
-        _supabase_products_table()
+    rows = _fetch_all_rows(
+        lambda: _supabase_products_table()
         .select("product_id, name, batch_number, quantity, mrp, rate, minimum_stock_threshold")
         .eq("store_id", store_id)
-        .execute()
+        .order("product_id", desc=False)
     )
-    return _filter_low_stock_rows(response.data, effective_default)
+    return _filter_low_stock_rows(rows, effective_default)
 
 
 def _get_all_products_supabase(store_id: int, search_term: str = None) -> list:
-    query = _supabase_products_table().select("*").eq("store_id", store_id)
-    if search_term and search_term.strip():
-        # PostgREST's or() filter syntax uses commas to separate
-        # conditions and treats them specially inside the ilike
-        # pattern's own value; escape any comma in the search term so
-        # a store owner searching for e.g. a comma-containing batch
-        # label can't produce a malformed filter.
-        term = search_term.strip().replace(",", "\\,")
-        pattern = f"%{term}%"
-        query = query.or_(f"name.ilike.{pattern},batch_number.ilike.{pattern}")
-    response = query.order("name", desc=False).execute()
-    return [dict(row) for row in response.data]
+    def build():
+        query = _supabase_products_table().select("*").eq("store_id", store_id)
+        if search_term and search_term.strip():
+            term = search_term.strip().replace(",", "\\,")
+            pattern = f"%{term}%"
+            query = query.or_(f"name.ilike.{pattern},batch_number.ilike.{pattern}")
+        return query.order("name", desc=False).order("product_id", desc=False)
 
+    return [dict(row) for row in _fetch_all_rows(build)]
 
 def _get_product_by_id_supabase(store_id: int, product_id: int) -> dict:
     response = (
