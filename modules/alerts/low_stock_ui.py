@@ -30,7 +30,7 @@ FILTER_OPTION_ALL = "All"
 GLOBAL_MINIMUM_OPTIONS = list(range(1, 11))  # Requirement 5: strictly 1-10
 
 
-LOW_STOCK_PAGE_SIZE = 25
+LOW_STOCK_PAGE_SIZE = 20
 
 
 def _load_more_low_stock() -> None:
