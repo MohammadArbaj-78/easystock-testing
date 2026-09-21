@@ -392,27 +392,37 @@ def restore_session(refresh_token: str) -> dict:
     }
 
 
-def sign_out(access_token: str = None) -> None:
-    """Sign out of the current Supabase session.
+def sign_out(access_token: str = None, refresh_token: str = None) -> None:
+    """Sign out THIS user's Supabase session (and only this one).
+
+    The shared Auth client remembers only the last user who signed in,
+    so calling sign_out() on it would end that other user's session
+    instead of the one logging out. Instead, a private client is built
+    for this call, given this user's own tokens, and signs out with
+    scope "local" - which ends only this device's session (other
+    devices of the same account stay logged in).
 
     Safe to call even if Supabase is not configured or the sign-out
-    call itself fails (e.g. token already expired) - logout must always
-    succeed from the application's point of view (core.session.end_session()
-    always clears the local session regardless), so any Supabase-side
-    failure here is swallowed rather than blocking the user from
-    logging out.
-
-    Args:
-        access_token: Unused by supabase-py's sign_out() (it operates
-            on the client's own currently-set session), accepted for a
-            clear call-site signature and possible future use.
+    call itself fails - logout must always succeed from the
+    application's point of view (core.session.end_session() always
+    clears the local session regardless). With no tokens there is
+    nothing to identify the session, so nothing is signed out (never
+    guess and end someone else's).
     """
+    if not access_token or not refresh_token:
+        return
+
+    global _url, _anon_key
     try:
-        _get_auth_client().auth.sign_out()
+        if _url is None or _anon_key is None:
+            _url, _anon_key = _read_auth_config()
+        private_client = _build_supabase_auth_client()
+        private_client.auth.set_session(access_token, refresh_token)
+        private_client.auth.sign_out({"scope": "local"})
     except Exception:
         pass
 
-
+    
 def _friendly_auth_error(error: Exception, context: str) -> str:
     """Turn whatever supabase-py/gotrue raises into one plain-language
     message, never exposing internal exception class names or raw

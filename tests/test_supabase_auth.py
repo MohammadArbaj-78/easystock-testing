@@ -277,7 +277,7 @@ class TestSignIn:
 
 
 class TestSignOut:
-    def test_sign_out_calls_supabase_auth_sign_out(self, tmp_path, monkeypatch):
+    def test_sign_out_ends_only_this_users_session(self, tmp_path, monkeypatch):
         _setup_isolated_db(tmp_path, monkeypatch)
         _reset_auth_client_singleton()
         _set_secrets(monkeypatch)
@@ -285,9 +285,65 @@ class TestSignOut:
         mock_client = MagicMock()
         monkeypatch.setattr(supabase_auth, "_build_supabase_auth_client", lambda: mock_client)
 
-        supabase_auth.sign_out("some-access-token")
-        mock_client.auth.sign_out.assert_called_once()
+        supabase_auth.sign_out("some-access-token", "some-refresh-token")
+        mock_client.auth.set_session.assert_called_once_with("some-access-token", "some-refresh-token")
+        mock_client.auth.sign_out.assert_called_once_with({"scope": "local"})
 
+    def test_sign_out_never_touches_the_shared_client(self, tmp_path, monkeypatch):
+        """The shared client holds whichever user signed in last - signing
+        out on it would end that OTHER user's session."""
+        _setup_isolated_db(tmp_path, monkeypatch)
+        _reset_auth_client_singleton()
+        _set_secrets(monkeypatch)
+
+        shared_client = MagicMock()
+        supabase_auth._auth_client = shared_client
+        supabase_auth._url = "https://example.supabase.co"
+        supabase_auth._anon_key = "fake-anon-key"
+
+        private_client = MagicMock()
+        monkeypatch.setattr(supabase_auth, "_build_supabase_auth_client", lambda: private_client)
+
+        supabase_auth.sign_out("acc", "ref")
+        shared_client.auth.sign_out.assert_not_called()
+        private_client.auth.sign_out.assert_called_once_with({"scope": "local"})
+
+    def test_sign_out_without_tokens_signs_nobody_out(self, tmp_path, monkeypatch):
+        _setup_isolated_db(tmp_path, monkeypatch)
+        _reset_auth_client_singleton()
+        _set_secrets(monkeypatch)
+
+        mock_client = MagicMock()
+        monkeypatch.setattr(supabase_auth, "_build_supabase_auth_client", lambda: mock_client)
+
+        supabase_auth.sign_out("only-access-token")
+        supabase_auth.sign_out()
+        mock_client.auth.sign_out.assert_not_called()
+
+    def test_sign_out_never_raises_even_if_supabase_call_fails(self, tmp_path, monkeypatch):
+        """Logout must always succeed from the app's point of view -
+        core.session.end_session() always clears local state regardless."""
+        _setup_isolated_db(tmp_path, monkeypatch)
+        _reset_auth_client_singleton()
+        _set_secrets(monkeypatch)
+
+        mock_client = MagicMock()
+        mock_client.auth.sign_out.side_effect = Exception("network error")
+        monkeypatch.setattr(supabase_auth, "_build_supabase_auth_client", lambda: mock_client)
+
+        supabase_auth.sign_out("some-token", "some-refresh")  # must not raise
+
+    def test_sign_out_never_raises_when_set_session_fails(self, tmp_path, monkeypatch):
+        _setup_isolated_db(tmp_path, monkeypatch)
+        _reset_auth_client_singleton()
+        _set_secrets(monkeypatch)
+
+        mock_client = MagicMock()
+        mock_client.auth.set_session.side_effect = Exception("token expired")
+        monkeypatch.setattr(supabase_auth, "_build_supabase_auth_client", lambda: mock_client)
+
+        supabase_auth.sign_out("some-token", "some-refresh")  # must not raise
+        
     def test_sign_out_never_raises_even_if_supabase_call_fails(self, tmp_path, monkeypatch):
         """Logout must always succeed from the app's point of view -
         core.session.end_session() always clears local state regardless."""

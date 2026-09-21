@@ -88,7 +88,7 @@ def render_main_app() -> None:
             # clears it; sign_out() itself never raises (see its own
             # docstring), so this can never block logout from
             # completing.
-            sign_out(get_current_access_token())
+            sign_out(get_current_access_token(), get_current_refresh_token())
             end_session()
             # Requirement 2: also clear the persisted refresh token from
             # the browser's localStorage - otherwise the startup-
