@@ -112,7 +112,27 @@ def _build_supabase_auth_client():
     real network call.
     """
     from supabase import create_client
-    return create_client(_url, _anon_key)
+
+    # This client is shared by every user. With the defaults it
+    # silently refreshes a session in the background about once an
+    # hour, which rotates that user's refresh token and leaves the copy
+    # saved in the browser stale. This app refreshes explicitly
+    # (restore_session), so background refreshing is turned off.
+    # If the installed supabase version does not expose ClientOptions
+    # this way, fall back to the plain client (login must never break).
+    options = None
+    try:
+        try:
+            from supabase import ClientOptions
+        except ImportError:
+            from supabase.lib.client_options import ClientOptions
+        options = ClientOptions(auto_refresh_token=False, persist_session=False)
+    except Exception:
+        options = None
+
+    if options is None:
+        return create_client(_url, _anon_key)
+    return create_client(_url, _anon_key, options=options)
 
 
 def _get_auth_client():

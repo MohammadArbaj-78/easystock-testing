@@ -168,6 +168,13 @@ def get_current_access_token() -> str:
         )
     return st.session_state[SESSION_STATE_KEY].get("access_token")
 
+def get_current_refresh_token() -> str:
+    """Return the logged-in session's Supabase refresh token, or None if
+    there is no session (or it has no refresh token).
+    """
+    if not is_logged_in():
+        return None
+    return st.session_state[SESSION_STATE_KEY].get("refresh_token")
 
 def end_session() -> None:
     """End the current session (logout).

@@ -15,7 +15,7 @@ from config.settings import APP_NAME, LOCALSTORAGE_REFRESH_TOKEN_KEY
 from core.database import initialize_database
 from core.session import (
     is_logged_in, get_current_store_name, get_current_owner_name,
-    get_current_access_token, start_session, end_session,
+    get_current_access_token, get_current_refresh_token, start_session, end_session,
 )
 from core.supabase_auth import sign_out, restore_session
 from core.exceptions import SupabaseAuthError, SupabaseConfigError
@@ -269,6 +269,16 @@ def _clear_persisted_refresh_token_if_unchanged(token_param: str) -> None:
         height=0,
     )
 
+def _is_temporary_network_error(error: Exception) -> bool:
+    """True if a restore failure looks like a temporary network/server
+    problem (timeout, connection error) rather than a rejected token.
+    """
+    text = str(error).lower()
+    return any(
+        word in text
+        for word in ("timed out", "timeout", "could not reach", "connection", "network", "temporarily")
+    )
+
 def _attempt_session_restoration() -> None:
     """Requirement 2: on a fresh Streamlit connection (a full browser
     close/reopen, not just a rerun/navigation - those already work via
@@ -331,9 +341,13 @@ def _attempt_session_restoration() -> None:
             _persist_refresh_token_to_browser(store["refresh_token"])
             st.query_params.clear()
             st.rerun()
-        except (SupabaseAuthError, SupabaseConfigError):
+        except (SupabaseAuthError, SupabaseConfigError) as error:
             st.query_params.clear()
-            _clear_persisted_refresh_token_if_unchanged(token_param)
+            # Only delete the saved token when Supabase actually rejected
+            # it. A timeout says nothing about the token, so keep it and
+            # the next page refresh simply tries again.
+            if not (isinstance(error, SupabaseConfigError) or _is_temporary_network_error(error)):
+                _clear_persisted_refresh_token_if_unchanged(token_param)
         return
 
     # No restoration in flight yet - ask the browser whether it has a
@@ -366,6 +380,14 @@ def _attempt_session_restoration() -> None:
 
 
 if is_logged_in():
+    # Supabase rotates the refresh token every time it is used, so the
+    # copy in the browser must always be the CURRENT one. Writing it
+    # here (once per new token, after any login/restore rerun has
+    # finished) guarantees it lands.
+    _current_refresh_token = get_current_refresh_token()
+    if _current_refresh_token and st.session_state.get("_persisted_refresh_token") != _current_refresh_token:
+        _persist_refresh_token_to_browser(_current_refresh_token)
+        st.session_state["_persisted_refresh_token"] = _current_refresh_token
     render_main_app()
 else:
     _attempt_session_restoration()
