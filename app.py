@@ -122,6 +122,9 @@ def render_main_app() -> None:
     if page_function is not render_low_stock_alerts_page:
         for key in ("low_stock_visible_limit", "low_stock_last_signature"):
             st.session_state.pop(key, None)
+    
+    if page_function is not render_sales_page:
+        st.session_state.pop("sales_history_visible_limit", None)
 
     page_function()
 

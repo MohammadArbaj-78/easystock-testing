@@ -69,23 +69,44 @@ def search_products(store_id: int, search_term: str) -> list:
     from modules.products.service import get_lots_by_name_sorted_by_expiry
 
     products = products_repository.get_all_products(store_id, search_term)
-    in_stock = [product for product in products if product["quantity"] > 0]
+    term = (search_term or "").strip().lower()
+
+    # Speed: group the rows we ALREADY fetched by medicine name, so the
+    # FIFO lot of most results can be found in memory instead of one
+    # extra database call per medicine.
+    rows_by_name = {}
+    for product in products:
+        rows_by_name.setdefault(product["name"].strip().lower(), []).append(product)
 
     seen_names = set()
     results = []
-    for product in in_stock:
+    for product in products:
+        if product["quantity"] <= 0:
+            continue
         name_key = product["name"].strip().lower()
         if name_key in seen_names:
             continue
         seen_names.add(name_key)
 
-        fifo_lots = get_lots_by_name_sorted_by_expiry(store_id, product["name"])
+        if term and term.isascii() and name_key.isascii() and term in name_key:
+            # Search term is inside this medicine's NAME, so the database
+            # matched every lot of this name - all are already in
+            # `products`. Same rule as get_lots_by_name_sorted_by_expiry.
+            fifo_lots = sorted(
+                (row for row in rows_by_name[name_key] if row["quantity"] > 0),
+                key=lambda row: row["product_id"],
+            )
+        else:
+            # Matched by batch number only - ask the database for all lots.
+            fifo_lots = get_lots_by_name_sorted_by_expiry(store_id, product["name"])
+
         if fifo_lots:
             results.append(fifo_lots[0])
+        if len(results) >= SALES_SEARCH_SUGGESTION_LIMIT:
+            break
 
-    return results[:SALES_SEARCH_SUGGESTION_LIMIT]
-
-
+    return results
+    
 def get_frequently_sold(store_id: int) -> list:
     """Get the top-selling, currently-in-stock products for this store.
 
@@ -107,16 +128,30 @@ def get_frequently_sold(store_id: int) -> list:
         SALES_FREQUENTLY_SOLD_LIMIT of them. Empty list if this store
         has no sales history yet.
     """
-    from modules.products.service import get_lots_by_name_sorted_by_expiry
-
     candidate_ids = sales_repository.get_top_sold_product_ids(
         store_id, SALES_FREQUENTLY_SOLD_CANDIDATE_LIMIT
     )
+    if not candidate_ids:
+        return []
+
+    # Speed: fetch this store's products ONCE and resolve every candidate
+    # in memory, instead of two database calls per candidate.
+    all_products = products_repository.get_all_products(store_id)
+    products_by_id = {row["product_id"]: row for row in all_products}
+
+    # In-stock lots per medicine name, oldest arrival first (same FIFO
+    # rule as get_lots_by_name_sorted_by_expiry).
+    lots_by_name = {}
+    for row in all_products:
+        if row["quantity"] > 0:
+            lots_by_name.setdefault(row["name"].strip().lower(), []).append(row)
+    for lots in lots_by_name.values():
+        lots.sort(key=lambda row: row["product_id"])
 
     seen_names = set()
     results = []
     for product_id in candidate_ids:
-        product = products_repository.get_product_by_id(store_id, product_id)
+        product = products_by_id.get(product_id)
         if product is None or product["quantity"] <= 0:
             continue
 
@@ -125,7 +160,7 @@ def get_frequently_sold(store_id: int) -> list:
             continue
         seen_names.add(name_key)
 
-        fifo_lots = get_lots_by_name_sorted_by_expiry(store_id, product["name"])
+        fifo_lots = lots_by_name.get(name_key)
         if fifo_lots:
             results.append(fifo_lots[0])
 

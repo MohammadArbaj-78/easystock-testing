@@ -87,6 +87,25 @@ def render_sales_page() -> None:
         _render_sales_history_section()
 
 
+SALES_HISTORY_PAGE_SIZE = 10
+
+
+@st.cache_data(show_spinner=False, ttl=300)
+def _search_suggestions_cached(store_id: int, search_term: str, _epoch: int) -> list:
+    return sales_service.search_products(store_id, search_term)
+
+
+@st.cache_data(show_spinner=False, ttl=300)
+def _get_sales_history_cached(store_id: int, _epoch: int) -> list:
+    return sales_service.get_sales_history(store_id)
+
+
+def _load_more_sales_history() -> None:
+    st.session_state["sales_history_visible_limit"] = (
+        st.session_state.get("sales_history_visible_limit", SALES_HISTORY_PAGE_SIZE)
+        + SALES_HISTORY_PAGE_SIZE
+    )
+
 def _render_mobile_layout_css() -> None:
     """Mobile-only CSS for general page spacing/wrapping/overflow safety.
 
@@ -196,7 +215,7 @@ def _render_sell_section() -> None:
         _render_frequently_sold(store_id)
         return
 
-    suggestions = sales_service.search_products(store_id, search_term)
+    suggestions = _search_suggestions_cached(store_id, search_term, get_cache_epoch())
 
     if not suggestions:
         st.info("No products match your search.")
@@ -397,7 +416,7 @@ def _render_sale_row(store_id: int, product: dict) -> None:
         with minus_col:
             if st.button("−", key=f"sales_minus_{product_id}", disabled=(quantity <= 1), use_container_width=True):
                 st.session_state[qty_key] = quantity - 1
-                st.rerun()
+                st.rerun(scope="fragment")
 
         with qty_col:
             st.markdown(f"**{quantity}**")
@@ -405,7 +424,7 @@ def _render_sale_row(store_id: int, product: dict) -> None:
         with plus_col:
             if st.button("+", key=f"sales_plus_{product_id}", disabled=(quantity >= stock), use_container_width=True):
                 st.session_state[qty_key] = quantity + 1
-                st.rerun()
+                st.rerun(scope="fragment")
 
         with sell_col:
             if st.button(
@@ -457,6 +476,7 @@ def _format_sold_at(sold_at: str) -> str:
         return sold_at
 
 
+@st.fragment
 def _render_sales_history_section() -> None:
     """Render the read-only Sales History: latest 100, newest first,
     as native bordered-container cards. No edit, no delete, no
@@ -466,13 +486,15 @@ def _render_sales_history_section() -> None:
 
     st.markdown("**🧾 Sales History**")
 
-    sales = sales_service.get_sales_history(store_id)
+    sales = _get_sales_history_cached(store_id, get_cache_epoch())
 
     if not sales:
         st.info("No sales recorded yet.")
         return
 
-    for sale in sales:
+    limit = st.session_state.get("sales_history_visible_limit", SALES_HISTORY_PAGE_SIZE)
+
+    for sale in sales[:limit]:
         with st.container(border=True):
             st.markdown(f"**{sale['medicine_name']}**")
             st.caption(
@@ -480,3 +502,12 @@ def _render_sales_history_section() -> None:
                 f"Sold Qty: {sale['sold_quantity']}  •  "
                 f"Sold: {_format_sold_at(sale['sold_at'])}"
             )
+    
+    if len(sales) > limit:
+        st.caption(f"Showing {limit} of {len(sales)}")
+        st.button(
+            f"⬇️ Load {min(SALES_HISTORY_PAGE_SIZE, len(sales) - limit)} more",
+            key="sales_history_load_more",
+            use_container_width=True,
+            on_click=_load_more_sales_history,
+        )
