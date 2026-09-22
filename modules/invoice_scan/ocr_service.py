@@ -386,34 +386,52 @@ def extract_medicines_from_file(file_obj) -> dict:
     except Exception as exc:
         exc_str = str(exc).lower()
 
+        # This call runs on Streamlit Cloud's server, not the store
+        # owner's phone/laptop - so a failure here is NEVER actually
+        # about the store owner's own internet connection, even when
+        # Google's error text happens to contain the word "connection"
+        # or "network" (Google uses that wording for its OWN outbound
+        # problems too, e.g. an overloaded model or a blocked route out
+        # of the server). The real Google error text is always appended,
+        # in brackets, so the actual cause is visible instead of only
+        # ever showing a guessed category.
+        detail = f" [Google said: {exc}]"
+
         if "timeout" in exc_str or "deadline" in exc_str:
             raise GeminiAPIError(
-                "The request to Gemini timed out. "
-                "Please check your internet connection and try again."
+                "The request to Gemini timed out." + detail
             ) from exc
 
         if "api key" in exc_str or "permission" in exc_str or "401" in exc_str or "403" in exc_str:
             raise GeminiAPIError(
                 "Invalid or missing Gemini API key. "
-                "Please check your GEMINI_API_KEY in the .env file."
+                "Please check the GEMINI_API_KEY set for this app." + detail
             ) from exc
 
-        if "quota" in exc_str or "rate" in exc_str or "429" in exc_str:
+        if "quota" in exc_str or "rate" in exc_str or "429" in exc_str or "resource_exhausted" in exc_str:
             raise GeminiAPIError(
-                f"API quota/rate limit error: {exc}. "
-                "Please wait a moment and try again."
+                "API quota/rate limit reached. Please wait a moment and try again." + detail
             ) from exc
 
-        if "network" in exc_str or "connection" in exc_str or "unavailable" in exc_str:
+        if "unavailable" in exc_str or "503" in exc_str or "overloaded" in exc_str:
             raise GeminiAPIError(
-                "Could not reach the Gemini API. "
-                "Please check your internet connection and try again."
+                "Gemini's servers are temporarily overloaded (this is on "
+                "Google's side, not your connection). Please try again "
+                "in a minute." + detail
+            ) from exc
+
+        if "network" in exc_str or "connection" in exc_str:
+            raise GeminiAPIError(
+                "Could not reach the Gemini API from the server. "
+                "This is not about the phone/computer being used right "
+                "now - it points to a problem reaching Google from where "
+                "the app is hosted, or with the API key/project itself." + detail
             ) from exc
 
         raise GeminiAPIError(
-            f"Gemini API error: {type(exc).__name__}. Please try again."
+            f"Gemini API error: {type(exc).__name__}." + detail
         ) from exc
-
+    
     elapsed = round(time.monotonic() - start_time, 2)
 
     try:
