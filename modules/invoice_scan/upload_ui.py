@@ -240,9 +240,16 @@ def _render_ocr_section(uploaded_file, file_hash: str = None) -> None:
             ocr_result = extract_medicines_from_file(uploaded_file)
         except GeminiAPIError as exc:
             st.error(f"⚠️ API Error: {exc}")
+            # The uploaded file is still held by the file_uploader widget
+            # (no review session was created, so it was never disabled or
+            # cleared) - clicking this button simply reruns the script,
+            # which retries extraction on that SAME file. No re-upload
+            # needed.
+            st.button("🔄 Try Again", key="invoice_retry_after_gemini_error")
             return
         except OCRError as exc:
             st.error(f"⚠️ Extraction Error: {exc}")
+            st.button("🔄 Try Again", key="invoice_retry_after_ocr_error")
             return
 
     medicines = ocr_result["medicines"]
