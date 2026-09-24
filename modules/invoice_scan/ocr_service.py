@@ -155,20 +155,50 @@ _RESPONSE_SCHEMA = genai_types.Schema(
 # Key loading
 # ---------------------------------------------------------------------------
 
-def _get_api_key() -> str:
-    """Read the Gemini API key from the environment.
+# Up to 3 Gemini API keys, ideally from 3 SEPARATE Google accounts/
+# projects so each has its own independent free-tier quota. Only the
+# ones actually set are used - a deployment with just GEMINI_API_KEY_1
+# (or the original single GEMINI_API_KEY) keeps working exactly as
+# before, with no rotation.
+_GEMINI_API_KEY_ENV_VARS = ("GEMINI_API_KEY_1", "GEMINI_API_KEY_2", "GEMINI_API_KEY_3")
+
+# Which configured key is currently "active". Shared by the whole app
+# (every store), not per-store, since it tracks which Google
+# account/key is currently working - not anything specific to one
+# store's data. Lives only in this server process's memory: it starts
+# back at the first configured key whenever the app process restarts
+# (e.g. a Streamlit Cloud redeploy or the app waking from sleep).
+_active_key_index = 0
+
+
+def _get_configured_api_keys() -> list:
+    """Return every configured Gemini API key, in order.
+
+    Checks GEMINI_API_KEY_1/_2/_3 first; if none of those are set,
+    falls back to the single GEMINI_API_KEY variable this app used
+    before key rotation existed, so older deployments are unaffected.
 
     Raises:
-        GeminiAPIError: If the key is absent or empty.
+        GeminiAPIError: If no key at all is configured.
     """
-    key = os.environ.get("GEMINI_API_KEY", "").strip()
-    if not key:
-        raise GeminiAPIError(
-            "Gemini API key not found. "
-            "Please add GEMINI_API_KEY to your .env file and restart the app."
-        )
-    return key
+    keys = []
+    for var_name in _GEMINI_API_KEY_ENV_VARS:
+        value = os.environ.get(var_name, "").strip()
+        if value:
+            keys.append(value)
 
+    if not keys:
+        single_key = os.environ.get("GEMINI_API_KEY", "").strip()
+        if single_key:
+            keys.append(single_key)
+
+    if not keys:
+        raise GeminiAPIError(
+            "No Gemini API key found. Please add GEMINI_API_KEY_1 "
+            "(and optionally GEMINI_API_KEY_2 / _3) to this app's "
+            "environment or Secrets, and restart the app."
+        )
+    return keys
 # ---------------------------------------------------------------------------
 # Image preparation
 # ---------------------------------------------------------------------------
@@ -334,7 +364,7 @@ def extract_medicines_from_file(file_obj) -> dict:
             network error. Always has a human-readable message for the UI.
         OCRError: File unreadable or Gemini response unparseable.
     """
-    api_key = _get_api_key()
+    keys = _get_configured_api_keys()
     pil_image = _file_to_pil_image(file_obj)
 
     # OCR Architecture v1.0: run preprocessing exactly once, before
@@ -358,8 +388,6 @@ def extract_medicines_from_file(file_obj) -> dict:
         image_mime_type = "image/png"
         preprocess_result = None
 
-    client = _build_genai_client(api_key)
-
     start_time = time.monotonic()
 
     # Gemini receives the (preprocessed or original) invoice image and
@@ -373,17 +401,57 @@ def extract_medicines_from_file(file_obj) -> dict:
         _EXTRACTION_PROMPT,
     ]
 
-    try:
-        response = client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=contents,
-            config=genai_types.GenerateContentConfig(
-                temperature=0,                       # deterministic reads (no random digit flips)
-                response_mime_type="application/json",
-                response_schema=_RESPONSE_SCHEMA,    # forces clean, complete JSON
-            ),
-        )
-    except Exception as exc:
+    # Key rotation: start from whichever key currently "works" (not
+    # always Key 1 - a key stays active across every future invoice
+    # until IT fails). On a failure that looks like the SAME key just
+    # being overloaded or out of quota, the next key is tried silently,
+    # in the same request, since a different Google account's key has
+    # its own separate quota and is likely to just work. On any other
+    # failure (a broken/invalid key, or a network problem reaching
+    # Google at all), that is NOT retried with another key automatically
+    # - it is surfaced right away, because: a broken key needs to be
+    # noticed and fixed, not silently skipped past; and a network
+    # problem reaching Google affects every key equally, so trying
+    # another key would not help. Either way, the shared "active key"
+    # pointer always moves to the NEXT key on any failure, so the next
+    # attempt - whether that is the automatic silent one above, or the
+    # store owner pressing "Try Again" after seeing an error - uses a
+    # fresh key instead of repeating the one that just failed.
+    global _active_key_index
+    response = None
+    last_exc = None
+    key_index = _active_key_index % len(keys)
+    for attempt_number in range(len(keys)):
+        api_key = keys[key_index]
+        client = _build_genai_client(api_key)
+        try:
+            response = client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=contents,
+                config=genai_types.GenerateContentConfig(
+                    temperature=0,                       # deterministic reads (no random digit flips)
+                    response_mime_type="application/json",
+                    response_schema=_RESPONSE_SCHEMA,    # forces clean, complete JSON
+                ),
+            )
+            _active_key_index = key_index  # this key worked - stay on it next time
+            break
+        except Exception as exc:
+            last_exc = exc
+            exc_str = str(exc).lower()
+            is_overloaded_or_quota_error = (
+                "unavailable" in exc_str or "503" in exc_str or "overloaded" in exc_str
+                or "quota" in exc_str or "rate" in exc_str or "429" in exc_str
+                or "resource_exhausted" in exc_str
+            )
+            key_index = (key_index + 1) % len(keys)
+            _active_key_index = key_index  # move the shared pointer forward regardless of why this key failed
+            if is_overloaded_or_quota_error and attempt_number < len(keys) - 1:
+                continue
+            break
+
+    if response is None:
+        exc = last_exc
         exc_str = str(exc).lower()
 
         # This call runs on Streamlit Cloud's server, not the store
