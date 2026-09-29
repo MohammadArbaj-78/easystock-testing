@@ -240,11 +240,23 @@ def _get_configured_api_keys() -> list:
 
     if not keys:
         raise GeminiAPIError(
-            "No Gemini API key found. Please add GEMINI_API_KEY_1 "
+            "Gemini API key not found. Please add GEMINI_API_KEY_1 "
             "(and optionally GEMINI_API_KEY_2 / _3) to this app's "
             "environment or Secrets, and restart the app."
         )
     return keys
+
+def _get_api_key() -> str:
+    """Return the first configured Gemini API key.
+
+    Kept so older callers/tests that expect a single key keep working;
+    the extraction itself uses _get_configured_api_keys() and rotates.
+
+    Raises:
+        GeminiAPIError: If no key is configured.
+    """
+    return _get_configured_api_keys()[0]
+
 # ---------------------------------------------------------------------------
 # Image preparation
 # ---------------------------------------------------------------------------
