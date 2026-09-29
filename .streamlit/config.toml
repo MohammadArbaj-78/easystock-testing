@@ -1,0 +1,17 @@
+[theme]
+# Design intent: this app is used by small medical store owners on their
+# phones, often in busy moments between customers. The palette is built
+# around a calm teal-green (associated with pharmacies/health, but not a
+# clinical, cold blue) and a warm off-white background rather than stark
+# white, so the app feels approachable rather than like a hospital form.
+# Large, high-contrast text is prioritized over visual decoration, per
+# the product's UI rules (WhatsApp/Instagram-simple, readable, mobile-first).
+
+primaryColor = "#1A7A6E"
+backgroundColor = "#FAF8F3"
+secondaryBackgroundColor = "#F0ECE1"
+textColor = "#2B2620"
+font = "sans serif"
+
+[server]
+maxUploadSize = 25
