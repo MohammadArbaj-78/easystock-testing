@@ -1,0 +1,114 @@
+"""
+Agencies screen UI.
+
+Renders the ledger for every agency (distributor/wholesaler) this store
+has scanned a bill from: a list of agencies with their running
+balance, and - inside each agency's dropdown - its full bill history
+(newest first) and a "Pay" form to record a payment.
+
+No business logic, no SQL here - calls modules.agencies.service and
+renders results. If a balance looks wrong, the bug is in
+modules.agencies.service or modules.agencies.repository, never here.
+"""
+
+import streamlit as st
+
+from modules.agencies import service as agencies_service
+from core.session import get_current_store_id
+from core.cache_utils import get_cache_epoch, bump_cache_epoch
+
+
+@st.cache_data(show_spinner=False)
+def _get_agency_ledger_cached(store_id: int, _epoch: int) -> list:
+    return agencies_service.get_agency_ledger(store_id)
+
+
+@st.cache_data(show_spinner=False)
+def _get_agency_detail_cached(store_id: int, agency_id: int, _epoch: int) -> dict:
+    return agencies_service.get_agency_detail(store_id, agency_id)
+
+
+def render_agencies_page() -> None:
+    """Render the Agencies (ledger) screen."""
+    st.subheader("🏢 Agencies")
+
+    store_id = get_current_store_id()
+    agencies = _get_agency_ledger_cached(store_id, get_cache_epoch())
+
+    if not agencies:
+        st.info(
+            "No agencies yet. Scanning and saving an invoice with an "
+            "agency name will add one here automatically."
+        )
+        return
+
+    total_balance = sum(agency["balance"] for agency in agencies)
+    st.caption(f"Total outstanding across all agencies: ₹{total_balance:,.2f}")
+
+    for agency in agencies:
+        balance = agency["balance"]
+        if balance > 0:
+            balance_label = f"₹{balance:,.2f} baaki"
+        elif balance < 0:
+            balance_label = f"₹{-balance:,.2f} advance"
+        else:
+            balance_label = "Fully paid"
+
+        with st.expander(f"{agency['agency_name']} — {balance_label}"):
+            _render_agency_detail(store_id, agency)
+
+
+def _render_agency_detail(store_id: int, agency: dict) -> None:
+    """Render one agency's dropdown: summary, Pay form, then its bills."""
+    agency_id = agency["agency_id"]
+    detail = _get_agency_detail_cached(store_id, agency_id, get_cache_epoch())
+
+    summary_columns = st.columns(3)
+    summary_columns[0].metric("Total billed", f"₹{detail['total_billed']:,.2f}")
+    summary_columns[1].metric("Total paid", f"₹{detail['total_paid']:,.2f}")
+    summary_columns[2].metric("Balance", f"₹{detail['balance']:,.2f}")
+
+    _render_pay_form(store_id, agency_id)
+
+    st.markdown("**Bills**")
+    if not detail["bills"]:
+        st.caption("No bills recorded yet.")
+        return
+
+    for bill in detail["bills"]:
+        label = bill["invoice_date"] or "(no date on bill)"
+        st.markdown(
+            f"<div style='border-left: 4px solid #999; padding: 0.4rem 1rem; "
+            f"margin: 0.3rem 0; background-color: rgba(0,0,0,0.02); "
+            f"border-radius: 4px;'>"
+            f"🧾 {label} &nbsp;•&nbsp; ₹{bill['grand_total']:,.2f}"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
+
+def _render_pay_form(store_id: int, agency_id: int) -> None:
+    """Render the amount/date inputs and "Pay" button for one agency."""
+    amount_col, date_col, button_col = st.columns([2, 2, 1])
+    amount_key = f"agency_pay_amount_{agency_id}"
+    date_key = f"agency_pay_date_{agency_id}"
+
+    with amount_col:
+        amount_text = st.text_input("Amount paid (₹)", key=amount_key, placeholder="e.g. 4000")
+    with date_col:
+        paid_on = st.date_input("Paid on", key=date_key)
+    with button_col:
+        st.write("")
+        pay_clicked = st.button("💰 Pay", key=f"agency_pay_button_{agency_id}", use_container_width=True)
+
+    if pay_clicked:
+        outcome = agencies_service.record_payment(
+            store_id, agency_id, amount_text, str(paid_on)
+        )
+        if outcome["recorded"]:
+            bump_cache_epoch()
+            st.session_state[amount_key] = ""
+            st.success(f"₹{outcome['amount']:,.2f} payment recorded.")
+            st.rerun()
+        else:
+            st.error(outcome["reason"])

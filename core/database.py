@@ -234,3 +234,72 @@ def initialize_database() -> None:
             ON sales_history (store_id, sold_at)
             """
         )
+
+        # Agencies (distributors/wholesalers a store buys from), and
+        # their ledger: one row per scanned bill (agency_bills) and one
+        # row per payment made to that agency (agency_payments). The
+        # running balance owed is NEVER stored as a column - it is
+        # always computed at read time as total_billed - total_paid
+        # (see modules.agencies.repository), so it can never drift out
+        # of sync with the bills/payments actually recorded. Both
+        # bills and payments are append-only, same as sales_history.
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS agencies (
+                agency_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                store_id INTEGER NOT NULL,
+                agency_name TEXT NOT NULL,
+                normalized_name TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (store_id) REFERENCES stores (store_id)
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_agencies_store_normalized_name
+            ON agencies (store_id, normalized_name)
+            """
+        )
+
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS agency_bills (
+                bill_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                store_id INTEGER NOT NULL,
+                agency_id INTEGER NOT NULL,
+                invoice_date TEXT,
+                grand_total REAL NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (store_id) REFERENCES stores (store_id),
+                FOREIGN KEY (agency_id) REFERENCES agencies (agency_id)
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_agency_bills_agency_id
+            ON agency_bills (agency_id)
+            """
+        )
+
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS agency_payments (
+                payment_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                store_id INTEGER NOT NULL,
+                agency_id INTEGER NOT NULL,
+                amount REAL NOT NULL,
+                paid_on TEXT NOT NULL DEFAULT (datetime('now')),
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (store_id) REFERENCES stores (store_id),
+                FOREIGN KEY (agency_id) REFERENCES agencies (agency_id)
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_agency_payments_agency_id
+            ON agency_payments (agency_id)
+            """
+        )

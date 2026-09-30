@@ -393,7 +393,22 @@ def save_invoice_medicines(store_id: int) -> dict:
                 "error": f"Unexpected error: {exc}",
             })
 
-    result = {"saved": saved, "skipped": skipped, "pending": len(pending_matches)}
+    # Add this bill to the agency's ledger - regardless of how many
+    # medicine rows above were actually saved, since the money owed to
+    # the agency is real either way. Never blocks or fails the medicine
+    # save above: if the agency name or total is missing/invalid,
+    # ledger.recorded is simply False (the store owner already saw a
+    # "required" warning for these in the Review screen, via
+    # validate_invoice_header, before clicking Save).
+    from modules.agencies.service import record_bill_from_invoice_header
+    ledger = record_bill_from_invoice_header(store_id, get_invoice_header())
+
+    result = {
+        "saved": saved,
+        "skipped": skipped,
+        "pending": len(pending_matches),
+        "ledger": ledger,
+    }
     if _SESSION_KEY in st.session_state:
         st.session_state[_SESSION_KEY]["save_result"] = result
         st.session_state[_SESSION_KEY]["pending_matches"] = pending_matches

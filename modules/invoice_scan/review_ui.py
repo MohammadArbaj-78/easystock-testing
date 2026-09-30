@@ -670,6 +670,20 @@ def _render_summary() -> None:
             bump_cache_epoch()
             st.success(f"✅ {saved} medicine(s) saved successfully to inventory.")
 
+        ledger = result.get("ledger") or {}
+        if ledger.get("recorded"):
+            bump_cache_epoch()
+            st.success(
+                f"🏢 Bill of ₹{ledger['grand_total']:,.2f} added to "
+                f"{ledger['agency_name']}'s ledger."
+            )
+        elif ledger.get("reason"):
+            st.info(
+                f"Bill was not added to the agency ledger ({ledger['reason']}). "
+                "Fill in the Agency name / Grand total above and save again if "
+                "you want it tracked."
+            )
+
         if skipped:
             for item in skipped:
                 st.error(
