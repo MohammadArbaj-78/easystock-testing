@@ -270,6 +270,8 @@ def initialize_database() -> None:
                 agency_id INTEGER NOT NULL,
                 invoice_date TEXT,
                 grand_total REAL NOT NULL,
+                image_path TEXT,
+                image_content_type TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 FOREIGN KEY (store_id) REFERENCES stores (store_id),
                 FOREIGN KEY (agency_id) REFERENCES agencies (agency_id)
@@ -282,6 +284,17 @@ def initialize_database() -> None:
             ON agency_bills (agency_id)
             """
         )
+
+        existing_bill_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(agency_bills)").fetchall()
+        }
+        for column_name in ("image_path", "image_content_type"):
+            if column_name not in existing_bill_columns:
+                try:
+                    connection.execute(f"ALTER TABLE agency_bills ADD COLUMN {column_name} TEXT")
+                except sqlite3.OperationalError as error:
+                    if "duplicate column name" not in str(error).lower():
+                        raise
 
         connection.execute(
             """

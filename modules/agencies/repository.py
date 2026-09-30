@@ -68,7 +68,7 @@ def find_or_create_agency(store_id: int, agency_name: str) -> int:
     return _find_or_create_agency_sqlite(store_id, agency_name)
 
 
-def add_bill(store_id: int, agency_id: int, invoice_date: str, grand_total: float) -> int:
+def add_bill(store_id: int, agency_id: int, invoice_date: str, grand_total: float, image_path: str = None, image_content_type: str = None,) -> int:
     """Insert one bill row against an agency. The only write this file
     performs to agency_bills.
 
@@ -85,9 +85,8 @@ def add_bill(store_id: int, agency_id: int, invoice_date: str, grand_total: floa
         The newly created bill_id.
     """
     if ACTIVE_DB_BACKEND == "supabase":
-        return _add_bill_supabase(store_id, agency_id, invoice_date, grand_total)
-    return _add_bill_sqlite(store_id, agency_id, invoice_date, grand_total)
-
+        return _add_bill_supabase(store_id, agency_id, invoice_date, grand_total, image_path, image_content_type)
+    return _add_bill_sqlite(store_id, agency_id, invoice_date, grand_total, image_path, image_content_type)
 
 def add_payment(store_id: int, agency_id: int, amount: float, paid_on: str = None) -> int:
     """Insert one payment row against an agency. The only write this
@@ -172,17 +171,20 @@ def _find_or_create_agency_sqlite(store_id: int, agency_name: str) -> int:
         return cursor.lastrowid
 
 
-def _add_bill_sqlite(store_id: int, agency_id: int, invoice_date: str, grand_total: float) -> int:
+def _add_bill_sqlite(
+    store_id: int, agency_id: int, invoice_date: str, grand_total: float,
+    image_path: str = None, image_content_type: str = None,
+) -> int:
     with get_connection() as connection:
         cursor = connection.execute(
             """
-            INSERT INTO agency_bills (store_id, agency_id, invoice_date, grand_total)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO agency_bills
+                (store_id, agency_id, invoice_date, grand_total, image_path, image_content_type)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (store_id, agency_id, invoice_date or "", grand_total),
+            (store_id, agency_id, invoice_date or "", grand_total, image_path, image_content_type),
         )
         return cursor.lastrowid
-
 
 def _add_payment_sqlite(store_id: int, agency_id: int, amount: float, paid_on: str = None) -> int:
     with get_connection() as connection:
@@ -233,7 +235,7 @@ def _get_bills_for_agency_sqlite(store_id: int, agency_id: int) -> list:
     with get_connection() as connection:
         rows = connection.execute(
             """
-            SELECT bill_id, invoice_date, grand_total, created_at
+            SELECT bill_id, invoice_date, grand_total, image_path, image_content_type, created_at
             FROM agency_bills
             WHERE store_id = ? AND agency_id = ?
             ORDER BY bill_id DESC
@@ -308,19 +310,21 @@ def _find_or_create_agency_supabase(store_id: int, agency_name: str) -> int:
     return response.data[0]["agency_id"]
 
 
-def _add_bill_supabase(store_id: int, agency_id: int, invoice_date: str, grand_total: float) -> int:
-    response = (
-        _bills_table()
-        .insert({
-            "store_id": store_id,
-            "agency_id": agency_id,
-            "invoice_date": invoice_date or "",
-            "grand_total": grand_total,
-        })
-        .execute()
-    )
+def _add_bill_supabase(
+    store_id: int, agency_id: int, invoice_date: str, grand_total: float,
+    image_path: str = None, image_content_type: str = None,
+) -> int:
+    payload = {
+        "store_id": store_id,
+        "agency_id": agency_id,
+        "invoice_date": invoice_date or "",
+        "grand_total": grand_total,
+    }
+    if image_path:
+        payload["image_path"] = image_path
+        payload["image_content_type"] = image_content_type
+    response = _bills_table().insert(payload).execute()
     return response.data[0]["bill_id"]
-
 
 def _add_payment_supabase(store_id: int, agency_id: int, amount: float, paid_on: str = None) -> int:
     payload = {"store_id": store_id, "agency_id": agency_id, "amount": amount}
@@ -369,7 +373,7 @@ def _get_agencies_with_balance_supabase(store_id: int) -> list:
 def _get_bills_for_agency_supabase(store_id: int, agency_id: int) -> list:
     response = (
         _bills_table()
-        .select("bill_id, invoice_date, grand_total, created_at")
+        .select("bill_id, invoice_date, grand_total, image_path, image_content_type, created_at")
         .eq("store_id", store_id)
         .eq("agency_id", agency_id)
         .order("bill_id", desc=True)

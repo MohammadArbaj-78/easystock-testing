@@ -16,7 +16,7 @@ import streamlit as st
 from modules.agencies import service as agencies_service
 from core.session import get_current_store_id
 from core.cache_utils import get_cache_epoch, bump_cache_epoch
-
+from core.supabase_storage import get_invoice_image_url
 
 @st.cache_data(show_spinner=False)
 def _get_agency_ledger_cached(store_id: int, _epoch: int) -> list:
@@ -76,15 +76,37 @@ def _render_agency_detail(store_id: int, agency: dict) -> None:
         return
 
     for bill in detail["bills"]:
-        label = bill["invoice_date"] or "(no date on bill)"
-        st.markdown(
-            f"<div style='border-left: 4px solid #999; padding: 0.4rem 1rem; "
-            f"margin: 0.3rem 0; background-color: rgba(0,0,0,0.02); "
-            f"border-radius: 4px;'>"
-            f"🧾 {label} &nbsp;•&nbsp; ₹{bill['grand_total']:,.2f}"
-            f"</div>",
-            unsafe_allow_html=True,
-        )
+        _render_bill_row(bill)
+
+
+def _render_bill_row(bill: dict) -> None:
+    """Render one bill: date + total, with an optional 'View photo'
+    expander when this bill has a stored image."""
+    label = bill["invoice_date"] or "(no date on bill)"
+    st.markdown(
+        f"<div style='border-left: 4px solid #999; padding: 0.4rem 1rem; "
+        f"margin: 0.3rem 0 0 0; background-color: rgba(0,0,0,0.02); "
+        f"border-radius: 4px;'>"
+        f"🧾 {label} &nbsp;•&nbsp; ₹{bill['grand_total']:,.2f}"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+
+    image_path = bill.get("image_path")
+    if not image_path:
+        return
+
+    with st.expander("📷 View bill photo", expanded=False):
+        image_url = get_invoice_image_url(image_path)
+        if not image_url:
+            st.caption("Could not load the photo right now. Please try again later.")
+            return
+
+        content_type = bill.get("image_content_type") or ""
+        if content_type == "application/pdf":
+            st.markdown(f"[Open bill PDF]({image_url})")
+        else:
+            st.image(image_url)
 
 
 def _render_pay_form(store_id: int, agency_id: int) -> None:

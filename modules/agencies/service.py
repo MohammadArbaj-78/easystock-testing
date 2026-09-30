@@ -10,32 +10,19 @@ complete enough to record as a bill, and validating a payment amount.
 from modules.agencies import repository as agencies_repository
 
 
-def record_bill_from_invoice_header(store_id: int, invoice_header: dict) -> dict:
+def record_bill_from_invoice_header(
+    store_id: int,
+    invoice_header: dict,
+    image_bytes: bytes = None,
+    image_content_type: str = None,
+) -> dict:
     """Add a bill to the agency ledger from a saved invoice's header
     fields, creating the agency if it doesn't exist yet.
 
-    Called once, from modules.invoice_scan.review_service.save_invoice_medicines(),
-    every time the store owner clicks "Save Medicines" - regardless of
-    how many (if any) medicine rows were actually saved, since the
-    money owed to the agency is real either way.
-
     Never raises: a bill with no readable agency name or total simply
-    is not recorded (the store owner already saw a "required" warning
-    for these in the Review screen before saving, via
-    review_service.validate_invoice_header) - it must never block
-    medicines from being saved.
-
-    Args:
-        store_id: The current store.
-        invoice_header: {"agency_name", "invoice_date", "grand_total"}
-            as produced by modules.invoice_scan.ocr_service and
-            possibly edited by the store owner.
-
-    Returns:
-        {"recorded": True, "agency_id": int, "agency_name": str,
-         "grand_total": float} on success, or
-        {"recorded": False, "reason": str} if the agency name or total
-        was missing/invalid.
+    is not recorded. The photo upload (if any) is likewise best-effort
+    - see core.supabase_storage.upload_invoice_image - a failed photo
+    upload never blocks or fails the bill itself.
     """
     agency_name = str((invoice_header or {}).get("agency_name") or "").strip()
     if not agency_name:
@@ -47,8 +34,17 @@ def record_bill_from_invoice_header(store_id: int, invoice_header: dict) -> dict
 
     invoice_date = str((invoice_header or {}).get("invoice_date") or "").strip()
 
+    image_path = None
+    if image_bytes:
+        from core.supabase_storage import upload_invoice_image
+        image_path = upload_invoice_image(store_id, image_bytes, image_content_type)
+
     agency_id = agencies_repository.find_or_create_agency(store_id, agency_name)
-    agencies_repository.add_bill(store_id, agency_id, invoice_date, grand_total)
+    agencies_repository.add_bill(
+        store_id, agency_id, invoice_date, grand_total,
+        image_path=image_path,
+        image_content_type=image_content_type if image_path else None,
+    )
 
     return {
         "recorded": True,
@@ -56,7 +52,6 @@ def record_bill_from_invoice_header(store_id: int, invoice_header: dict) -> dict
         "agency_name": agency_name,
         "grand_total": grand_total,
     }
-
 
 def get_agency_ledger(store_id: int) -> list:
     """Return every agency for this store with its running balance.

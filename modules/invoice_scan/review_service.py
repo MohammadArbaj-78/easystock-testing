@@ -57,6 +57,8 @@ def initialise_review_session(
     medicines: list,
     ocr_metadata: dict = None,
     invoice_header: dict = None,
+    image_bytes: bytes = None,
+    image_content_type: str = None,
 ) -> None:
     """Populate the review session from an OCR result.
 
@@ -96,6 +98,8 @@ def initialise_review_session(
             field: str((invoice_header or {}).get(field) or "")
             for field in INVOICE_HEADER_FIELDS
         },
+        "image_bytes": image_bytes,
+        "image_content_type": image_content_type,
         "save_result": None,
     }
 
@@ -400,9 +404,14 @@ def save_invoice_medicines(store_id: int) -> dict:
     # ledger.recorded is simply False (the store owner already saw a
     # "required" warning for these in the Review screen, via
     # validate_invoice_header, before clicking Save).
+    session = st.session_state.get(_SESSION_KEY) or {}
     from modules.agencies.service import record_bill_from_invoice_header
-    ledger = record_bill_from_invoice_header(store_id, get_invoice_header())
-
+    ledger = record_bill_from_invoice_header(
+        store_id,
+        get_invoice_header(),
+        image_bytes=session.get("image_bytes"),
+        image_content_type=session.get("image_content_type"),
+    )
     result = {
         "saved": saved,
         "skipped": skipped,

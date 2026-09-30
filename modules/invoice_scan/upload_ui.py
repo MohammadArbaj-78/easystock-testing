@@ -200,6 +200,15 @@ def _render_success_and_preview(uploaded_file, file_hash: str, result: dict) -> 
     st.divider()
     _render_ocr_section(uploaded_file, file_hash)
 
+def _guess_content_type(filename: str) -> str:
+    """Map an uploaded invoice's file extension to a MIME type."""
+    extension = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    return {
+        "jpg": "image/jpeg",
+        "jpeg": "image/jpeg",
+        "png": "image/png",
+        "pdf": "application/pdf",
+    }.get(extension, "application/octet-stream")
 
 def _render_ocr_section(uploaded_file, file_hash: str = None) -> None:
     """Render OCR extraction results and the Review & Edit table.
@@ -276,6 +285,8 @@ def _render_ocr_section(uploaded_file, file_hash: str = None) -> None:
             "model": ocr_result.get("model", ""),
         },
         invoice_header=ocr_result.get("invoice_header"),
+        image_bytes=uploaded_file.getvalue(),
+        image_content_type=_guess_content_type(uploaded_file.name),
     )
 
     col1, col2 = st.columns(2)
