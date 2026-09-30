@@ -89,10 +89,20 @@ def _render_agency_detail(store_id: int, agency: dict) -> None:
 
 def _render_pay_form(store_id: int, agency_id: int) -> None:
     """Render the amount/date inputs and "Pay" button for one agency."""
-    amount_col, date_col, button_col = st.columns([2, 2, 1])
     amount_key = f"agency_pay_amount_{agency_id}"
     date_key = f"agency_pay_date_{agency_id}"
+    clear_flag_key = f"_clear_{amount_key}"
 
+    # A widget's own session_state value cannot be changed by code AFTER
+    # that widget has already been rendered in this run (Streamlit
+    # raises StreamlitWidgetAlreadyInstantiatedError). So clearing the
+    # amount box after a successful payment happens here, BEFORE the
+    # text_input below is created - a flag set on the previous run
+    # (right after recording the payment) is checked and acted on now.
+    if st.session_state.pop(clear_flag_key, False):
+        st.session_state[amount_key] = ""
+
+    amount_col, date_col, button_col = st.columns([2, 2, 1])
     with amount_col:
         amount_text = st.text_input("Amount paid (₹)", key=amount_key, placeholder="e.g. 4000")
     with date_col:
@@ -107,7 +117,7 @@ def _render_pay_form(store_id: int, agency_id: int) -> None:
         )
         if outcome["recorded"]:
             bump_cache_epoch()
-            st.session_state[amount_key] = ""
+            st.session_state[clear_flag_key] = True
             st.success(f"₹{outcome['amount']:,.2f} payment recorded.")
             st.rerun()
         else:
