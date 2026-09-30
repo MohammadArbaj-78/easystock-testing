@@ -169,7 +169,6 @@ def render_review_section(source_filename: str, medicines: list) -> None:
 _HEADER_WIDGETS = [
     ("agency_name", "Agency name", "e.g. Sharma Pharma"),
     ("grand_total", "Grand total (₹)", "e.g. 1515.00"),
-    ("invoice_number", "Bill number", "optional"),
     ("invoice_date", "Bill date", "e.g. 25-07-2026"),
 ]
 

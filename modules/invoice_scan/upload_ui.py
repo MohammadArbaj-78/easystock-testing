@@ -275,6 +275,7 @@ def _render_ocr_section(uploaded_file, file_hash: str = None) -> None:
             "extraction_time_seconds": elapsed,
             "model": ocr_result.get("model", ""),
         },
+        invoice_header=ocr_result.get("invoice_header"),
     )
 
     col1, col2 = st.columns(2)

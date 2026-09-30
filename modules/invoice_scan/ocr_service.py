@@ -111,7 +111,7 @@ MEDICINE_FIELDS = [
 
 _PROMPT_FIELDS = ["name", "batch_number", "expiry_date", "qty", "free", "mrp", "rate", "gst_percent"]
 
-INVOICE_HEADER_FIELDS = ["agency_name", "invoice_number", "invoice_date", "grand_total"]
+INVOICE_HEADER_FIELDS = ["agency_name", "invoice_date", "grand_total"]
 
 _EXTRACTION_PROMPT = f"""
 You are an expert at reading Indian medical-store GST purchase invoices from photos.
@@ -138,7 +138,6 @@ CRITICAL RULES:
 Also read the invoice's header/footer (once for the whole invoice, not per row) and return these 4 extra fields:
 
 - "agency_name": the name of the SELLER - the distributor / agency / wholesaler that ISSUED this bill (normally printed large at the top, often with its address, GSTIN and drug licence numbers). NOT the buyer / "Bill To" / "Customer" / medical store the goods are sold to, and NOT a manufacturer or a product name. Preserve the name as printed.
-- "invoice_number": the invoice / bill number (labels like "Invoice No", "Bill No", "Inv No"). Preserve letters, digits and dashes exactly. NOT the GSTIN, drug licence number, order number or page number.
 - "invoice_date": the invoice / bill date exactly as printed (e.g. "25-07-2026", "25/07/26", "25-Jul-2026"). NOT an expiry date, due date or print time.
 - "grand_total": the FINAL total amount payable for the whole invoice (labels like "Grand Total", "Net Amount", "Net Payable", "Invoice Value", "Total Amount"). Digits and decimal point only - no currency symbol, no commas. NOT a sub-total, NOT the GST / tax total, NOT the discount total, NOT a single row's amount, and NOT a round-off value. Use the PRINTED value only, ignoring handwritten pen marks/ticks/circles. If not clearly readable, set it to "".
 
