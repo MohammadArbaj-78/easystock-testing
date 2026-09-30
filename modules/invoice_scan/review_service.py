@@ -22,7 +22,7 @@ import uuid
 
 import streamlit as st
 
-from modules.invoice_scan.ocr_service import MEDICINE_FIELDS
+from modules.invoice_scan.ocr_service import MEDICINE_FIELDS, INVOICE_HEADER_FIELDS
 from modules.invoice_scan.validation import validate_medicines
 
 _SESSION_KEY = "invoice_review"
@@ -56,6 +56,7 @@ def initialise_review_session(
     source_filename: str,
     medicines: list,
     ocr_metadata: dict = None,
+    invoice_header: dict = None,
 ) -> None:
     """Populate the review session from an OCR result.
 
@@ -68,7 +69,12 @@ def initialise_review_session(
         source_filename: Original filename, stored for display only.
         medicines:       Medicine dicts from ocr_service. Deep-copied.
         ocr_metadata:    Optional OCR metrics (count, time, model).
+        invoice_header:  Optional agency name / bill number / bill date /
+            grand total read from the invoice (INVOICE_HEADER_FIELDS
+            keys). Editable in the Review screen; missing keys and None
+            become empty strings.
     """
+    
     rows = copy.deepcopy(medicines)
     for row in rows:
         row.setdefault("_row_id", uuid.uuid4().hex)
@@ -86,9 +92,12 @@ def initialise_review_session(
         "source_file": source_filename,
         "medicines": rows,
         "ocr_metadata": ocr_metadata or {},
+        "invoice_header": {
+            field: str((invoice_header or {}).get(field) or "")
+            for field in INVOICE_HEADER_FIELDS
+        },
         "save_result": None,
     }
-
 
 def is_review_session_active(file_hash: str) -> bool:
     """Return True if a review session exists for this exact file hash.
@@ -132,7 +141,9 @@ def _clear_review_widget_keys() -> None:
     """
     stale_keys = [
         k for k in list(st.session_state.keys())
-        if k.startswith("review_row_") or k.startswith("delete_row_")
+        if k.startswith("review_row_")
+        or k.startswith("delete_row_")
+        or k.startswith("review_header_")
     ]
     for k in stale_keys:
         del st.session_state[k]
@@ -188,6 +199,56 @@ def reset_session_for_new_upload() -> None:
     st.session_state.pop(_SESSION_KEY, None)
     _clear_review_widget_keys()
 
+def get_invoice_header() -> dict:
+    """Return the current (editable) invoice header: agency_name,
+    invoice_number, invoice_date, grand_total - all strings. Every
+    field is "" if there is no session."""
+    session = st.session_state.get(_SESSION_KEY)
+    stored = session.get("invoice_header", {}) if session else {}
+    return {field: str(stored.get(field) or "") for field in INVOICE_HEADER_FIELDS}
+
+
+def update_invoice_header(field: str, value: str) -> None:
+    """Store one edited header field. Unknown fields and a missing
+    session are ignored."""
+    session = st.session_state.get(_SESSION_KEY)
+    if session is None or field not in INVOICE_HEADER_FIELDS:
+        return
+    session.setdefault("invoice_header", {})[field] = value
+
+
+def parse_amount(text) -> float:
+    """Parse a typed rupee amount ("1515", "1,515.50", "₹ 1515.5")
+    into a float, or return None if it is empty, not a number, or not
+    greater than zero."""
+    cleaned = str(text or "").strip()
+    for junk in ("₹", "Rs.", "Rs", "INR", ",", " "):
+        cleaned = cleaned.replace(junk, "")
+    try:
+        number = float(cleaned)
+    except ValueError:
+        return None
+    return number if number > 0 else None
+
+
+def validate_invoice_header(header: dict) -> dict:
+    """Return {field: message} for header fields that need attention.
+
+    Agency name and grand total are required (a bill cannot be added to
+    an agency's ledger without them); a grand total that is present
+    must be a positive number. Bill number and date are optional.
+    Purely advisory for now - nothing is blocked by this yet.
+    """
+    problems = {}
+    if not str(header.get("agency_name") or "").strip():
+        problems["agency_name"] = "Agency name is required."
+
+    total_text = str(header.get("grand_total") or "").strip()
+    if not total_text:
+        problems["grand_total"] = "Grand total is required."
+    elif parse_amount(total_text) is None:
+        problems["grand_total"] = "Enter a valid amount (numbers only)."
+    return problems
 
 def get_ocr_metadata() -> dict:
     """Return cached OCR metrics (count, time, model). Empty dict if none."""

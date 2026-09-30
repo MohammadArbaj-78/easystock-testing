@@ -149,6 +149,7 @@ def render_review_section(source_filename: str, medicines: list) -> None:
         medicines: Unused — kept for the same reason. Actual medicines
             are always read from session state via review_service.
     """
+    _render_invoice_header()
     st.markdown("**✏️ Review & Edit Medicines**")
     st.caption(
         "Check each row carefully. Edit any incorrect values directly. "
@@ -165,6 +166,53 @@ def render_review_section(source_filename: str, medicines: list) -> None:
     _render_global_actions()
     _render_summary()
 
+_HEADER_WIDGETS = [
+    ("agency_name", "Agency name", "e.g. Sharma Pharma"),
+    ("grand_total", "Grand total (₹)", "e.g. 1515.00"),
+    ("invoice_number", "Bill number", "optional"),
+    ("invoice_date", "Bill date", "e.g. 25-07-2026"),
+]
+
+
+def _render_invoice_header() -> None:
+    """Render the editable bill-level details (agency name, grand total,
+    bill number, bill date) above the medicine table.
+    """
+    header = review_service.get_invoice_header()
+
+    st.markdown("**🧾 Bill Details**")
+    st.caption(
+        "Check these carefully - they decide which agency this bill goes "
+        "to and how much you owe. Fix anything that is wrong."
+    )
+
+    if not any(header.values()):
+        st.info(
+            "The agency name and total could not be read from this bill "
+            "automatically. Please type them in."
+        )
+
+    for row_start in range(0, len(_HEADER_WIDGETS), 2):
+        columns = st.columns(2)
+        for column, (field_key, label, placeholder) in zip(
+            columns, _HEADER_WIDGETS[row_start:row_start + 2]
+        ):
+            with column:
+                new_value = st.text_input(
+                    label,
+                    value=header.get(field_key, ""),
+                    placeholder=placeholder,
+                    key=f"review_header_{field_key}",
+                )
+            if new_value != header.get(field_key, ""):
+                review_service.update_invoice_header(field_key, new_value)
+
+    for message in review_service.validate_invoice_header(
+        review_service.get_invoice_header()
+    ).values():
+        st.caption(f":red[⚠️ {message}]")
+
+    st.divider()
 
 def _sync_pending_widget_edits() -> None:
     """Write every row's CURRENT widget value into the medicines list
