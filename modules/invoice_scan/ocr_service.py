@@ -2,7 +2,11 @@
 Invoice OCR extraction service using Gemini Vision.
 
 This is the only file added by Module 3 (OCR). Narrow scope:
+<<<<<<< HEAD
   - Read the API key from environment (never hardcoded)..
+=======
+  - Read the API key from environment (never hardcoded).
+>>>>>>> 4649e56bc8ebff8e303f4745809f5c363c05f7da
   - Convert the uploaded file to a PIL Image (reuses file_utils).
   - Send the image to Gemini Vision with a strict JSON-only prompt.
   - Parse and validate the response.
@@ -111,8 +115,11 @@ MEDICINE_FIELDS = [
 
 _PROMPT_FIELDS = ["name", "batch_number", "expiry_date", "qty", "free", "mrp", "rate", "gst_percent"]
 
+<<<<<<< HEAD
 INVOICE_HEADER_FIELDS = ["agency_name", "invoice_date", "grand_total"]
 
+=======
+>>>>>>> 4649e56bc8ebff8e303f4745809f5c363c05f7da
 _EXTRACTION_PROMPT = f"""
 You are an expert at reading Indian medical-store GST purchase invoices from photos.
 
@@ -135,6 +142,7 @@ CRITICAL RULES:
 3. Do NOT invent, calculate, or infer any missing value. If a field is not clearly readable, set it to "" (empty string). Never copy a value from another row to fill a gap.
 4. Only extract the medicine line items - ignore header/address/totals/tax-summary sections.
 
+<<<<<<< HEAD
 Also read the invoice's header/footer (once for the whole invoice, not per row) and return these 4 extra fields:
 
 - "agency_name": the name of the SELLER - the distributor / agency / wholesaler that ISSUED this bill (normally printed large at the top, often with its address, GSTIN and drug licence numbers). NOT the buyer / "Bill To" / "Customer" / medical store the goods are sold to, and NOT a manufacturer or a product name. Preserve the name as printed.
@@ -196,6 +204,26 @@ def _clean_header_amount(value) -> str:
     return f"{number:.2f}"
 
 
+=======
+Return ONLY valid JSON, no markdown, no commentary. Return a single JSON array (not an object), one element per medicine row, with EXACTLY these keys per object:
+{json.dumps(_PROMPT_FIELDS)}
+
+If no medicines are found, or the image is unreadable / not an invoice, return: []
+"""
+
+# Forces Gemini to return clean, complete JSON matching exactly these 8 keys.
+# This (not the prompt text) is what kills bad-JSON / missing-field failures.
+_RESPONSE_SCHEMA = genai_types.Schema(
+    type=genai_types.Type.ARRAY,
+    items=genai_types.Schema(
+        type=genai_types.Type.OBJECT,
+        properties={f: genai_types.Schema(type=genai_types.Type.STRING) for f in _PROMPT_FIELDS},
+        required=list(_PROMPT_FIELDS),
+        property_ordering=list(_PROMPT_FIELDS),
+    ),
+)
+
+>>>>>>> 4649e56bc8ebff8e303f4745809f5c363c05f7da
 # ---------------------------------------------------------------------------
 # Key loading
 # ---------------------------------------------------------------------------
@@ -239,11 +267,16 @@ def _get_configured_api_keys() -> list:
 
     if not keys:
         raise GeminiAPIError(
+<<<<<<< HEAD
             "Gemini API key not found. Please add GEMINI_API_KEY_1 "
+=======
+            "No Gemini API key found. Please add GEMINI_API_KEY_1 "
+>>>>>>> 4649e56bc8ebff8e303f4745809f5c363c05f7da
             "(and optionally GEMINI_API_KEY_2 / _3) to this app's "
             "environment or Secrets, and restart the app."
         )
     return keys
+<<<<<<< HEAD
 
 def _get_api_key() -> str:
     """Return the first configured Gemini API key.
@@ -256,6 +289,8 @@ def _get_api_key() -> str:
     """
     return _get_configured_api_keys()[0]
 
+=======
+>>>>>>> 4649e56bc8ebff8e303f4745809f5c363c05f7da
 # ---------------------------------------------------------------------------
 # Image preparation
 # ---------------------------------------------------------------------------
@@ -325,6 +360,7 @@ def _parse_and_validate_response(raw_text: str) -> list:
             "Please try again."
         )
 
+<<<<<<< HEAD
     return _validate_medicine_rows(parsed)
 
 
@@ -334,6 +370,8 @@ def _validate_medicine_rows(parsed: list) -> list:
     (kept for its own existing tests) and _parse_combined_response()
     below - identical row-by-row logic, used from both places.
     """
+=======
+>>>>>>> 4649e56bc8ebff8e303f4745809f5c363c05f7da
     valid_rows = []
     for row in parsed:
         if not isinstance(row, dict):
@@ -342,6 +380,7 @@ def _validate_medicine_rows(parsed: list) -> list:
         if not normalised["name"]:
             continue
         valid_rows.append(normalised)
+<<<<<<< HEAD
     return valid_rows
 
 
@@ -392,6 +431,11 @@ def _parse_combined_response(raw_text: str) -> tuple:
     }
     return medicines, invoice_header
 
+=======
+
+    return valid_rows
+
+>>>>>>> 4649e56bc8ebff8e303f4745809f5c363c05f7da
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -633,7 +677,11 @@ def extract_medicines_from_file(file_obj) -> dict:
     # folder means nothing is written here, matching "only save files
     # that actually exist."
 
+<<<<<<< HEAD
     medicines, invoice_header = _parse_combined_response(raw_text)
+=======
+    medicines = _parse_and_validate_response(raw_text)
+>>>>>>> 4649e56bc8ebff8e303f4745809f5c363c05f7da
     medicines = _apply_quantity_formula(medicines)
 
     return {
@@ -641,5 +689,9 @@ def extract_medicines_from_file(file_obj) -> dict:
         "medicine_count": len(medicines),
         "extraction_time_seconds": elapsed,
         "model": GEMINI_MODEL,
+<<<<<<< HEAD
         "invoice_header": invoice_header,
     }
+=======
+    }
+>>>>>>> 4649e56bc8ebff8e303f4745809f5c363c05f7da

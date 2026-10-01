@@ -111,6 +111,7 @@ def valid_medicine_json(count=2):
     ]
     return json.dumps(medicines)
 
+<<<<<<< HEAD
 def valid_combined_json(count=2, header=None):
     """Return a JSON string matching the real (combined) Gemini
     response shape: the 4 invoice-header fields plus "medicines"."""
@@ -120,6 +121,8 @@ def valid_combined_json(count=2, header=None):
     payload["medicines"] = medicines
     return json.dumps(payload)
 
+=======
+>>>>>>> 4649e56bc8ebff8e303f4745809f5c363c05f7da
 
 def mock_gemini_response(text):
     """Return a mock Gemini response object whose .text property returns text."""
@@ -267,7 +270,11 @@ class TestExtractMedicinesFromFile:
 
     def test_successful_extraction_from_image(self, monkeypatch):
         monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
+<<<<<<< HEAD
         mock_client = self._make_mock_client(valid_combined_json(3))
+=======
+        mock_client = self._make_mock_client(valid_medicine_json(3))
+>>>>>>> 4649e56bc8ebff8e303f4745809f5c363c05f7da
 
         with patch("modules.invoice_scan.ocr_service._build_genai_client",
                    return_value=mock_client):
@@ -280,7 +287,11 @@ class TestExtractMedicinesFromFile:
 
     def test_successful_extraction_from_pdf(self, monkeypatch):
         monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
+<<<<<<< HEAD
         mock_client = self._make_mock_client(valid_combined_json(1))
+=======
+        mock_client = self._make_mock_client(valid_medicine_json(1))
+>>>>>>> 4649e56bc8ebff8e303f4745809f5c363c05f7da
 
         with patch("modules.invoice_scan.ocr_service._build_genai_client",
                    return_value=mock_client):
@@ -346,7 +357,11 @@ class TestExtractMedicinesFromFile:
 
     def test_empty_extraction_returns_empty_list(self, monkeypatch):
         monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
+<<<<<<< HEAD
         mock_client = self._make_mock_client(valid_combined_json(0))
+=======
+        mock_client = self._make_mock_client("[]")
+>>>>>>> 4649e56bc8ebff8e303f4745809f5c363c05f7da
 
         with patch("modules.invoice_scan.ocr_service._build_genai_client",
                    return_value=mock_client):
@@ -357,7 +372,11 @@ class TestExtractMedicinesFromFile:
 
     def test_result_contains_all_required_keys(self, monkeypatch):
         monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
+<<<<<<< HEAD
         mock_client = self._make_mock_client(valid_combined_json(1))
+=======
+        mock_client = self._make_mock_client(valid_medicine_json(1))
+>>>>>>> 4649e56bc8ebff8e303f4745809f5c363c05f7da
 
         with patch("modules.invoice_scan.ocr_service._build_genai_client",
                    return_value=mock_client):

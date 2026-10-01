@@ -149,7 +149,10 @@ def render_review_section(source_filename: str, medicines: list) -> None:
         medicines: Unused — kept for the same reason. Actual medicines
             are always read from session state via review_service.
     """
+<<<<<<< HEAD
     _render_invoice_header()
+=======
+>>>>>>> 4649e56bc8ebff8e303f4745809f5c363c05f7da
     st.markdown("**✏️ Review & Edit Medicines**")
     st.caption(
         "Check each row carefully. Edit any incorrect values directly. "
@@ -166,6 +169,7 @@ def render_review_section(source_filename: str, medicines: list) -> None:
     _render_global_actions()
     _render_summary()
 
+<<<<<<< HEAD
 _HEADER_WIDGETS = [
     ("agency_name", "Agency name", "e.g. Sharma Pharma"),
     ("grand_total", "Grand total (₹)", "e.g. 1515.00"),
@@ -212,6 +216,8 @@ def _render_invoice_header() -> None:
         st.caption(f":red[⚠️ {message}]")
 
     st.divider()
+=======
+>>>>>>> 4649e56bc8ebff8e303f4745809f5c363c05f7da
 
 def _sync_pending_widget_edits() -> None:
     """Write every row's CURRENT widget value into the medicines list
@@ -670,6 +676,7 @@ def _render_summary() -> None:
             bump_cache_epoch()
             st.success(f"✅ {saved} medicine(s) saved successfully to inventory.")
 
+<<<<<<< HEAD
         ledger = result.get("ledger") or {}
         if ledger.get("recorded"):
             bump_cache_epoch()
@@ -684,6 +691,8 @@ def _render_summary() -> None:
                 "you want it tracked."
             )
 
+=======
+>>>>>>> 4649e56bc8ebff8e303f4745809f5c363c05f7da
         if skipped:
             for item in skipped:
                 st.error(
