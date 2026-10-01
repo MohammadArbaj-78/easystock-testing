@@ -4,7 +4,7 @@ Agencies screen UI.
 Renders the ledger for every agency (distributor/wholesaler) this store
 has scanned a bill from: a list of agencies with their running
 balance, and - inside each agency's dropdown - its full bill history
-(newest first) and a "Pay" form to record a payment.
+(newest first) and a "Pay" form to record a payment..
 
 No business logic, no SQL here - calls modules.agencies.service and
 renders results. If a balance looks wrong, the bug is in
