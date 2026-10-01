@@ -22,11 +22,7 @@ import uuid
 
 import streamlit as st
 
-<<<<<<< HEAD
 from modules.invoice_scan.ocr_service import MEDICINE_FIELDS, INVOICE_HEADER_FIELDS
-=======
-from modules.invoice_scan.ocr_service import MEDICINE_FIELDS
->>>>>>> 4649e56bc8ebff8e303f4745809f5c363c05f7da
 from modules.invoice_scan.validation import validate_medicines
 
 _SESSION_KEY = "invoice_review"
@@ -60,12 +56,9 @@ def initialise_review_session(
     source_filename: str,
     medicines: list,
     ocr_metadata: dict = None,
-<<<<<<< HEAD
     invoice_header: dict = None,
     image_bytes: bytes = None,
     image_content_type: str = None,
-=======
->>>>>>> 4649e56bc8ebff8e303f4745809f5c363c05f7da
 ) -> None:
     """Populate the review session from an OCR result.
 
@@ -78,16 +71,12 @@ def initialise_review_session(
         source_filename: Original filename, stored for display only.
         medicines:       Medicine dicts from ocr_service. Deep-copied.
         ocr_metadata:    Optional OCR metrics (count, time, model).
-<<<<<<< HEAD
         invoice_header:  Optional agency name / bill number / bill date /
             grand total read from the invoice (INVOICE_HEADER_FIELDS
             keys). Editable in the Review screen; missing keys and None
             become empty strings.
     """
     
-=======
-    """
->>>>>>> 4649e56bc8ebff8e303f4745809f5c363c05f7da
     rows = copy.deepcopy(medicines)
     for row in rows:
         row.setdefault("_row_id", uuid.uuid4().hex)
@@ -105,7 +94,6 @@ def initialise_review_session(
         "source_file": source_filename,
         "medicines": rows,
         "ocr_metadata": ocr_metadata or {},
-<<<<<<< HEAD
         "invoice_header": {
             field: str((invoice_header or {}).get(field) or "")
             for field in INVOICE_HEADER_FIELDS
@@ -115,12 +103,6 @@ def initialise_review_session(
         "save_result": None,
     }
 
-=======
-        "save_result": None,
-    }
-
-
->>>>>>> 4649e56bc8ebff8e303f4745809f5c363c05f7da
 def is_review_session_active(file_hash: str) -> bool:
     """Return True if a review session exists for this exact file hash.
 
@@ -163,13 +145,9 @@ def _clear_review_widget_keys() -> None:
     """
     stale_keys = [
         k for k in list(st.session_state.keys())
-<<<<<<< HEAD
         if k.startswith("review_row_")
         or k.startswith("delete_row_")
         or k.startswith("review_header_")
-=======
-        if k.startswith("review_row_") or k.startswith("delete_row_")
->>>>>>> 4649e56bc8ebff8e303f4745809f5c363c05f7da
     ]
     for k in stale_keys:
         del st.session_state[k]
@@ -225,7 +203,6 @@ def reset_session_for_new_upload() -> None:
     st.session_state.pop(_SESSION_KEY, None)
     _clear_review_widget_keys()
 
-<<<<<<< HEAD
 def get_invoice_header() -> dict:
     """Return the current (editable) invoice header: agency_name,
     invoice_number, invoice_date, grand_total - all strings. Every
@@ -276,8 +253,6 @@ def validate_invoice_header(header: dict) -> dict:
     elif parse_amount(total_text) is None:
         problems["grand_total"] = "Enter a valid amount (numbers only)."
     return problems
-=======
->>>>>>> 4649e56bc8ebff8e303f4745809f5c363c05f7da
 
 def get_ocr_metadata() -> dict:
     """Return cached OCR metrics (count, time, model). Empty dict if none."""
@@ -422,7 +397,6 @@ def save_invoice_medicines(store_id: int) -> dict:
                 "error": f"Unexpected error: {exc}",
             })
 
-<<<<<<< HEAD
     # Add this bill to the agency's ledger - regardless of how many
     # medicine rows above were actually saved, since the money owed to
     # the agency is real either way. Never blocks or fails the medicine
@@ -444,9 +418,6 @@ def save_invoice_medicines(store_id: int) -> dict:
         "pending": len(pending_matches),
         "ledger": ledger,
     }
-=======
-    result = {"saved": saved, "skipped": skipped, "pending": len(pending_matches)}
->>>>>>> 4649e56bc8ebff8e303f4745809f5c363c05f7da
     if _SESSION_KEY in st.session_state:
         st.session_state[_SESSION_KEY]["save_result"] = result
         st.session_state[_SESSION_KEY]["pending_matches"] = pending_matches
