@@ -200,7 +200,6 @@ def _render_success_and_preview(uploaded_file, file_hash: str, result: dict) -> 
     st.divider()
     _render_ocr_section(uploaded_file, file_hash)
 
-<<<<<<< HEAD
 def _guess_content_type(filename: str) -> str:
     """Map an uploaded invoice's file extension to a MIME type."""
     extension = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
@@ -210,8 +209,6 @@ def _guess_content_type(filename: str) -> str:
         "png": "image/png",
         "pdf": "application/pdf",
     }.get(extension, "application/octet-stream")
-=======
->>>>>>> 4649e56bc8ebff8e303f4745809f5c363c05f7da
 
 def _render_ocr_section(uploaded_file, file_hash: str = None) -> None:
     """Render OCR extraction results and the Review & Edit table.
@@ -287,12 +284,9 @@ def _render_ocr_section(uploaded_file, file_hash: str = None) -> None:
             "extraction_time_seconds": elapsed,
             "model": ocr_result.get("model", ""),
         },
-<<<<<<< HEAD
         invoice_header=ocr_result.get("invoice_header"),
         image_bytes=uploaded_file.getvalue(),
         image_content_type=_guess_content_type(uploaded_file.name),
-=======
->>>>>>> 4649e56bc8ebff8e303f4745809f5c363c05f7da
     )
 
     col1, col2 = st.columns(2)
