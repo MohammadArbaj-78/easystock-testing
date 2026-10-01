@@ -234,7 +234,6 @@ def initialize_database() -> None:
             ON sales_history (store_id, sold_at)
             """
         )
-<<<<<<< HEAD
 
         # Agencies (distributors/wholesalers a store buys from), and
         # their ledger: one row per scanned bill (agency_bills) and one
@@ -317,5 +316,3 @@ def initialize_database() -> None:
             ON agency_payments (agency_id)
             """
         )
-=======
->>>>>>> 4649e56bc8ebff8e303f4745809f5c363c05f7da
