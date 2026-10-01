@@ -80,23 +80,20 @@ def _render_agency_detail(store_id: int, agency: dict) -> None:
 
 
 def _render_bill_row(bill: dict) -> None:
-    """Render one bill: date + total, with an optional 'View photo'
-    expander when this bill has a stored image."""
+    """Render one bill as a single expandable row - the date + total is
+    the collapsed summary (same per-row-expander pattern as Products),
+    and opening it reveals the photo, if this bill has one stored.
+    Bills saved before the photo-storage feature existed simply have no
+    image_path, so the expander just shows "No photo saved"."""
     label = bill["invoice_date"] or "(no date on bill)"
-    st.markdown(
-        f"<div style='border-left: 4px solid #999; padding: 0.4rem 1rem; "
-        f"margin: 0.3rem 0 0 0; background-color: rgba(0,0,0,0.02); "
-        f"border-radius: 4px;'>"
-        f"🧾 {label} &nbsp;•&nbsp; ₹{bill['grand_total']:,.2f}"
-        f"</div>",
-        unsafe_allow_html=True,
-    )
+    summary = f"🧾 {label}  •  ₹{bill['grand_total']:,.2f}"
 
-    image_path = bill.get("image_path")
-    if not image_path:
-        return
+    with st.expander(summary):
+        image_path = bill.get("image_path")
+        if not image_path:
+            st.caption("No photo saved for this bill.")
+            return
 
-    with st.expander("📷 View bill photo", expanded=False):
         image_url = get_invoice_image_url(image_path)
         if not image_url:
             st.caption("Could not load the photo right now. Please try again later.")
@@ -106,8 +103,12 @@ def _render_bill_row(bill: dict) -> None:
         if content_type == "application/pdf":
             st.markdown(f"[Open bill PDF]({image_url})")
         else:
+            # st.image()'s own fullscreen viewer doesn't support
+            # pinch-zoom inside this app's embedded iframe on mobile -
+            # a plain link opens the photo in the browser's OWN image
+            # viewer (a new tab), where native pinch-zoom works fully.
             st.image(image_url)
-
+            st.markdown(f"[🔍 Open full-size photo (pinch-to-zoom)]({image_url})")
 
 def _render_pay_form(store_id: int, agency_id: int) -> None:
     """Render the amount/date inputs and "Pay" button for one agency."""
