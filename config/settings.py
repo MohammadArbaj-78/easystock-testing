@@ -111,7 +111,7 @@ SALES_FREQUENTLY_SOLD_CANDIDATE_LIMIT = 50
 # call volume expected from 5-10 test stores. Swap to "gemini-1.5-pro"
 # here (not in ocr_service.py) if higher accuracy is needed later.
 
-GEMINI_MODEL = "gemini-3.6-flash"
+GEMINI_MODEL = "gemini-3.8-flash"
 
 # Request timeout in seconds. Gemini vision calls on a typical invoice
 # image complete in 2-5 s; 30 s gives comfortable headroom for slow
