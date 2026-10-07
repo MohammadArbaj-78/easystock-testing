@@ -31,6 +31,7 @@ from modules.invoice_scan.upload_ui import render_invoice_scan_page
 from modules.invoice_scan import review_service
 from modules.sales.ui import render_sales_page
 from modules.agencies.ui import render_agencies_page
+from modules.quick_setup.ui import render_quick_setup_page
 
 st.set_page_config(
     page_title=APP_NAME,
@@ -55,6 +56,7 @@ NAV_PAGES = {
     "⏰ Expiry Alerts": render_expiry_alerts_page,
     "📦 Low Stock": render_low_stock_alerts_page,
     "🏢 Agencies": render_agencies_page,
+    "⚡ Quick Setup": render_quick_setup_page,
 }
 
 
