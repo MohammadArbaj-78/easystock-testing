@@ -165,7 +165,7 @@ def _render_medicine_block(store_id: int, medicine: dict, cart: dict, index: int
     )
 
     with st.container(border=True):
-        minus_col, name_col, plus_col = st.columns([1, 3, 1], vertical_alignment="center")
+        minus_col, name_col, plus_col = st.columns([0.5, 4, 0.5], vertical_alignment="center")
 
         with minus_col:
             st.button(
