@@ -157,7 +157,7 @@ def _render_medicine_block(store_id: int, medicine: dict, cart: dict, index: int
         <style>
         div[data-testid="stHorizontalBlock"] button[kind="secondary"] {
             aspect-ratio: 1 / 1;
-            font-size: 1.5rem;
+            font-size: 1rem;
         }
         </style>
         """,
