@@ -120,41 +120,16 @@ def _render_medicine_block(store_id: int, medicine: dict, cart: dict) -> None:
 
     quantity = cart[name]
     safe_key = "".join(ch if ch.isalnum() else "_" for ch in name)
-    
-    # --- यहाँ नया कोड जोड़ें ---
-    # दवा के निर्माता या कंपोजिशन का नाम लेकर उसे सुरक्षित अक्षरों में बदलें ताकि चाबी हमेशा यूनिक रहे
-    extra_info = medicine.get("manufacturer_name") or medicine.get("composition") or "default"
-    safe_extra = "".join(ch if ch.isalnum() else "_" for ch in extra_info)
-    unique_key = f"{safe_key}_{safe_extra}"
-    # ---------------------------
 
     with st.container(border=True):
         minus_col, name_col, plus_col = st.columns([1, 4, 1])
 
         with minus_col:
             st.button(
-                "➖", key=f"qs_minus_{unique_key}", # यहाँ safe_key की जगह unique_key लिखा
+                "➖", key=f"qs_minus_{safe_key}",
                 use_container_width=True,
                 on_click=_adjust_quantity, args=(cart, name, -1),
             )
-        with name_col:
-            subtitle = medicine.get("manufacturer_name") or medicine.get("composition") or ""
-            st.markdown(
-                f"<div style='text-align:center;'>"
-                f"<div style='font-size:1.1rem; font-weight:600;'>{name}</div>"
-                f"<div style='font-size:0.8rem; color:#888;'>{subtitle}</div>"
-                f"<div style='font-size:1.4rem; font-weight:700; margin-top:4px;'>"
-                f"Qty: {quantity:g}</div>"
-                f"</div>",
-                unsafe_allow_html=True,
-            )
-        with plus_col:
-            st.button(
-                "➕", key=f"qs_plus_{unique_key}", # यहाँ भी safe_key की जगह unique_key लिखा
-                use_container_width=True,
-                on_click=_adjust_quantity, args=(cart, name, 1),
-            )
-
         with name_col:
             subtitle = medicine.get("manufacturer_name") or medicine.get("composition") or ""
             st.markdown(
