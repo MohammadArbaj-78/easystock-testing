@@ -460,6 +460,38 @@ def find_zero_quantity_lot_by_name(store_id: int, name: str) -> dict:
             return product
     return None
 
+def find_quick_setup_placeholder_by_name(store_id: int, name: str) -> dict:
+    """Find this store's Quick Setup placeholder row for a medicine
+    name - the one product row (see modules.quick_setup.repository)
+    created with just a name + quantity, no batch number yet, because
+    the owner used Quick Setup to seed starting stock before any real
+    invoice for it was ever scanned.
+
+    Matched purely by (same name, blank batch_number) - deliberately
+    separate from find_zero_quantity_lot_by_name above, which only
+    matches quantity == 0: a Quick Setup placeholder typically HAS a
+    real quantity (the owner's actual current stock count), so the
+    zero-quantity check would never find it. If a placeholder row has
+    separately been sold down to 0, find_zero_quantity_lot_by_name
+    already matches and replaces it first (it runs first in
+    save_or_merge_invoice_lot) - this function is never even reached
+    for that row, so there is no overlap/conflict between the two.
+
+    Args:
+        store_id: The currently logged-in store's ID.
+        name: Medicine name from the incoming invoice row.
+
+    Returns:
+        The matching product dict, or None if there is no such record.
+    """
+    candidates = products_repository.get_all_products(store_id, search_term=name)
+    for product in candidates:
+        if (
+            not str(product["batch_number"] or "").strip()
+            and _normalize_lot_key(product["name"]) == _normalize_lot_key(name)
+        ):
+            return product
+    return None
 
 def _replace_zero_quantity_lot(store_id: int, existing: dict, cleaned: dict) -> None:
     """Reuse an existing zero-quantity product row for a newly scanned
@@ -677,6 +709,17 @@ def save_or_merge_invoice_lot(
     if zero_qty_match is not None:
         _replace_zero_quantity_lot(store_id, zero_qty_match, cleaned)
         return {"status": "merged", "product_id": zero_qty_match["product_id"]}
+
+    # Quick Setup integration: a placeholder row (blank batch, real
+    # quantity) for this exact name gets FILLED IN by the first real
+    # invoice for it, rather than the invoice creating a second,
+    # separate row. Reuses the same proven replace-helper as the
+    # zero-quantity path above - only WHICH existing row qualifies
+    # differs.
+    placeholder_match = find_quick_setup_placeholder_by_name(store_id, cleaned["name"])
+    if placeholder_match is not None:
+        _replace_zero_quantity_lot(store_id, placeholder_match, cleaned)
+        return {"status": "merged", "product_id": placeholder_match["product_id"]}
 
     if not cleaned["batch_number"] and not force_new:
         possible_match = find_possible_batch_match(
