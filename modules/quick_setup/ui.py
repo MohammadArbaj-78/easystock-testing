@@ -17,13 +17,15 @@ SEARCH_RESULT_LIMIT = 20
 _CART_KEY = "quick_setup_cart"
 
 
+BROWSE_PAGE_SIZE = 20
+
+
 def render_quick_setup_page() -> None:
     """Render the Quick Setup screen."""
     st.subheader("⚡ Quick Setup")
     st.caption(
-        "Naye store ke liye: medicine search karo, +/- se quantity set "
-        "karo, aur ek saath Save All karo. Baad mein jab asli invoice "
-        "scan hoga, batch/expiry/MRP/rate apne aap bhar jaayenge."
+        "Naye store ke liye: medicine search karo (ya niche list browse "
+        "karo), +/- se quantity set karo, aur ek saath Save All karo."
     )
 
     store_id = get_current_store_id()
@@ -42,22 +44,44 @@ def render_quick_setup_page() -> None:
 
     _render_sticky_save_bar(store_id, cart)
 
-    if not search_term or not search_term.strip():
-        st.info("Upar search box mein medicine ka naam likho.")
+    if search_term and search_term.strip():
+        results = quick_setup_service.search_medicines(search_term, SEARCH_RESULT_LIMIT)
+        if not results:
+            st.warning("Koi medicine nahi mili. Spelling check karo ya chhota naam try karo.")
+            return
+        if len(results) == SEARCH_RESULT_LIMIT:
+            st.caption(f"Top {SEARCH_RESULT_LIMIT} results dikha rahe hain. Zyada specific likho.")
+        for index, medicine in enumerate(results):
+            _render_medicine_block(store_id, medicine, cart, index)
         return
 
-    results = quick_setup_service.search_medicines(search_term, SEARCH_RESULT_LIMIT)
-    if not results:
-        st.warning("Koi medicine nahi mili. Spelling check karo ya chhota naam try karo.")
+    # Search blank -> browse the master list directly (Products-style Load more).
+    limit = st.session_state.get("quick_setup_browse_limit", BROWSE_PAGE_SIZE)
+    browsed = quick_setup_service.browse_medicines(limit + 1)
+    has_more = len(browsed) > limit
+    visible = browsed[:limit]
+
+    if not visible:
+        st.info("Abhi master list mein koi medicine nahi mili.")
         return
 
-    if len(results) == SEARCH_RESULT_LIMIT:
-        st.caption(f"Top {SEARCH_RESULT_LIMIT} results dikha rahe hain. Zyada specific likho aur dhoondh paoge.")
+    for index, medicine in enumerate(visible):
+        _render_medicine_block(store_id, medicine, cart, index)
 
-    for medicine in results:
-        _render_medicine_block(store_id, medicine, cart)
+    if has_more:
+        st.button(
+            f"⬇️ Load {BROWSE_PAGE_SIZE} more",
+            key="quick_setup_browse_load_more",
+            use_container_width=True,
+            on_click=_load_more_browse,
+        )
 
 
+def _load_more_browse() -> None:
+    st.session_state["quick_setup_browse_limit"] = (
+        st.session_state.get("quick_setup_browse_limit", BROWSE_PAGE_SIZE) + BROWSE_PAGE_SIZE
+    )
+    
 def _render_sticky_save_bar(store_id: int, cart: dict) -> None:
     """A save bar that stays visible while scrolling (CSS position:
     sticky). NOTE: sticky positioning inside Streamlit's iframe can
@@ -110,23 +134,42 @@ def _render_sticky_save_bar(store_id: int, cart: dict) -> None:
     st.divider()
 
 
-def _render_medicine_block(store_id: int, medicine: dict, cart: dict) -> None:
-    """One big, tap-friendly block per medicine: name centered, -/+ on
-    either side, quantity shown inline next to the name."""
+def _render_medicine_block(store_id: int, medicine: dict, cart: dict, index: int) -> None:
+    """One big, tap-friendly block per medicine: name centered, with
+    square -/+ buttons on either side and the current quantity shown
+    inline next to the name - like adjusting a counter in a simple
+    game."""
     name = medicine["name"]
 
     if name not in cart:
         cart[name] = quick_setup_service.get_saved_quantity(store_id, name)
 
     quantity = cart[name]
-    safe_key = "".join(ch if ch.isalnum() else "_" for ch in name)
+    # Keyed by INDEX, not name - the master dataset has duplicate
+    # names (same medicine from different manufacturers), so a
+    # name-based key crashed with "DuplicateElementKey". The cart
+    # itself still stays keyed by name on purpose - every duplicate
+    # row for the same name shares (and sets) the same quantity.
+    row_key = f"qs_row_{index}"
+
+    st.markdown(
+        """
+        <style>
+        div[data-testid="stHorizontalBlock"] button[kind="secondary"] {
+            aspect-ratio: 1 / 1;
+            font-size: 1.5rem;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
     with st.container(border=True):
-        minus_col, name_col, plus_col = st.columns([1, 4, 1])
+        minus_col, name_col, plus_col = st.columns([1, 3, 1], vertical_alignment="center")
 
         with minus_col:
             st.button(
-                "➖", key=f"qs_minus_{safe_key}",
+                "➖", key=f"{row_key}_minus",
                 use_container_width=True,
                 on_click=_adjust_quantity, args=(cart, name, -1),
             )
@@ -134,20 +177,19 @@ def _render_medicine_block(store_id: int, medicine: dict, cart: dict) -> None:
             subtitle = medicine.get("manufacturer_name") or medicine.get("composition") or ""
             st.markdown(
                 f"<div style='text-align:center;'>"
-                f"<div style='font-size:1.1rem; font-weight:600;'>{name}</div>"
-                f"<div style='font-size:0.8rem; color:#888;'>{subtitle}</div>"
-                f"<div style='font-size:1.4rem; font-weight:700; margin-top:4px;'>"
+                f"<div style='font-size:1.05rem; font-weight:600;'>{name}</div>"
+                f"<div style='font-size:0.75rem; color:#888;'>{subtitle}</div>"
+                f"<div style='font-size:1.3rem; font-weight:700; margin-top:2px;'>"
                 f"Qty: {quantity:g}</div>"
                 f"</div>",
                 unsafe_allow_html=True,
             )
         with plus_col:
             st.button(
-                "➕", key=f"qs_plus_{safe_key}",
+                "➕", key=f"{row_key}_plus",
                 use_container_width=True,
                 on_click=_adjust_quantity, args=(cart, name, 1),
             )
-
 
 def _adjust_quantity(cart: dict, name: str, delta: int) -> None:
     cart[name] = max(0, cart.get(name, 0) + delta)

@@ -2,6 +2,8 @@
 
 from modules.quick_setup import repository as quick_setup_repository
 
+def browse_medicines(limit: int = 20) -> list:
+    return quick_setup_repository.browse_master_medicines(limit)
 
 def search_medicines(search_term: str, limit: int = 20) -> list:
     return quick_setup_repository.search_master_medicines(search_term, limit)

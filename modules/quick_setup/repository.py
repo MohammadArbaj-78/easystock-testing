@@ -34,6 +34,36 @@ def search_master_medicines(search_term: str, limit: int = 20) -> list:
         return _search_master_medicines_supabase(term, limit)
     return _search_master_medicines_sqlite(term, limit)
 
+def browse_master_medicines(limit: int) -> list:
+    """First `limit` medicines from the master list, name order - lets
+    the owner browse without typing a search term first, same
+    Load-more pattern as Products' own list."""
+    if ACTIVE_DB_BACKEND == "supabase":
+        return _browse_master_medicines_supabase(limit)
+    return _browse_master_medicines_sqlite(limit)
+
+
+def _browse_master_medicines_sqlite(limit: int) -> list:
+    with get_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT name, manufacturer_name, short_composition1, short_composition2, price
+            FROM medicine_master ORDER BY name ASC LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    return [_format_master_row(dict(row)) for row in rows]
+
+
+def _browse_master_medicines_supabase(limit: int) -> list:
+    response = (
+        _medicine_master_table()
+        .select("name, manufacturer_name, short_composition1, short_composition2, price")
+        .order("name")
+        .limit(limit)
+        .execute()
+    )
+    return [_format_master_row(row) for row in (response.data or [])]
 
 def get_placeholder_quantity(store_id: int, name: str) -> float:
     """Quantity already saved for this medicine's Quick Setup

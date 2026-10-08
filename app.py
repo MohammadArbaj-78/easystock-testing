@@ -129,7 +129,11 @@ def render_main_app() -> None:
     
     if page_function is not render_sales_page:
         st.session_state.pop("sales_history_visible_limit", None)
-
+    
+    if page_function is not render_quick_setup_page:
+        for key in ("quick_setup_cart", "quick_setup_browse_limit"):
+            st.session_state.pop(key, None)
+            
     page_function()
 
 
