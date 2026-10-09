@@ -155,9 +155,26 @@ def _render_medicine_block(store_id: int, medicine: dict, cart: dict, index: int
     st.markdown(
         """
         <style>
+        div[data-testid="stHorizontalBlock"] {
+            flex-direction: row !important;
+            flex-wrap: nowrap !important;
+            gap: 0.4rem !important;
+            align-items: center !important;
+        }
+        div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"] {
+            width: auto !important;
+            min-width: 0 !important;
+        }
+        div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:first-child,
+        div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:last-child {
+            flex: 0 0 56px !important;
+        }
+        div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:not(:first-child):not(:last-child) {
+            flex: 1 1 auto !important;
+        }
         div[data-testid="stHorizontalBlock"] button[kind="secondary"] {
             aspect-ratio: 1 / 1;
-            font-size: 1rem;
+            font-size: 1.4rem;
         }
         </style>
         """,
