@@ -15,3 +15,18 @@ def get_saved_quantity(store_id: int, name: str) -> float:
 
 def save_quantities(store_id: int, name_to_quantity: dict) -> int:
     return quick_setup_repository.save_placeholder_quantities(store_id, name_to_quantity)
+
+def count_medicines() -> int:
+    return quick_setup_repository.count_master_medicines()
+
+
+def browse_medicines_page(page_number: int, page_size: int) -> list:
+    return quick_setup_repository.browse_master_medicines_page(page_number, page_size)
+
+
+def get_last_page(store_id: int) -> int:
+    return quick_setup_repository.get_last_browse_page(store_id)
+
+
+def save_last_page(store_id: int, page_number: int) -> None:
+    quick_setup_repository.save_last_browse_page(store_id, page_number)

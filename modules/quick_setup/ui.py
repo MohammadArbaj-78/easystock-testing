@@ -22,6 +22,7 @@ BROWSE_PAGE_SIZE = 20
 
 def render_quick_setup_page() -> None:
     """Render the Quick Setup screen."""
+    _inject_medicine_row_css()
     st.subheader("⚡ Quick Setup")
     st.caption(
         "Naye store ke liye: medicine search karo (ya niche list browse "
@@ -55,33 +56,81 @@ def render_quick_setup_page() -> None:
             _render_medicine_block(store_id, medicine, cart, index)
         return
 
-    # Search blank -> browse the master list directly (Products-style Load more).
-    limit = st.session_state.get("quick_setup_browse_limit", BROWSE_PAGE_SIZE)
-    browsed = quick_setup_service.browse_medicines(limit + 1)
-    has_more = len(browsed) > limit
-    visible = browsed[:limit]
-
-    if not visible:
-        st.info("Abhi master list mein koi medicine nahi mili.")
+    if search_term and search_term.strip():
+        results = quick_setup_service.search_medicines(search_term, SEARCH_RESULT_LIMIT)
+        if not results:
+            st.warning("Koi medicine nahi mili. Spelling check karo ya chhota naam try karo.")
+            return
+        if len(results) == SEARCH_RESULT_LIMIT:
+            st.caption(f"Top {SEARCH_RESULT_LIMIT} results dikha rahe hain. Zyada specific likho.")
+        for index, medicine in enumerate(results):
+            _render_medicine_block(store_id, medicine, cart, index)
         return
 
+    # Search blank -> page-number browsing (jaise Supabase ka Table Editor):
+    # Prev/Next se page badlo, current page DATABASE mein save hota hai,
+    # taaki app band-khol kar bhi wahi se shuru ho jahan chhoda tha.
+    if "quick_setup_browse_page" not in st.session_state:
+        st.session_state["quick_setup_browse_page"] = quick_setup_service.get_last_page(store_id)
+
+    total_medicines = quick_setup_service.count_medicines()
+    total_pages = max(1, -(-total_medicines // BROWSE_PAGE_SIZE))  # ceiling division
+    current_page = min(max(1, st.session_state["quick_setup_browse_page"]), total_pages)
+
+    prev_col, label_col, next_col = st.columns([1, 2, 1])
+    with prev_col:
+        st.button("⬅️ Prev", key="quick_setup_prev_page", use_container_width=True,
+                   disabled=current_page <= 1, on_click=_change_page, args=(store_id, -1, total_pages))
+    with label_col:
+        st.markdown(f"<div style='text-align:center;'>Page {current_page} of {total_pages}</div>", unsafe_allow_html=True)
+    with next_col:
+        st.button("Next ➡️", key="quick_setup_next_page", use_container_width=True,
+                   disabled=current_page >= total_pages, on_click=_change_page, args=(store_id, 1, total_pages))
+
+    visible = quick_setup_service.browse_medicines_page(current_page, BROWSE_PAGE_SIZE)
     for index, medicine in enumerate(visible):
         _render_medicine_block(store_id, medicine, cart, index)
 
-    if has_more:
-        st.button(
-            f"⬇️ Load {BROWSE_PAGE_SIZE} more",
-            key="quick_setup_browse_load_more",
-            use_container_width=True,
-            on_click=_load_more_browse,
-        )
 
-
-def _load_more_browse() -> None:
-    st.session_state["quick_setup_browse_limit"] = (
-        st.session_state.get("quick_setup_browse_limit", BROWSE_PAGE_SIZE) + BROWSE_PAGE_SIZE
-    )
+def _change_page(store_id: int, delta: int, total_pages: int) -> None:
+    new_page = min(max(1, st.session_state["quick_setup_browse_page"] + delta), total_pages)
+    st.session_state["quick_setup_browse_page"] = new_page
+    quick_setup_service.save_last_page(store_id, new_page)
     
+def _inject_medicine_row_css() -> None:
+    """Forces each medicine row's -/name/+ into ONE line, never
+    stacked - scoped ONLY to rows marked with .qs-row-marker (via the
+    adjacent-sibling CSS selector below), so this never touches the
+    search bar's or Save bar's own columns."""
+    st.markdown(
+        """
+        <style>
+        div:has(> div.qs-row-marker) + div[data-testid="stHorizontalBlock"] {
+            flex-direction: row !important;
+            flex-wrap: nowrap !important;
+            gap: 0.4rem !important;
+            align-items: center !important;
+        }
+        div:has(> div.qs-row-marker) + div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"] {
+            width: auto !important;
+            min-width: 0 !important;
+        }
+        div:has(> div.qs-row-marker) + div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:first-child,
+        div:has(> div.qs-row-marker) + div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:last-child {
+            flex: 0 0 56px !important;
+        }
+        div:has(> div.qs-row-marker) + div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:not(:first-child):not(:last-child) {
+            flex: 1 1 auto !important;
+        }
+        div:has(> div.qs-row-marker) + div[data-testid="stHorizontalBlock"] button[kind="secondary"] {
+            aspect-ratio: 1 / 1;
+            font-size: 1.4rem;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
 def _render_sticky_save_bar(store_id: int, cart: dict) -> None:
     """A save bar that stays visible while scrolling (CSS position:
     sticky). NOTE: sticky positioning inside Streamlit's iframe can
@@ -152,38 +201,10 @@ def _render_medicine_block(store_id: int, medicine: dict, cart: dict, index: int
     # row for the same name shares (and sets) the same quantity.
     row_key = f"qs_row_{index}"
 
-    st.markdown(
-        """
-        <style>
-        div[data-testid="stHorizontalBlock"] {
-            flex-direction: row !important;
-            flex-wrap: nowrap !important;
-            gap: 0.4rem !important;
-            align-items: center !important;
-        }
-        div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"] {
-            width: auto !important;
-            min-width: 0 !important;
-        }
-        div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:first-child,
-        div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:last-child {
-            flex: 0 0 56px !important;
-        }
-        div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:not(:first-child):not(:last-child) {
-            flex: 1 1 auto !important;
-        }
-        div[data-testid="stHorizontalBlock"] button[kind="secondary"] {
-            aspect-ratio: 1 / 1;
-            font-size: 1.4rem;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
     with st.container(border=True):
-        minus_col, name_col, plus_col = st.columns([0.5, 4, 0.5], vertical_alignment="center")
-
+        st.markdown('<div class="qs-row-marker"></div>', unsafe_allow_html=True)
+        minus_col, name_col, plus_col = st.columns([1, 3, 1], vertical_alignment="center")
+        
         with minus_col:
             st.button(
                 "➖", key=f"{row_key}_minus",

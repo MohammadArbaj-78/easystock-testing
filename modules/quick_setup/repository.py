@@ -231,3 +231,107 @@ def _save_placeholder_quantities_supabase(store_id: int, name_to_quantity: dict)
             }).execute()
         saved += 1
     return saved
+
+
+def count_master_medicines() -> int:
+    """Total medicines in the master list (for page-number navigation)."""
+    if ACTIVE_DB_BACKEND == "supabase":
+        return _count_master_medicines_supabase()
+    return _count_master_medicines_sqlite()
+
+
+def browse_master_medicines_page(page_number: int, page_size: int) -> list:
+    """One specific page (1-indexed) of the master list, name order."""
+    offset = (page_number - 1) * page_size
+    if ACTIVE_DB_BACKEND == "supabase":
+        return _browse_master_medicines_page_supabase(offset, page_size)
+    return _browse_master_medicines_page_sqlite(offset, page_size)
+
+
+def get_last_browse_page(store_id: int) -> int:
+    """This store's last-visited Quick Setup browse page (1 if none
+    saved yet) - persisted in the DATABASE, not session state, so it
+    survives closing and reopening the app entirely."""
+    if ACTIVE_DB_BACKEND == "supabase":
+        return _get_last_browse_page_supabase(store_id)
+    return _get_last_browse_page_sqlite(store_id)
+
+
+def save_last_browse_page(store_id: int, page_number: int) -> None:
+    """Persist this store's current Quick Setup browse page."""
+    if ACTIVE_DB_BACKEND == "supabase":
+        _save_last_browse_page_supabase(store_id, page_number)
+    else:
+        _save_last_browse_page_sqlite(store_id, page_number)
+
+
+# ---- SQLite ----
+
+def _count_master_medicines_sqlite() -> int:
+    with get_connection() as connection:
+        row = connection.execute("SELECT COUNT(*) AS c FROM medicine_master").fetchone()
+    return row["c"]
+
+
+def _browse_master_medicines_page_sqlite(offset: int, limit: int) -> list:
+    with get_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT name, manufacturer_name, short_composition1, short_composition2, price
+            FROM medicine_master ORDER BY name ASC LIMIT ? OFFSET ?
+            """,
+            (limit, offset),
+        ).fetchall()
+    return [_format_master_row(dict(row)) for row in rows]
+
+
+def _get_last_browse_page_sqlite(store_id: int) -> int:
+    with get_connection() as connection:
+        row = connection.execute(
+            "SELECT last_page FROM quick_setup_progress WHERE store_id = ?", (store_id,)
+        ).fetchone()
+    return row["last_page"] if row else 1
+
+
+def _save_last_browse_page_sqlite(store_id: int, page_number: int) -> None:
+    with get_connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO quick_setup_progress (store_id, last_page) VALUES (?, ?)
+            ON CONFLICT(store_id) DO UPDATE SET last_page = excluded.last_page
+            """,
+            (store_id, page_number),
+        )
+
+
+# ---- Supabase (untested live, same caveat as the rest of this module) ----
+
+def _progress_table():
+    from core.supabase_client import get_supabase_client
+    return get_supabase_client().table("quick_setup_progress")
+
+
+def _count_master_medicines_supabase() -> int:
+    response = _medicine_master_table().select("name", count="exact").limit(1).execute()
+    return response.count or 0
+
+
+def _browse_master_medicines_page_supabase(offset: int, limit: int) -> list:
+    response = (
+        _medicine_master_table()
+        .select("name, manufacturer_name, short_composition1, short_composition2, price")
+        .order("name")
+        .range(offset, offset + limit - 1)
+        .execute()
+    )
+    return [_format_master_row(row) for row in (response.data or [])]
+
+
+def _get_last_browse_page_supabase(store_id: int) -> int:
+    response = _progress_table().select("last_page").eq("store_id", store_id).execute()
+    rows = response.data or []
+    return rows[0]["last_page"] if rows else 1
+
+
+def _save_last_browse_page_supabase(store_id: int, page_number: int) -> None:
+    _progress_table().upsert({"store_id": store_id, "last_page": page_number}).execute()

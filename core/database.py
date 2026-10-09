@@ -316,3 +316,13 @@ def initialize_database() -> None:
             ON agency_payments (agency_id)
             """
         )
+
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS quick_setup_progress (
+                store_id INTEGER PRIMARY KEY,
+                last_page INTEGER NOT NULL DEFAULT 1,
+                FOREIGN KEY (store_id) REFERENCES stores (store_id)
+            )
+            """
+        )
