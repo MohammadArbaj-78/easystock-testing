@@ -8,3 +8,4 @@ pymupdf>=1.24,<2.0
 supabase>=2.0,<3.0
 opencv-python-headless>=4.8,<5.0
 numpy>=1.24,<3.0
+openpyxls

@@ -335,3 +335,25 @@ def _get_last_browse_page_supabase(store_id: int) -> int:
 
 def _save_last_browse_page_supabase(store_id: int, page_number: int) -> None:
     _progress_table().upsert({"store_id": store_id, "last_page": page_number}).execute()
+
+
+def find_page_for_letter(letter: str, page_size: int) -> int:
+    """Which page number (1-indexed) starts with medicines beginning
+    with this letter (approximate - good enough for jump navigation)."""
+    if ACTIVE_DB_BACKEND == "supabase":
+        return _find_page_for_letter_supabase(letter, page_size)
+    return _find_page_for_letter_sqlite(letter, page_size)
+
+
+def _find_page_for_letter_sqlite(letter: str, page_size: int) -> int:
+    with get_connection() as connection:
+        row = connection.execute(
+            "SELECT COUNT(*) AS c FROM medicine_master WHERE name < ? COLLATE NOCASE",
+            (letter,),
+        ).fetchone()
+    return row["c"] // page_size + 1
+
+
+def _find_page_for_letter_supabase(letter: str, page_size: int) -> int:
+    response = _medicine_master_table().select("name", count="exact").lt("name", letter).execute()
+    return (response.count or 0) // page_size + 1

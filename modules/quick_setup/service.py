@@ -30,3 +30,7 @@ def get_last_page(store_id: int) -> int:
 
 def save_last_page(store_id: int, page_number: int) -> None:
     quick_setup_repository.save_last_browse_page(store_id, page_number)
+
+
+def find_page_for_letter(letter: str, page_size: int) -> int:
+    return quick_setup_repository.find_page_for_letter(letter, page_size)
