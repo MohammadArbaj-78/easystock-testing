@@ -226,8 +226,8 @@ def _save_placeholder_quantities_supabase(store_id: int, name_to_quantity: dict)
                 "batch_number": "",
                 "expiry_date": "",
                 "quantity": quantity,
-                "mrp": "",
-                "rate": "",
+                "mrp": None,
+                "rate": None,
             }).execute()
         saved += 1
     return saved

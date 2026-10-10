@@ -77,6 +77,10 @@ def _render_database_search_tab(store_id: int, cart: dict) -> None:
     total_pages = max(1, -(-total_medicines // BROWSE_PAGE_SIZE))
     current_page = min(max(1, st.session_state["quick_setup_browse_page"]), total_pages)
 
+    jump_reset_key = "_clear_quick_setup_jump_letter"
+    if st.session_state.pop(jump_reset_key, False):
+        st.session_state["quick_setup_jump_letter"] = None
+
     letter_col, _spacer = st.columns([1, 3])
     with letter_col:
         selected_letter = st.selectbox(
@@ -89,7 +93,7 @@ def _render_database_search_tab(store_id: int, cart: dict) -> None:
         st.session_state["quick_setup_browse_page"] = target_page
         quick_setup_service.save_last_page(store_id, target_page)
         current_page = target_page
-        st.session_state["quick_setup_jump_letter"] = None
+        st.session_state[jump_reset_key] = True
 
     with st.container(key="qs_pager"):
         prev_col, label_col, next_col = st.columns([1, 2, 1])
@@ -169,16 +173,36 @@ def _load_more_upload() -> None:
     )
 
 
+import re
+
+_NAME_HEADER_KEYWORDS = ["name", "medicine", "product", "item", "drug"]
+_QUANTITY_HEADER_KEYWORDS = ["qty", "quantity", "stock", "balance", "available", "count"]
+
+
+def _normalize_header(value) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(value).strip().lower())
+
+
+def _find_column(dataframe, keywords):
+    for col in dataframe.columns:
+        normalized = _normalize_header(col)
+        if any(keyword in normalized for keyword in keywords):
+            return col
+    return None
+
+
 def _parse_uploaded_stock_file(uploaded_file) -> list:
     """Parse an uploaded Excel/CSV into [{"name": str, "quantity": float}].
 
-    Matches a name-like and quantity-like column by common header names
-    (case-insensitive) - exact column order/extra columns don't matter.
-    Rows with a blank name or non-positive quantity are skipped.
+    Matches a name-like and quantity-like column by FLEXIBLE keyword
+    matching on the header (case/punctuation/spacing-insensitive), so
+    "Medicine Name", "Item_Name", "Available Qty" etc. all work -
+    exact column order/extra columns don't matter.
 
     Raises:
         ValueError: If the file can't be read, or no matching columns
-            were found.
+            were found (lists the file's actual headers, so the real
+            cause is visible instead of a generic "not found").
     """
     import pandas as pd
 
@@ -190,15 +214,16 @@ def _parse_uploaded_stock_file(uploaded_file) -> list:
     except Exception as error:
         raise ValueError(f"File padhi nahi ja saki: {error}") from error
 
-    columns_lower = {str(col).strip().lower(): col for col in dataframe.columns}
-    name_column = next((columns_lower[c] for c in _NAME_COLUMN_CANDIDATES if c in columns_lower), None)
-    quantity_column = next((columns_lower[c] for c in _QUANTITY_COLUMN_CANDIDATES if c in columns_lower), None)
+    name_column = _find_column(dataframe, _NAME_HEADER_KEYWORDS)
+    quantity_column = _find_column(dataframe, _QUANTITY_HEADER_KEYWORDS)
 
     if name_column is None or quantity_column is None:
+        found = ", ".join(str(c) for c in dataframe.columns)
         raise ValueError(
             "File mein medicine naam aur quantity wala column nahi mila. "
-            "Column headers mein 'Name'/'Medicine' aur 'Quantity'/'Qty' "
-            "jaisa kuch hona chahiye."
+            f"File mein ye columns hain: {found}. "
+            "Column header mein kahin 'name'/'medicine'/'item' aur "
+            "'qty'/'quantity'/'stock' jaisa shabd hona chahiye."
         )
 
     rows = []
@@ -213,7 +238,7 @@ def _parse_uploaded_stock_file(uploaded_file) -> list:
         if quantity <= 0:
             continue
         rows.append({"name": name, "quantity": quantity})
-    return rows       
+    return rows
 
 def _change_page(store_id: int, delta: int, total_pages: int) -> None:
     new_page = min(max(1, st.session_state["quick_setup_browse_page"] + delta), total_pages)
@@ -315,15 +340,14 @@ def _render_sticky_save_bar(store_id: int, cart: dict) -> None:
 
 def _render_medicine_block(store_id: int, medicine: dict, cart: dict, index) -> None:
     """One big, tap-friendly block per medicine: name centered, square
-    -/+ on either side, and the quantity shown as a small editable box
-    (tap +/- for quick taps, or type directly for a big quantity)."""
+    -/+ on either side, quantity shown inline next to the name."""
     name = medicine["name"]
 
     if name not in cart:
         cart[name] = quick_setup_service.get_saved_quantity(store_id, name)
 
+    quantity = cart[name]
     row_key = f"qs_row_{index}"
-    qty_input_key = f"{row_key}_qty_input"
 
     with st.container(border=True, key=row_key):
         minus_col, name_col, plus_col = st.columns([1, 3, 1], vertical_alignment="center")
@@ -332,7 +356,7 @@ def _render_medicine_block(store_id: int, medicine: dict, cart: dict, index) -> 
             st.button(
                 "➖", key=f"{row_key}_minus",
                 use_container_width=True,
-                on_click=_adjust_quantity, args=(cart, name, -1, qty_input_key),
+                on_click=_adjust_quantity, args=(cart, name, -1),
             )
         with name_col:
             subtitle = medicine.get("manufacturer_name") or medicine.get("composition") or ""
@@ -340,31 +364,21 @@ def _render_medicine_block(store_id: int, medicine: dict, cart: dict, index) -> 
                 f"<div style='text-align:center;'>"
                 f"<div style='font-size:1.05rem; font-weight:600;'>{name}</div>"
                 f"<div style='font-size:0.75rem; color:#888;'>{subtitle}</div>"
+                f"<div style='font-size:1.3rem; font-weight:700; margin-top:2px;'>"
+                f"Qty: {quantity:g}</div>"
                 f"</div>",
                 unsafe_allow_html=True,
-            )
-            st.number_input(
-                "Qty", key=qty_input_key, value=int(cart[name]), min_value=0, step=1,
-                label_visibility="collapsed",
-                on_change=_set_quantity_from_input, args=(cart, name, qty_input_key),
             )
         with plus_col:
             st.button(
                 "➕", key=f"{row_key}_plus",
                 use_container_width=True,
-                on_click=_adjust_quantity, args=(cart, name, 1, qty_input_key),
+                on_click=_adjust_quantity, args=(cart, name, 1),
             )
 
 
-def _adjust_quantity(cart: dict, name: str, delta: int, qty_input_key: str) -> None:
-    new_value = max(0, cart.get(name, 0) + delta)
-    cart[name] = new_value
-    # Also push the new value into the number_input's OWN session_state
-    # slot (safe here - this callback runs BEFORE the widget is
-    # re-created this run) so +/- and manual typing never go out of
-    # sync with each other.
-    st.session_state[qty_input_key] = new_value
-
+def _adjust_quantity(cart: dict, name: str, delta: int) -> None:
+    cart[name] = max(0, cart.get(name, 0) + delta)
 
 def _set_quantity_from_input(cart: dict, name: str, qty_input_key: str) -> None:
     cart[name] = max(0, int(st.session_state.get(qty_input_key, 0)))
