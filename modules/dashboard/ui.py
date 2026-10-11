@@ -32,7 +32,7 @@ def render_dashboard() -> None:
     metrics = _get_dashboard_metrics_cached(
         store_id,
         get_current_low_stock_minimum(),
-        get_cache_epoch(),
+        get_cache_epoch(store_id),
     )
 
     if metrics["total_products"] == 0:
@@ -61,7 +61,7 @@ def _render_expiring_soon_warning(store_id: int) -> None:
     the same function Expiry Alerts uses for its product rows, so both
     pages are guaranteed to look and feel identical.
     """
-    counts = _get_alert_counts_cached(store_id, get_cache_epoch())
+    counts = _get_alert_counts_cached(store_id, get_cache_epoch(store_id))
     
     if counts.get(alerts_service.ALERT_TYPE_15_DAYS, 0) > 0:
         alert_type = alerts_service.ALERT_TYPE_15_DAYS

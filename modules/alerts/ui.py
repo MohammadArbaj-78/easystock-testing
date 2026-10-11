@@ -59,7 +59,7 @@ def render_expiry_alerts_page() -> None:
         store_id,
         selected_alert_type,
         search_term,
-        get_cache_epoch(),
+        get_cache_epoch(store_id),
     )
     total_matching = sum(len(products) for products in filtered_buckets.values())
     if total_matching == 0:
@@ -98,7 +98,7 @@ def _render_filter_dropdown(store_id: int) -> str:
         The selected ALERT_TYPE_* constant, or None if "All Alerts" is
         selected.
     """
-    counts = _get_alert_counts_cached(store_id, get_cache_epoch())
+    counts = _get_alert_counts_cached(store_id, get_cache_epoch(store_id))
 
     options = [FILTER_OPTION_ALL]
     option_to_alert_type = {FILTER_OPTION_ALL: None}
@@ -189,7 +189,7 @@ def _render_alert_product_row(store_id: int, product: dict, alert_type: str) -> 
         ):
             try:
                 products_service.return_medicine(store_id, product["product_id"])
-                bump_cache_epoch()
+                bump_cache_epoch(store_id)
                 st.success(f"'{product['name']}' returned - stock set to 0.")
                 st.rerun()
             except ValidationError as error:

@@ -65,7 +65,7 @@ def render_low_stock_alerts_page() -> None:
     
     global_minimum = get_current_low_stock_minimum()
 
-    counts = _get_low_stock_counts_cached(store_id, global_minimum, get_cache_epoch())
+    counts = _get_low_stock_counts_cached(store_id, global_minimum, get_cache_epoch(store_id))
 
     if counts["total"] == 0:
         st.success("All products are sufficiently stocked. Nothing to reorder right now.")
@@ -86,7 +86,7 @@ def render_low_stock_alerts_page() -> None:
     # filter dropdown's per-severity numbers - otherwise those numbers
     # would still reflect the PREVIOUS minimum for one extra render
     # (the exact bug this fixes).
-    counts = _get_low_stock_counts_cached(store_id, global_minimum, get_cache_epoch())
+    counts = _get_low_stock_counts_cached(store_id, global_minimum, get_cache_epoch(store_id))
 
     with filter_col:
         selected_severity = _render_filter_dropdown(counts)
@@ -112,7 +112,7 @@ def render_low_stock_alerts_page() -> None:
         store_id,
         search_term,
         global_minimum,
-        get_cache_epoch(),
+        get_cache_epoch(store_id),
     )
 
     # Apply severity filter after fetching (search is applied inside

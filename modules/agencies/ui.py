@@ -33,7 +33,7 @@ def render_agencies_page() -> None:
     st.subheader("🏢 Agencies")
 
     store_id = get_current_store_id()
-    agencies = _get_agency_ledger_cached(store_id, get_cache_epoch())
+    agencies = _get_agency_ledger_cached(store_id, get_cache_epoch(store_id))
 
     if not agencies:
         st.info(
@@ -61,7 +61,7 @@ def render_agencies_page() -> None:
 def _render_agency_detail(store_id: int, agency: dict) -> None:
     """Render one agency's dropdown: summary, Pay form, then its bills."""
     agency_id = agency["agency_id"]
-    detail = _get_agency_detail_cached(store_id, agency_id, get_cache_epoch())
+    detail = _get_agency_detail_cached(store_id, agency_id, get_cache_epoch(store_id))
 
     summary_columns = st.columns(3)
     summary_columns[0].metric("Total billed", f"₹{detail['total_billed']:,.2f}")
@@ -139,7 +139,7 @@ def _render_pay_form(store_id: int, agency_id: int) -> None:
             store_id, agency_id, amount_text, str(paid_on)
         )
         if outcome["recorded"]:
-            bump_cache_epoch()
+            bump_cache_epoch(store_id)
             st.session_state[clear_flag_key] = True
             st.success(f"₹{outcome['amount']:,.2f} payment recorded.")
             st.rerun()

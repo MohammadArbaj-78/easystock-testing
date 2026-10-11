@@ -215,7 +215,7 @@ def _render_sell_section() -> None:
         _render_frequently_sold(store_id)
         return
 
-    suggestions = _search_suggestions_cached(store_id, search_term, get_cache_epoch())
+    suggestions = _search_suggestions_cached(store_id, search_term, get_cache_epoch(store_id))
 
     if not suggestions:
         st.info("No products match your search.")
@@ -319,7 +319,7 @@ def _render_frequently_sold(store_id: int) -> None:
     is empty: top sellers that are still in stock, each clicking exactly
     like a search suggestion.
     """
-    frequently_sold = _get_frequently_sold_cached(store_id, get_cache_epoch())
+    frequently_sold = _get_frequently_sold_cached(store_id, get_cache_epoch(store_id))
     
     if not frequently_sold:
         return
@@ -438,7 +438,7 @@ def _render_sale_row(store_id: int, product: dict) -> None:
                     sales_service.sell_product(store_id, product_id, quantity)
                     st.session_state[qty_key] = 1
                     st.session_state.pop(stock_key, None)
-                    bump_cache_epoch()
+                    bump_cache_epoch(store_id)
                     st.success(f"Sold {quantity} × {product['name']}.")
                     st.rerun()
                 except ValidationError as error:
@@ -486,7 +486,7 @@ def _render_sales_history_section() -> None:
 
     st.markdown("**🧾 Sales History**")
 
-    sales = _get_sales_history_cached(store_id, get_cache_epoch())
+    sales = _get_sales_history_cached(store_id, get_cache_epoch(store_id))
 
     if not sales:
         st.info("No sales recorded yet.")

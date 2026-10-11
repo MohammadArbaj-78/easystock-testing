@@ -88,7 +88,7 @@ def _render_product_list() -> None:
         store_id,
         search_term,
         limit,
-        get_cache_epoch(),
+        get_cache_epoch(store_id),
     )
     products = page["rows"]
     total = page["total"]
@@ -123,7 +123,7 @@ def _render_product_list() -> None:
                             products_service.remove_product(store_id, pid)
                         except ValidationError:
                             pass
-                    bump_cache_epoch()
+                    bump_cache_epoch(store_id)
                     st.session_state["products_selected_ids"] = set()
                     st.session_state.pop("products_bulk_confirm", None)
                     st.success("Selected product(s) deleted.")
@@ -214,7 +214,7 @@ def _render_delete_button(store_id: int, product: dict) -> None:
             if st.button("Yes, Delete", key=f"confirm_yes_{product['product_id']}", use_container_width=True):
                 try:
                     products_service.remove_product(store_id, product["product_id"])
-                    bump_cache_epoch()
+                    bump_cache_epoch(store_id)
                     st.session_state.pop(confirm_key, None)
                     st.success(f"'{product['name']}' deleted.")
                     st.rerun()
@@ -261,7 +261,7 @@ def _render_edit_form(store_id: int, product: dict) -> None:
     if save_clicked:
         try:
             products_service.edit_product(store_id, product["product_id"], form_data)
-            bump_cache_epoch()
+            bump_cache_epoch(store_id)
             st.session_state.pop(edit_key, None)
             st.success("Product updated.")
             st.rerun()
@@ -313,7 +313,7 @@ def _render_add_product_form() -> None:
 
     try:
         products_service.add_product(store_id, form_data)
-        bump_cache_epoch()
+        bump_cache_epoch(store_id)
         st.success(f"'{form_data.get('name')}' added successfully.")
         # The checkbox lives outside the form, so clear_on_submit does
         # not affect it. A direct session_state.pop() + st.rerun() does
