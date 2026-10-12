@@ -709,6 +709,9 @@ def _render_pending_matches() -> None:
     if not pending:
         return
 
+    from core.session import get_current_store_id
+    store_id = get_current_store_id()
+
     st.write("")
     st.warning(f"⚠️ {len(pending)} row(s) need a decision before they can be saved.")
 
@@ -729,10 +732,10 @@ def _render_pending_matches() -> None:
             with col_yes:
                 if st.button("Yes, Merge", key=f"pending_merge_{idx}", use_container_width=True):
                     review_service.resolve_pending_match(idx, "merge")
-                    bump_cache_epoch()
+                    bump_cache_epoch(store_id)
                     st.rerun()
             with col_new:
                 if st.button("Create New", key=f"pending_create_{idx}", use_container_width=True):
                     review_service.resolve_pending_match(idx, "create_new")
-                    bump_cache_epoch()
+                    bump_cache_epoch(store_id)
                     st.rerun()
