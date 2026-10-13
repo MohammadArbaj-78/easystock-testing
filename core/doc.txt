@@ -1,0 +1,151 @@
+ok ab mene sbhi me cache add ho gaye abhi isse jo effect pade unhe fix karte ok                                             first : jab mene prd capsul ko 1 qty sell ki to abhi feature me cache expire nhi hua product feature me bhi sell ki baad prd capsul ki 44 qty bata raha or frequently sold me bhi 44 bata rha jab ki 1 sell ke baat 43 ho jana tha pure system me ise jamajhane ke liye mene image di hai                                                  second : product me feature me mene ek meftal ko delet kiya to phli baar click ke baad vahi rha and fir se delet kiya to yah error aaya ise samajhane ke liye image di hai matalab simple khana chahta hu ki in 6 feature me like product me jab kisi medicin edit ho delet jo ya new product add ho and sels me kuch sell ho and invoice me new medicin save ho and expiry me medicin return ho to exect usi time pure system me new cache load ho jae bas abhi me tumhe letest zip bhi de rha hu tum ise investigae karo sirf Ok or koi bug mile to use bhi bata dena ok Ani Main chahta Hun ki jab bhi kahin Koi operation Ho to pura system apne aap old cache clear karke new load ho jaaye abhi kya ho raha hai abhi man Lo future badalna padta hai jab jakar load hota hai sirf operation hote Se Hi load ho jana chahie
+
+
+
+
+Mene abhi yah chije menuali implement ki hai apne project me yah shi hai kya  : Worked for 36s
+
+### 1\. Main fix — core/cache_utils.py
+
+Is file mein existing bump_cache_epoch() ko replace karo:
+
+Isse kya hoga?
+
+Product Add/Edit/Delete ke baad.
+
+Sales mein Sell ke baad.
+
+Invoice Scan mein Save Medicines ke baad.
+
+Expiry Alerts mein Return Medicine ke baad.
+
+Jab bhi bump_cache_epoch() call hoga, poore app ke @st.cache_data caches clear ho jayenge. TTL khatam hone ka wait nahi karna padega.
+
+### 2\. Existing write operations ko mat badalna
+
+Tumhare code mein Products, Sales, Invoice Scan aur Expiry Alerts ke write paths mein bump_cache_epoch() calls already hain.
+
+Isliye unmein dobara invalidation logic add mat karo. Sirf central helper update karna pehla targeted fix hai.
+
+### 3\. Deployment aur test
+
+core/cache_utils.py save karo.
+
+App ko deploy/restart karo.
+
+Products mein PRD ki 1 quantity sell karo.
+
+Products, Dashboard aur Low Stock/Expiry Alerts open karke quantity check karo.
+
+Delete operation bhi test karo.
+
+Expected: Successful operation ke turant baad next Streamlit rerun mein fresh data dikhega, chahe purana TTL abhi baaki ho.
+
+Ek baat: st.cache_data.clear() sabhi data caches clear karta hai, sirf current feature ka nahi. Ye tumhari global invalidation requirement ke liye intended behavior hai.
+Haan bhai, tumhare code mein:
+
+ttl=300 ka matlab cache 5 minutes baad expire hoga.
+
+Infinite cache ke liye ise change karo:
+
+Bas ttl=300 hata do, show_spinner=False rehne do.
+
+Worked for 11s
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+देखो पहली बात मेरे पास लिमिट कम है क्लोड की और दूसरी बात अभी भी फिक्स नहीं हुआ क्योंकि मैं प्रोडक्ट फीचर के अंदर से किसी प्रोडक्ट को डिलीट कर रहा हूँ तो वो डिलीट पर क्लिक करते से ही वो पूरी वहाँ से हट नहीं रहा लेकिन दूसरी बार वापस डिलीट करने पर नीचे एक वार्निंग शो हो रही है जो जिसकी मैंने तुम्हें इमेज दी है दिखाने के लिए और उसके बावजूद फिर मैंने देखा कि डैशबोर्ड अपडेट हुआ कि नहीं तो डैशबोर्ड पे भी कुछ फ़र्क नहीं पड़ रहा और जब मैं नीचे क्विक सेटअप पेज में क्वांटिटी प्लस करके सेव कर रहा हूँ तो वह भी प्रोडक्ट फीचर के अंदर नहीं आ रही है और मैं किसी मेडिसिन को सेल कर रहा हूँ तो वह सेल क्वांटिटी रिड्यूस तो हो रही है प्रोडक्ट फीचर में भी लेकिन उसकी हिस्ट्री नहीं बन रही है गई और मैं एक बात कहूँ ये सब तुम्हारे उस इम्प्लीमेंटेशन जो तुमने बताया है ना उसके बाद ही हो रहा हैगा तुम तुम्हें समझ नहीं पड़ रही जरा तुम समझो भाई पहले कैसा चल रहा था पहले अच्छा था इस इम्प्लीमेंटेशन से पहले कैसा चल रहा था ना अब इम्प्लीमेंटेशन के बाद ऐसा क्यों हो रहा है ज़रा कुछ फिक्स करो नहीं वो दो लाइन में इपोक लगाने से ज़्यादा कुछ फ़र्क नहीं लगा मुझे प्रॉब्लम कुछ और है                                                         or me tumhe bata du phle bhi mere sath esahi hua tha jo tumne fix kiya tha me exect batata hu phle mene kya problem batayi thi or tumne kya reply diya tha ok or abhi yah jo probelm hai bah sirf ek vajah se hai ki tumne jab se cache utils file me change karwaya to problem ho rhi nhi to phle sab thik chal rha tha ok ab me tumne previus chijo batata hu taki tumhe fix me help mile ok                                                         previues problem prompt : ok ab mene sbhi me cache add ho gaye abhi isse jo effect pade unhe fix karte ok                                             first : jab mene prd capsul ko 1 qty sell ki to abhi feature me cache expire nhi hua product feature me bhi sell ki baad prd capsul ki 44 qty bata raha or frequently sold me bhi 44 bata rha jab ki 1 sell ke baat 43 ho jana tha pure system me ise jamajhane ke liye mene image di hai                                                  second : product me feature me mene ek meftal ko delet kiya to phli baar click ke baad vahi rha and fir se delet kiya to yah error aaya ise samajhane ke liye image di hai matalab simple khana chahta hu ki in 6 feature me like product me jab kisi medicin edit ho delet jo ya new product add ho and sels me kuch sell ho and invoice me new medicin save ho and expiry me medicin return ho to exect usi time pure system me new cache load ho jae bas abhi me tumhe letest zip bhi de rha hu tum ise investigae karo sirf Ok or koi bug mile to use bhi bata dena ok Ani Main chahta Hun ki jab bhi kahin Koi operation Ho to pura system apne aap old cache clear karke new load ho jaaye abhi kya ho raha hai abhi man Lo future badalna padta hai jab jakar load hota hai sirf operation hote Se Hi load ho jana chahie
+and previus prompt reply jo tumne diya tha : Mene abhi yah chije menuali implement ki hai apne project me yah shi hai kya  : Worked for 36s
+
+### 1\. Main fix — core/cache_utils.py
+
+Is file mein existing bump_cache_epoch() ko replace karo:
+
+Isse kya hoga?
+
+Product Add/Edit/Delete ke baad.
+
+Sales mein Sell ke baad.
+
+Invoice Scan mein Save Medicines ke baad.
+
+Expiry Alerts mein Return Medicine ke baad.
+
+Jab bhi bump_cache_epoch() call hoga, poore app ke @st.cache_data caches clear ho jayenge. TTL khatam hone ka wait nahi karna padega.
+
+### 2\. Existing write operations ko mat badalna
+
+Tumhare code mein Products, Sales, Invoice Scan aur Expiry Alerts ke write paths mein bump_cache_epoch() calls already hain.
+
+Isliye unmein dobara invalidation logic add mat karo. Sirf central helper update karna pehla targeted fix hai.
+
+### 3\. Deployment aur test
+
+core/cache_utils.py save karo.
+
+App ko deploy/restart karo.
+
+Products mein PRD ki 1 quantity sell karo.
+
+Products, Dashboard aur Low Stock/Expiry Alerts open karke quantity check karo.
+
+Delete operation bhi test karo.
+
+Expected: Successful operation ke turant baad next Streamlit rerun mein fresh data dikhega, chahe purana TTL abhi baaki ho.
+
+Ek baat: st.cache_data.clear() sabhi data caches clear karta hai, sirf current feature ka nahi. Ye tumhari global invalidation requirement ke liye intended behavior hai.
+Haan bhai, tumhare code mein:
+
+ttl=300 ka matlab cache 5 minutes baad expire hoga.
+
+Infinite cache ke liye ise change karo:
+
+Bas ttl=300 hata do, show_spinner=False rehne do.
+
+Worked for 11                                                                                                                                                          or previus utils file code : Cache invalidation helper - a single, session-scoped counter every
+write bumps and every cached read includes in its cache key.                                                          import streamlit as st                                                                                                                                             _CACHE_EPOCH_KEY = "_cache_epoch"                                                                                                      def get_cache_epoch() -> int:
+    """Current cache epoch for this session (starts at 0)."""
+    return st.session_state.get(_CACHE_EPOCH_KEY, 0)                                                                                         def bump_cache_epoch() -> None:
+    """
+    Clear all Streamlit data caches after a successful
+    database write, then increment the cache epoch.
+    """
+
+    # Global: clear every @st.cache_data result.
+    st.cache_data.clear()
+
+    # Keep the existing epoch mechanism.
+    st.session_state[_CACHE_EPOCH_KEY] = get_cache_epoch() + 1                                       and present utils file code jiski me tumhe files de tha hu  jisse project shi kaam nhi kar rha :                                                          
