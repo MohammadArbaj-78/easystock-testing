@@ -95,6 +95,13 @@ def _search_suggestions_cached(store_id: int, search_term: str, _epoch: int) -> 
     return sales_service.search_products(store_id, search_term)
 
 
+@st.cache_data(show_spinner=False, ttl=3600)
+def _search_master_cached(search_term: str) -> list:
+    """Master medicine list lookup (shared by every store, so not keyed
+    by store_id). Only used when the store's own search found nothing."""
+    return sales_service.search_master_medicines(search_term)
+
+
 @st.cache_data(show_spinner=False, ttl=300)
 def _get_sales_history_cached(store_id: int, _epoch: int) -> list:
     return sales_service.get_sales_history(store_id)
@@ -205,9 +212,18 @@ def _render_sell_section() -> None:
             help="Clear search",
             use_container_width=True,
         )
+    flash_message = st.session_state.pop("sales_flash_success", None)
+    if flash_message:
+        st.success(flash_message)
+
     selected_product = _get_active_selection(store_id, search_term)
     if selected_product is not None:
         _render_sale_row(store_id, selected_product)
+        return
+
+    selected_master_name = _get_active_master_selection(search_term)
+    if selected_master_name is not None:
+        _render_master_save_row(store_id, selected_master_name)
         return
 
     if not search_term or not search_term.strip():
@@ -218,7 +234,15 @@ def _render_sell_section() -> None:
     suggestions = _search_suggestions_cached(store_id, search_term, get_cache_epoch(store_id))
 
     if not suggestions:
-        st.info("No products match your search.")
+        # Nothing in this store's own stock matches. Only now fall back
+        # to the master medicine list - if the store had ANY match above,
+        # no master result is ever shown.
+        master_results = _search_master_cached(search_term)
+        if not master_results:
+            st.info("No products match your search.")
+            return
+        for master_medicine in master_results:
+            _render_master_suggestion_tile(master_medicine)
         return
 
     for product in suggestions:
@@ -249,6 +273,19 @@ def _get_active_selection(store_id: int, search_term: str) -> dict:
     return None
 
 
+def _get_active_master_selection(search_term: str):
+    """Return the name of the currently-selected master-list medicine,
+    or None. Same stale-selection rule as _get_active_selection: it only
+    stays active while the search box still shows exactly that name."""
+    name = st.session_state.get("sales_selected_master_name")
+    if name is None:
+        return None
+    if search_term == name:
+        return name
+    st.session_state.pop("sales_selected_master_name", None)
+    return None
+
+
 def _clear_search() -> None:
     """on_click callback for the search clear (❌) button: resets the
     search box and drops any active selection.
@@ -265,6 +302,7 @@ def _clear_search() -> None:
     """
     st.session_state["sales_search_term"] = ""
     st.session_state.pop("sales_selected_product_id", None)
+    st.session_state.pop("sales_selected_master_name", None)
 
 
 def _select_product(product: dict) -> None:
@@ -288,7 +326,19 @@ def _select_product(product: dict) -> None:
     """
     st.session_state["sales_search_term"] = product["name"]
     st.session_state["sales_selected_product_id"] = product["product_id"]
+    st.session_state.pop("sales_selected_master_name", None)
     st.session_state[f"sales_qty_{product['product_id']}"] = 1
+
+
+def _select_master_medicine(name: str) -> None:
+    """on_click callback for a master-list suggestion - same job as
+    _select_product (and must be a callback for the same reason): fills
+    the search box, marks this medicine selected, resets its quantity to
+    1. Marks it by NAME, since it has no product_id yet."""
+    st.session_state["sales_search_term"] = name
+    st.session_state["sales_selected_master_name"] = name
+    st.session_state.pop("sales_selected_product_id", None)
+    st.session_state[f"sales_master_qty_{name}"] = 1
 
 
 def _render_suggestion_tile(product: dict) -> None:
@@ -307,6 +357,22 @@ def _render_suggestion_tile(product: dict) -> None:
         use_container_width=True,
         on_click=_select_product,
         args=(product,),
+    )
+
+
+def _render_master_suggestion_tile(medicine: dict) -> None:
+    """One master-list suggestion, drawn like a normal suggestion tile
+    (a single full-width button). Nothing in the tile says it is not in
+    the system - the owner finds that out on click, from the Save row."""
+    name = medicine["name"]
+    detail = medicine.get("manufacturer_name") or medicine.get("composition") or ""
+    label = f"**{name}**\n{detail}" if detail else f"**{name}**"
+    st.button(
+        label,
+        key=f"sales_master_select_{name}",
+        use_container_width=True,
+        on_click=_select_master_medicine,
+        args=(name,),
     )
 
 
@@ -330,46 +396,125 @@ def _render_frequently_sold(store_id: int) -> None:
 
 
 def _render_qty_sell_row_css() -> None:
-    """Scoped CSS so the quantity stepper + Sell button stay one
-    compact horizontal row on BOTH desktop and mobile - explicitly
-    requested to apply on both, unlike the Review & Edit table's
-    mobile-only media-query treatment.
-
-    Native st.columns() alone cannot achieve "always one row": below
-    Streamlit's own built-in mobile breakpoint, st.columns() switches
-    to vertical stacking regardless of how few or narrow the columns
-    are - which is exactly the "stacked -, 1, +, Sell" layout being
-    replaced here. Two things are needed together (the same pattern
-    already established for the Review & Edit table, reused here
-    rather than reinvented): `flex-wrap: nowrap` to override the native
-    stacking, and a fixed pixel width per column (with no shrink/grow)
-    so the row stays compact instead of stretching or squeezing.
-
-    Scoped via st.container(key="sales_qty_row") to this control only -
-    the `.st-key-sales_qty_row` selector cannot affect st.columns()
-    layouts used anywhere else in the app (Dashboard, Product
-    Management, Alerts, Sales History, etc.).
+    """Scoped CSS for the quantity stepper + Sell/Save button, copied in
+    spirit from Quick Setup's medicine row (modules/quick_setup/ui.py,
+    _inject_medicine_row_css) so the +/- feel is the same on every
+    screen, desktop and mobile:
+      - Each of the two rows (the - qty + row, and the action row under
+        it) is forced to stay ONE line (flex-wrap: nowrap) - Streamlit's
+        native st.columns() would otherwise stack them on a phone.
+      - The first and last column are fixed-width, so the - and + are
+        square buttons (aspect-ratio 1/1); the middle column takes the
+        remaining width and holds the centred quantity.
+      - The action button (Sell / Save) sits in the LAST column of its
+        own row, so it lands directly under the + button.
+    Scoped to st.container(key="sales_qty_row") only - the
+    .st-key-sales_qty_row selector cannot affect st.columns() layouts
+    anywhere else in the app.
     """
     st.markdown(
         """
         <style>
         .st-key-sales_qty_row [data-testid="stHorizontalBlock"] {
+            flex-direction: row !important;
             flex-wrap: nowrap !important;
-            width: max-content !important;
             gap: 0.4rem !important;
+            align-items: center !important;
         }
         .st-key-sales_qty_row [data-testid="stColumn"] {
-            flex: none !important;
+            width: auto !important;
             min-width: 0 !important;
         }
-        .st-key-sales_qty_row [data-testid="stColumn"]:nth-child(1) { width: 44px !important; }
-        .st-key-sales_qty_row [data-testid="stColumn"]:nth-child(2) { width: 40px !important; }
-        .st-key-sales_qty_row [data-testid="stColumn"]:nth-child(3) { width: 44px !important; }
-        .st-key-sales_qty_row [data-testid="stColumn"]:nth-child(4) { width: 110px !important; }
+        .st-key-sales_qty_row [data-testid="stColumn"]:first-child,
+        .st-key-sales_qty_row [data-testid="stColumn"]:last-child {
+            flex: 0 0 64px !important;
+        }
+        .st-key-sales_qty_row [data-testid="stColumn"]:not(:first-child):not(:last-child) {
+            flex: 1 1 auto !important;
+        }
+        .st-key-sales_qty_row button[kind="secondary"] {
+            aspect-ratio: 1 / 1;
+            font-size: 1.4rem;
+        }
+        .st-key-sales_qty_row button[kind="primary"] {
+            padding-left: 0.25rem;
+            padding-right: 0.25rem;
+        }
         </style>
         """,
         unsafe_allow_html=True,
     )
+
+
+def _display_value(value) -> str:
+    """Show an em dash instead of 'None' or a blank for a value that is
+    not known yet (e.g. a medicine saved from the master list has no
+    batch/expiry/MRP/rate until its first real invoice is scanned)."""
+    if value is None or str(value).strip() == "":
+        return "—"
+    return str(value)
+
+
+def _render_stepper_and_action_row(
+    *,
+    quantity: int,
+    qty_key: str,
+    max_quantity,
+    minus_key: str,
+    plus_key: str,
+    action_label: str,
+    action_key: str,
+    action_disabled: bool,
+) -> bool:
+    """Render the shared [-] quantity [+] row with the action button
+    (Sell or Save) directly under the +. Used by both the normal Sell row
+    and the master-list Save row, so the two look and behave identically.
+
+    Must be called from inside an @st.fragment function (the -/+ buttons
+    use st.rerun(scope="fragment")).
+
+    Args:
+        quantity: Current quantity (already clamped by the caller).
+        qty_key: session_state key holding the quantity.
+        max_quantity: Upper limit for + (the available stock when
+            selling), or None for no limit (saving new stock).
+
+    Returns:
+        True if the action button was clicked on this run.
+    """
+    _render_qty_sell_row_css()
+
+    with st.container(key="sales_qty_row"):
+        minus_col, qty_col, plus_col = st.columns([1, 3, 1], vertical_alignment="center")
+
+        with minus_col:
+            if st.button("➖", key=minus_key, disabled=(quantity <= 1), use_container_width=True):
+                st.session_state[qty_key] = quantity - 1
+                st.rerun(scope="fragment")
+
+        with qty_col:
+            st.markdown(
+                f"<div style='text-align:center; font-size:1.3rem; font-weight:700;'>"
+                f"Qty: {quantity}</div>",
+                unsafe_allow_html=True,
+            )
+
+        with plus_col:
+            plus_disabled = max_quantity is not None and quantity >= max_quantity
+            if st.button("➕", key=plus_key, disabled=plus_disabled, use_container_width=True):
+                st.session_state[qty_key] = quantity + 1
+                st.rerun(scope="fragment")
+
+        _left_spacer, _middle_spacer, action_col = st.columns([1, 3, 1])
+        with action_col:
+            return st.button(
+                action_label,
+                key=action_key,
+                disabled=action_disabled,
+                use_container_width=True,
+                type="primary",
+            )
+
 
 @st.fragment
 def _render_sale_row(store_id: int, product: dict) -> None:
@@ -387,7 +532,7 @@ def _render_sale_row(store_id: int, product: dict) -> None:
     every lot (batch/expiry) of this medicine name - via
     sales_service.get_sellable_stock - not just this one clicked
     batch row's own quantity, since sell_product() itself now consumes
-    earliest-expiry-first across all of this medicine's lots.
+    stock in arrival order across all of this medicine's lots.
     """
     product_id = product["product_id"]
     stock_key = f"sales_stock_{product_id}"
@@ -396,9 +541,9 @@ def _render_sale_row(store_id: int, product: dict) -> None:
     stock = st.session_state[stock_key]
 
     st.markdown(
-        f"**{product['name']}**  •  Batch: {product['batch_number']}  •  "
-        f"Stock: {stock}  •  Expires: {product['expiry_date']}  •  "
-        f"MRP: {product['mrp']}  •  Rate: {product['rate']}"
+        f"**{product['name']}**  •  Batch: {_display_value(product['batch_number'])}  •  "
+        f"Stock: {stock}  •  Expires: {_display_value(product['expiry_date'])}  •  "
+        f"MRP: {_display_value(product['mrp'])}  •  Rate: {_display_value(product['rate'])}"
     )
 
     qty_key = f"sales_qty_{product_id}"
@@ -408,41 +553,74 @@ def _render_sale_row(store_id: int, product: dict) -> None:
     quantity = max(1, min(quantity, stock)) if stock > 0 else 1
     st.session_state[qty_key] = quantity
 
-    _render_qty_sell_row_css()
+    sell_clicked = _render_stepper_and_action_row(
+        quantity=quantity,
+        qty_key=qty_key,
+        max_quantity=stock,
+        minus_key=f"sales_minus_{product_id}",
+        plus_key=f"sales_plus_{product_id}",
+        action_label="Sell",
+        action_key=f"sales_sell_{product_id}",
+        action_disabled=(stock == 0),
+    )
 
-    with st.container(key="sales_qty_row"):
-        minus_col, qty_col, plus_col, sell_col = st.columns([1, 1, 1, 3])
+    if sell_clicked:
+        try:
+            sales_service.sell_product(store_id, product_id, quantity)
+            st.session_state[qty_key] = 1
+            st.session_state.pop(stock_key, None)
+            bump_cache_epoch(store_id)
+            st.success(f"Sold {quantity} × {product['name']}.")
+            st.rerun()
+        except ValidationError as error:
+            st.error(str(error))
 
-        with minus_col:
-            if st.button("−", key=f"sales_minus_{product_id}", disabled=(quantity <= 1), use_container_width=True):
-                st.session_state[qty_key] = quantity - 1
-                st.rerun(scope="fragment")
 
-        with qty_col:
-            st.markdown(f"**{quantity}**")
+@st.fragment
+def _render_master_save_row(store_id: int, name: str) -> None:
+    """The same row as _render_sale_row, for a medicine picked from the
+    master list that is not in this store's system yet: identical
+    [-] quantity [+] layout, but the button says Save (it stores the
+    medicine with that quantity) instead of Sell, and a red warning
+    underneath tells the owner it is not in the system.
 
-        with plus_col:
-            if st.button("+", key=f"sales_plus_{product_id}", disabled=(quantity >= stock), use_container_width=True):
-                st.session_state[qty_key] = quantity + 1
-                st.rerun(scope="fragment")
+    There is no stock to cap against, so + has no upper limit.
+    """
+    st.markdown(f"**{name}**")
 
-        with sell_col:
-            if st.button(
-                "Sell",
-                key=f"sales_sell_{product_id}",
-                disabled=(stock == 0),
-                use_container_width=True,
-                type="primary",
-            ):
-                try:
-                    sales_service.sell_product(store_id, product_id, quantity)
-                    st.session_state[qty_key] = 1
-                    st.session_state.pop(stock_key, None)
-                    bump_cache_epoch(store_id)
-                    st.success(f"Sold {quantity} × {product['name']}.")
-                    st.rerun()
-                except ValidationError as error:
-                    st.error(str(error))
+    qty_key = f"sales_master_qty_{name}"
+    quantity = max(1, st.session_state.get(qty_key, 1))
+    st.session_state[qty_key] = quantity
+
+    save_clicked = _render_stepper_and_action_row(
+        quantity=quantity,
+        qty_key=qty_key,
+        max_quantity=None,
+        minus_key=f"sales_master_minus_{name}",
+        plus_key=f"sales_master_plus_{name}",
+        action_label="Save",
+        action_key=f"sales_master_save_{name}",
+        action_disabled=False,
+    )
+
+    st.error(
+        "⚠️ This medicine is not in your system. "
+        "Please set the correct quantity and save it."
+    )
+
+    if save_clicked:
+        try:
+            sales_service.save_master_medicine(store_id, name, quantity)
+        except ValidationError as error:
+            st.error(str(error))
+        except Exception as error:
+            st.error(f"Could not save this medicine right now: {error}")
+        else:
+            st.session_state.pop(qty_key, None)
+            st.session_state.pop("sales_selected_master_name", None)
+            st.session_state["sales_flash_success"] = f"Saved {quantity} × {name} to your system."
+            bump_cache_epoch(store_id)
+            st.rerun()
 
 
 def _format_sold_at(sold_at: str) -> str:

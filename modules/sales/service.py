@@ -357,3 +357,113 @@ def get_sales_history(store_id: int) -> list:
         rows.
     """
     return sales_repository.get_sales_history(store_id)
+
+
+# ---------------------------------------------------------------------------
+# Auto-setup from the master medicine database
+#
+# When a Sales search finds NOTHING in this store's own in-stock products,
+# the Sales UI falls back to the shared ~2.5 lakh medicine master list
+# (the same list Quick Setup browses), so the owner can add a medicine to
+# the system on the spot instead of leaving the Sales screen. These two
+# functions are the only new business logic for that: neither changes
+# search_products(), sell_product() or any other function above, and both
+# reuse Quick Setup's existing, already-working service functions rather
+# than writing any new SQL.
+# ---------------------------------------------------------------------------
+
+# A one-letter search would match thousands of master rows and make every
+# keystroke a heavy query on the 2.5 lakh-row table, so the master fallback
+# only starts at this many characters.
+MASTER_SEARCH_MIN_CHARACTERS = 2
+
+
+def search_master_medicines(search_term: str) -> list:
+    """Search the shared medicine master list by name, for the Sales
+    fallback shown ONLY when this store's own search found nothing.
+
+    The caller (Sales UI) is responsible for calling this only when
+    search_products() returned no results - this function itself does
+    not look at the store's stock, so it can stay a pure master-list
+    lookup.
+
+    Args:
+        search_term: Text typed in the Sales search box.
+
+    Returns:
+        A list of {"name", "manufacturer_name", "composition", "mrp"}
+        dicts, at most SALES_SEARCH_SUGGESTION_LIMIT, one per distinct
+        medicine name (case-insensitive). [] if the term is shorter than
+        MASTER_SEARCH_MIN_CHARACTERS.
+    """
+    from modules.quick_setup import service as quick_setup_service
+
+    term = (search_term or "").strip()
+    if len(term) < MASTER_SEARCH_MIN_CHARACTERS:
+        return []
+
+    # Ask for extra rows, because the master list can hold the same name
+    # more than once (e.g. different manufacturers) and those duplicates
+    # are dropped below.
+    rows = quick_setup_service.search_medicines(
+        term, limit=SALES_SEARCH_SUGGESTION_LIMIT * 3
+    )
+
+    seen_names = set()
+    results = []
+    for row in rows:
+        name = (row.get("name") or "").strip()
+        name_key = name.lower()
+        if not name or name_key in seen_names:
+            continue
+        seen_names.add(name_key)
+        results.append(row)
+        if len(results) >= SALES_SEARCH_SUGGESTION_LIMIT:
+            break
+    return results
+
+
+def save_master_medicine(store_id: int, name: str, quantity: int) -> None:
+    """Add a medicine picked from the master list to this store's
+    system with the given starting quantity.
+
+    Saved exactly the way Quick Setup saves a medicine: one product row
+    with just a name and quantity (blank batch/expiry/MRP). When a real
+    invoice for the same medicine is scanned later, the existing
+    Quick Setup placeholder rule in modules.products.service replaces
+    that row with the real batch/expiry/MRP - nothing new is needed
+    here for that.
+
+    Args:
+        store_id: The currently logged-in store's ID.
+        name: The medicine name, exactly as it came from the master list.
+        quantity: Whole number of units, at least 1.
+
+    Raises:
+        ValidationError: If the name is blank, the quantity is not a
+            whole number of at least 1, or this medicine is already in
+            stock in the system (it should be sold, not saved again -
+            saving it would create a second, duplicate row).
+    """
+    from modules.quick_setup import service as quick_setup_service
+
+    clean_name = (name or "").strip()
+    if not clean_name:
+        raise ValidationError("Medicine name is required.")
+
+    if not isinstance(quantity, int) or isinstance(quantity, bool):
+        raise ValidationError("Quantity must be a whole number.")
+    if quantity < 1:
+        raise ValidationError("Quantity must be at least 1.")
+
+    already_in_stock = any(
+        product["name"].strip().lower() == clean_name.lower()
+        for product in search_products(store_id, clean_name)
+    )
+    if already_in_stock:
+        raise ValidationError(
+            "This medicine is already in your system. "
+            "Please search for it again and use Sell."
+        )
+
+    quick_setup_service.save_quantities(store_id, {clean_name: quantity})
