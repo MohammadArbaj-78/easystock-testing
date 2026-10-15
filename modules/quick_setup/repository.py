@@ -34,6 +34,38 @@ def search_master_medicines(search_term: str, limit: int = 20) -> list:
         return _search_master_medicines_supabase(term, limit)
     return _search_master_medicines_sqlite(term, limit)
 
+
+def search_master_medicines_all_words(
+    words: list, first_word_prefix: bool = False, limit: int = 60
+) -> list:
+    """Search the master list for names that contain EVERY given word,
+    in any order (used by the Sales fallback search; the older
+    search_master_medicines above - one contiguous piece of text - is
+    left exactly as it was for Quick Setup).
+
+    Args:
+        words: Lower-case words, e.g. ["ambroxol", "syrup"].
+        first_word_prefix: If True, the name must START with the first
+            word (the other words may be anywhere). The Sales search runs
+            this first, so names that begin with what the owner typed are
+            never crowded out by names that merely contain it.
+        limit: Maximum rows to return (name order).
+
+    Returns:
+        List of {"name", "manufacturer_name", "composition", "mrp"}.
+    """
+    # '%' and '_' are wildcard characters in LIKE patterns - never let a
+    # typed word act as one.
+    clean_words = [
+        word.replace("%", "").replace("_", "").strip() for word in (words or [])
+    ]
+    clean_words = [word for word in clean_words if word]
+    if not clean_words:
+        return []
+    if ACTIVE_DB_BACKEND == "supabase":
+        return _search_master_all_words_supabase(clean_words, first_word_prefix, limit)
+    return _search_master_all_words_sqlite(clean_words, first_word_prefix, limit)
+
 def browse_master_medicines(limit: int) -> list:
     """First `limit` medicines from the master list, name order - lets
     the owner browse without typing a search term first, same
@@ -105,6 +137,25 @@ def _search_master_medicines_sqlite(term: str, limit: int) -> list:
             LIMIT ?
             """,
             (f"%{term}%", limit),
+        ).fetchall()
+    return [_format_master_row(dict(row)) for row in rows]
+
+
+def _search_master_all_words_sqlite(words: list, first_word_prefix: bool, limit: int) -> list:
+    patterns = [f"%{word}%" for word in words]
+    if first_word_prefix:
+        patterns[0] = f"{words[0]}%"
+    conditions = " AND ".join("name LIKE ? COLLATE NOCASE" for _ in patterns)
+    with get_connection() as connection:
+        rows = connection.execute(
+            f"""
+            SELECT name, manufacturer_name, short_composition1, short_composition2, price
+            FROM medicine_master
+            WHERE {conditions}
+            ORDER BY name ASC
+            LIMIT ?
+            """,
+            (*patterns, limit),
         ).fetchall()
     return [_format_master_row(dict(row)) for row in rows]
 
@@ -184,6 +235,22 @@ def _search_master_medicines_supabase(term: str, limit: int) -> list:
         _medicine_master_table()
         .select("name, manufacturer_name, short_composition1, short_composition2, price")
         .ilike("name", f"%{term}%")
+        .order("name")
+        .limit(limit)
+        .execute()
+    )
+    return [_format_master_row(row) for row in (response.data or [])]
+
+
+def _search_master_all_words_supabase(words: list, first_word_prefix: bool, limit: int) -> list:
+    patterns = [f"%{word}%" for word in words]
+    if first_word_prefix:
+        patterns[0] = f"{words[0]}%"
+    conditions = ",".join(f"name.ilike.{pattern}" for pattern in patterns)
+    response = (
+        _medicine_master_table()
+        .select("name, manufacturer_name, short_composition1, short_composition2, price")
+        .and_(conditions)
         .order("name")
         .limit(limit)
         .execute()

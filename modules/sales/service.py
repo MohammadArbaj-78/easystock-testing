@@ -360,105 +360,213 @@ def get_sales_history(store_id: int) -> list:
 
 
 # ---------------------------------------------------------------------------
-# Auto-setup from the master medicine database
+# Flexible search and auto-setup from the master medicine list
 #
-# When a Sales search finds NOTHING in this store's own in-stock products,
-# the Sales UI falls back to the shared ~2.5 lakh medicine master list
-# (the same list Quick Setup browses), so the owner can add a medicine to
-# the system on the spot instead of leaving the Sales screen. These two
-# functions are the only new business logic for that: neither changes
-# search_products(), sell_product() or any other function above, and both
-# reuse Quick Setup's existing, already-working service functions rather
-# than writing any new SQL.
+# Nothing above this line was changed. The functions below add:
+#   - search_store_products: the same store search as search_products, plus
+#     a fallback that understands words typed in any order ("telsar h tab"
+#     finds "Telsar-H Tablet") - used only when search_products found
+#     nothing, so existing results and their order never change.
+#   - search_master_medicines: the fallback shown ONLY when the store has
+#     no match at all - ranked, with a single-salt suggestion next to each
+#     combination medicine.
+#   - save_master_medicine / save_new_medicine: add a medicine to the
+#     store's stock with a starting quantity. Both reuse Quick Setup's
+#     existing save, so no new SQL is written.
 # ---------------------------------------------------------------------------
 
-# A one-letter search would match thousands of master rows and make every
-# keystroke a heavy query on the 2.5 lakh-row table, so the master fallback
-# only starts at this many characters.
+# A one-letter search would match thousands of master rows, so the master
+# fallback only starts at this many characters.
 MASTER_SEARCH_MIN_CHARACTERS = 2
+
+# How many master rows each of the three lookups may fetch before ranking.
+_MASTER_PREFIX_FETCH_LIMIT = 60
+_MASTER_CONTAINS_FETCH_LIMIT = 120
+_MASTER_COMBINATION_FETCH_LIMIT = 40
+
+# If a search matches combination medicines, at least this many are shown
+# even when single-salt names fill the first page.
+_MIN_COMBINATIONS_SHOWN = 2
+
+
+def search_store_products(store_id: int, search_term: str) -> list:
+    """Search this store's in-stock medicines.
+
+    Exactly search_products() first. Only if that finds nothing, a second
+    pass matches the typed words in ANY order and ignores punctuation and
+    Tab/Tablet-style spelling differences (core.name_matching), so a
+    medicine the store really has is not missed - which would otherwise
+    wrongly send the owner to the master list.
+
+    Same result shape and rules as search_products: in-stock only, one row
+    per medicine name (its FIFO-first lot), at most
+    SALES_SEARCH_SUGGESTION_LIMIT rows.
+    """
+    from core import name_matching
+
+    results = search_products(store_id, search_term)
+    if results:
+        return results
+
+    term = (search_term or "").strip()
+    words = name_matching.search_words(term)
+    if len(term) < MASTER_SEARCH_MIN_CHARACTERS or not words:
+        return []
+
+    # Narrow the database read by the longest typed word; the careful
+    # word-by-word comparison then runs in memory on that small set.
+    narrowing_word = max((word.replace("%", "") for word in words), key=len)
+    if not narrowing_word:
+        return []
+    products = products_repository.get_all_products(store_id, narrowing_word)
+
+    lots_by_name = {}
+    for product in products:
+        lots_by_name.setdefault(product["name"].strip().lower(), []).append(product)
+
+    ranked = []
+    for rows in lots_by_name.values():
+        in_stock = sorted(
+            (row for row in rows if row["quantity"] > 0),
+            key=lambda row: row["product_id"],   # FIFO: earliest arrival first
+        )
+        if not in_stock:
+            continue
+        tier = name_matching.match_tier(in_stock[0]["name"], words)
+        if tier is None:
+            continue
+        ranked.append((tier, in_stock[0]["name"].lower(), in_stock[0]))
+
+    ranked.sort(key=lambda item: (item[0], item[1]))
+    return [item[2] for item in ranked[:SALES_SEARCH_SUGGESTION_LIMIT]]
 
 
 def search_master_medicines(search_term: str) -> list:
-    """Search the shared medicine master list by name, for the Sales
-    fallback shown ONLY when this store's own search found nothing.
+    """Search the shared medicine master list, for the Sales fallback
+    shown ONLY when search_store_products found nothing in this store.
+    (The caller decides when to call it; this function only looks at the
+    master list.)
 
-    The caller (Sales UI) is responsible for calling this only when
-    search_products() returned no results - this function itself does
-    not look at the store's stock, so it can stay a pure master-list
-    lookup.
-
-    Args:
-        search_term: Text typed in the Sales search box.
+    Ranking: names that start with what was typed come first, then names
+    where every typed word starts a word of the name, then the rest; within
+    each, single-salt medicines before combinations. Each combination
+    medicine that the typed words point at gets a single-salt suggestion
+    placed right before it ("StayHappi Ambroxol Syrup" before
+    "StayHappi Ambroxol+Guaifenesin+Terbutaline ... Syrup").
 
     Returns:
         A list of {"name", "manufacturer_name", "composition", "mrp"}
-        dicts, at most SALES_SEARCH_SUGGESTION_LIMIT, one per distinct
-        medicine name (case-insensitive). [] if the term is shorter than
+        dicts, one per distinct name, [] if the term is shorter than
         MASTER_SEARCH_MIN_CHARACTERS.
     """
+    from core import name_matching
     from modules.quick_setup import service as quick_setup_service
 
     term = (search_term or "").strip()
     if len(term) < MASTER_SEARCH_MIN_CHARACTERS:
         return []
+    words = name_matching.search_words(term)
+    if not words:
+        return []
 
-    # Ask for extra rows, because the master list can hold the same name
-    # more than once (e.g. different manufacturers) and those duplicates
-    # are dropped below.
-    rows = quick_setup_service.search_medicines(
-        term, limit=SALES_SEARCH_SUGGESTION_LIMIT * 3
-    )
+    try:
+        rows = (
+            quick_setup_service.search_medicines_all_words(
+                words, True, _MASTER_PREFIX_FETCH_LIMIT
+            )
+            + quick_setup_service.search_medicines_all_words(
+                words, False, _MASTER_CONTAINS_FETCH_LIMIT
+            )
+            # Combination names start with a brand (StayHappi, Genericart,
+            # ...), so alphabetically they come late and could be cut off
+            # by the limit above; fetch them separately.
+            + quick_setup_service.search_medicines_all_words(
+                words + ["+"], False, _MASTER_COMBINATION_FETCH_LIMIT
+            )
+        )
+    except Exception:
+        # Safety net: if the word-based lookup fails for any reason, fall
+        # back to the plain one-piece-of-text search Quick Setup has always
+        # used, so the owner still gets suggestions.
+        rows = quick_setup_service.search_medicines(
+            term, limit=SALES_SEARCH_SUGGESTION_LIMIT * 3
+        )
 
-    seen_names = set()
-    results = []
+    unique = {}
     for row in rows:
-        name = (row.get("name") or "").strip()
-        name_key = name.lower()
-        if not name or name_key in seen_names:
-            continue
-        seen_names.add(name_key)
+        name = name_matching.clean_spaces(row.get("name"))
+        key = name_matching.normalized_name(name)
+        if name and key and key not in unique:
+            unique[key] = dict(row, name=name)
+
+    def sort_key(row):
+        tier = name_matching.match_tier(row["name"], words)
+        return (
+            3 if tier is None else tier,
+            name_matching.is_combination(row["name"]),
+            row["name"].lower(),
+        )
+
+    ranked = sorted(unique.values(), key=sort_key)
+    shown = ranked[:SALES_SEARCH_SUGGESTION_LIMIT]
+
+    combinations_shown = sum(1 for row in shown if name_matching.is_combination(row["name"]))
+    if combinations_shown < _MIN_COMBINATIONS_SHOWN:
+        extra = [
+            row for row in ranked[SALES_SEARCH_SUGGESTION_LIMIT:]
+            if name_matching.is_combination(row["name"])
+        ]
+        shown = shown + extra[: _MIN_COMBINATIONS_SHOWN - combinations_shown]
+
+    results = []
+    already_listed = set(unique)
+    for row in shown:
+        if name_matching.is_combination(row["name"]):
+            for single in name_matching.split_combination(row["name"], words):
+                single_key = name_matching.normalized_name(single["name"])
+                if single_key in already_listed:
+                    continue          # a real master row of that name exists
+                already_listed.add(single_key)
+                results.append({
+                    "name": single["name"],
+                    "manufacturer_name": "",
+                    "composition": single["salt"],
+                    "mrp": None,
+                })
         results.append(row)
-        if len(results) >= SALES_SEARCH_SUGGESTION_LIMIT:
-            break
     return results
 
 
-def save_master_medicine(store_id: int, name: str, quantity: int) -> None:
-    """Add a medicine picked from the master list to this store's
-    system with the given starting quantity.
+def is_valid_new_medicine_name(name: str):
+    """Whether text typed in the Sales search box is acceptable as the
+    name of a brand-new medicine (3-100 characters, at least one letter).
+    Returns (True, cleaned_name) or (False, ""). Lets the UI ask the
+    service instead of importing core.name_matching itself."""
+    from core import name_matching
 
-    Saved exactly the way Quick Setup saves a medicine: one product row
-    with just a name and quantity (blank batch/expiry/MRP). When a real
-    invoice for the same medicine is scanned later, the existing
-    Quick Setup placeholder rule in modules.products.service replaces
-    that row with the real batch/expiry/MRP - nothing new is needed
-    here for that.
+    return name_matching.is_valid_new_medicine_name(name)
 
-    Args:
-        store_id: The currently logged-in store's ID.
-        name: The medicine name, exactly as it came from the master list.
-        quantity: Whole number of units, at least 1.
 
-    Raises:
-        ValidationError: If the name is blank, the quantity is not a
-            whole number of at least 1, or this medicine is already in
-            stock in the system (it should be sold, not saved again -
-            saving it would create a second, duplicate row).
+def _save_new_stock_row(store_id: int, clean_name: str, quantity: int) -> None:
+    """Shared by save_master_medicine and save_new_medicine: validate the
+    quantity, refuse a medicine that is already in stock, then save it the
+    way Quick Setup saves a medicine - one product row with just a name and
+    quantity (blank batch/expiry/MRP). When a real invoice for it is
+    scanned later, the existing placeholder rule in
+    modules.products.service fills those in.
     """
+    from core import name_matching
     from modules.quick_setup import service as quick_setup_service
-
-    clean_name = (name or "").strip()
-    if not clean_name:
-        raise ValidationError("Medicine name is required.")
 
     if not isinstance(quantity, int) or isinstance(quantity, bool):
         raise ValidationError("Quantity must be a whole number.")
     if quantity < 1:
         raise ValidationError("Quantity must be at least 1.")
 
+    wanted = name_matching.normalized_name(clean_name)
     already_in_stock = any(
-        product["name"].strip().lower() == clean_name.lower()
-        for product in search_products(store_id, clean_name)
+        name_matching.normalized_name(product["name"]) == wanted
+        for product in search_store_products(store_id, clean_name)
     )
     if already_in_stock:
         raise ValidationError(
@@ -467,3 +575,47 @@ def save_master_medicine(store_id: int, name: str, quantity: int) -> None:
         )
 
     quick_setup_service.save_quantities(store_id, {clean_name: quantity})
+
+
+def save_master_medicine(store_id: int, name: str, quantity: int) -> None:
+    """Add a medicine suggested from the master list (or a single-salt
+    name made from a combination) to this store's stock.
+
+    Args:
+        store_id: The currently logged-in store's ID.
+        name: The suggested medicine name.
+        quantity: Whole number of units, at least 1.
+
+    Raises:
+        ValidationError: Blank name, quantity not a whole number >= 1, or
+            the medicine is already in stock (it should be sold, not
+            saved again - that would create a duplicate row).
+    """
+    from core import name_matching
+
+    clean_name = name_matching.clean_spaces(name)
+    if not clean_name:
+        raise ValidationError("Medicine name is required.")
+    _save_new_stock_row(store_id, clean_name, quantity)
+
+
+def save_new_medicine(store_id: int, name: str, quantity: int) -> None:
+    """Add a medicine the owner typed in full because it was found neither
+    in the store nor in the master list.
+
+    Same as save_master_medicine, plus a check on the typed name (3-100
+    characters, at least one letter) - see
+    core.name_matching.is_valid_new_medicine_name.
+
+    Raises:
+        ValidationError: As save_master_medicine, or the typed name is not
+            acceptable.
+    """
+    from core import name_matching
+
+    is_valid, clean_name = name_matching.is_valid_new_medicine_name(name)
+    if not is_valid:
+        raise ValidationError(
+            "Please type the full medicine name (3 to 100 characters, with letters)."
+        )
+    _save_new_stock_row(store_id, clean_name, quantity)

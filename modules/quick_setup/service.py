@@ -9,6 +9,10 @@ def search_medicines(search_term: str, limit: int = 20) -> list:
     return quick_setup_repository.search_master_medicines(search_term, limit)
 
 
+def search_medicines_all_words(words: list, first_word_prefix: bool = False, limit: int = 60) -> list:
+    return quick_setup_repository.search_master_medicines_all_words(words, first_word_prefix, limit)
+
+
 def get_saved_quantity(store_id: int, name: str) -> float:
     return quick_setup_repository.get_placeholder_quantity(store_id, name)
 

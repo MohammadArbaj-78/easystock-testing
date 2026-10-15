@@ -92,7 +92,7 @@ SALES_HISTORY_PAGE_SIZE = 10
 
 @st.cache_data(show_spinner=False, ttl=300)
 def _search_suggestions_cached(store_id: int, search_term: str, _epoch: int) -> list:
-    return sales_service.search_products(store_id, search_term)
+    return sales_service.search_store_products(store_id, search_term)
 
 
 @st.cache_data(show_spinner=False, ttl=3600)
@@ -226,6 +226,11 @@ def _render_sell_section() -> None:
         _render_master_save_row(store_id, selected_master_name)
         return
 
+    selected_new_name = _get_active_new_selection(search_term)
+    if selected_new_name is not None:
+        _render_master_save_row(store_id, selected_new_name, is_new=True)
+        return
+
     if not search_term or not search_term.strip():
         st.info("Start typing a medicine name or batch number.")
         _render_frequently_sold(store_id)
@@ -238,11 +243,18 @@ def _render_sell_section() -> None:
         # to the master medicine list - if the store had ANY match above,
         # no master result is ever shown.
         master_results = _search_master_cached(search_term)
-        if not master_results:
-            st.info("No products match your search.")
+        if master_results:
+            for master_medicine in master_results:
+                _render_master_suggestion_tile(master_medicine)
             return
-        for master_medicine in master_results:
-            _render_master_suggestion_tile(master_medicine)
+
+        # Not in the store and not in the master list either: offer to add
+        # exactly what was typed (if it is a usable name).
+        is_valid_name, new_name = sales_service.is_valid_new_medicine_name(search_term)
+        if is_valid_name:
+            _render_add_new_tile(new_name)
+        else:
+            st.info("No products match your search.")
         return
 
     for product in suggestions:
@@ -286,6 +298,18 @@ def _get_active_master_selection(search_term: str):
     return None
 
 
+def _get_active_new_selection(search_term: str):
+    """Same stale-selection rule as _get_active_master_selection, for a
+    medicine the owner typed in full that exists nowhere yet."""
+    name = st.session_state.get("sales_selected_new_name")
+    if name is None:
+        return None
+    if search_term == name:
+        return name
+    st.session_state.pop("sales_selected_new_name", None)
+    return None
+
+
 def _clear_search() -> None:
     """on_click callback for the search clear (❌) button: resets the
     search box and drops any active selection.
@@ -303,6 +327,7 @@ def _clear_search() -> None:
     st.session_state["sales_search_term"] = ""
     st.session_state.pop("sales_selected_product_id", None)
     st.session_state.pop("sales_selected_master_name", None)
+    st.session_state.pop("sales_selected_new_name", None)
 
 
 def _select_product(product: dict) -> None:
@@ -327,6 +352,7 @@ def _select_product(product: dict) -> None:
     st.session_state["sales_search_term"] = product["name"]
     st.session_state["sales_selected_product_id"] = product["product_id"]
     st.session_state.pop("sales_selected_master_name", None)
+    st.session_state.pop("sales_selected_new_name", None)
     st.session_state[f"sales_qty_{product['product_id']}"] = 1
 
 
@@ -338,7 +364,19 @@ def _select_master_medicine(name: str) -> None:
     st.session_state["sales_search_term"] = name
     st.session_state["sales_selected_master_name"] = name
     st.session_state.pop("sales_selected_product_id", None)
+    st.session_state.pop("sales_selected_new_name", None)
     st.session_state[f"sales_master_qty_{name}"] = 1
+
+
+def _select_new_medicine(name: str) -> None:
+    """on_click callback for the "Add as new medicine" tile - same job as
+    _select_master_medicine, for a name the owner typed that is in
+    neither the store nor the master list."""
+    st.session_state["sales_search_term"] = name
+    st.session_state["sales_selected_new_name"] = name
+    st.session_state.pop("sales_selected_product_id", None)
+    st.session_state.pop("sales_selected_master_name", None)
+    st.session_state[f"sales_new_qty_{name}"] = 1
 
 
 def _render_suggestion_tile(product: dict) -> None:
@@ -350,7 +388,7 @@ def _render_suggestion_tile(product: dict) -> None:
     on_click callback above. No separate container, no separate
     "Select" sub-button, minimal vertical spacing.
     """
-    label = f"**{product['name']}**\nBatch: {product['batch_number']} • Stock: {product['quantity']}"
+    label = f"**{product['name']}**\nBatch: {_display_value(product['batch_number'])} • Stock: {product['quantity']}"
     st.button(
         label,
         key=f"sales_select_{product['product_id']}",
@@ -365,13 +403,26 @@ def _render_master_suggestion_tile(medicine: dict) -> None:
     (a single full-width button). Nothing in the tile says it is not in
     the system - the owner finds that out on click, from the Save row."""
     name = medicine["name"]
-    detail = medicine.get("manufacturer_name") or medicine.get("composition") or ""
+    detail = medicine.get("composition") or ""
     label = f"**{name}**\n{detail}" if detail else f"**{name}**"
     st.button(
         label,
         key=f"sales_master_select_{name}",
         use_container_width=True,
         on_click=_select_master_medicine,
+        args=(name,),
+    )
+
+
+def _render_add_new_tile(name: str) -> None:
+    """The single tile shown when the typed name is found nowhere. It
+    shows exactly the text that would be saved, so a typing mistake is
+    visible before the owner taps it."""
+    st.button(
+        f"➕ Add \"{name}\" as a new medicine",
+        key="sales_add_new_select",
+        use_container_width=True,
+        on_click=_select_new_medicine,
         args=(name,),
     )
 
@@ -577,7 +628,7 @@ def _render_sale_row(store_id: int, product: dict) -> None:
 
 
 @st.fragment
-def _render_master_save_row(store_id: int, name: str) -> None:
+def _render_master_save_row(store_id: int, name: str, is_new: bool = False) -> None:
     """The same row as _render_sale_row, for a medicine picked from the
     master list that is not in this store's system yet: identical
     [-] quantity [+] layout, but the button says Save (it stores the
@@ -588,7 +639,9 @@ def _render_master_save_row(store_id: int, name: str) -> None:
     """
     st.markdown(f"**{name}**")
 
-    qty_key = f"sales_master_qty_{name}"
+    key_stem = "sales_new" if is_new else "sales_master"
+    selection_key = "sales_selected_new_name" if is_new else "sales_selected_master_name"
+    qty_key = f"{key_stem}_qty_{name}"
     quantity = max(1, st.session_state.get(qty_key, 1))
     st.session_state[qty_key] = quantity
 
@@ -596,28 +649,37 @@ def _render_master_save_row(store_id: int, name: str) -> None:
         quantity=quantity,
         qty_key=qty_key,
         max_quantity=None,
-        minus_key=f"sales_master_minus_{name}",
-        plus_key=f"sales_master_plus_{name}",
+        minus_key=f"{key_stem}_minus_{name}",
+        plus_key=f"{key_stem}_plus_{name}",
         action_label="Save",
-        action_key=f"sales_master_save_{name}",
+        action_key=f"{key_stem}_save_{name}",
         action_disabled=False,
     )
 
-    st.error(
-        "⚠️ This medicine is not in your system. "
-        "Please set the correct quantity and save it."
-    )
+    if is_new:
+        st.error(
+            "⚠️ This medicine was not found in your system or in the medicine list. "
+            "Please check the spelling, set the quantity and save it."
+        )
+    else:
+        st.error(
+            "⚠️ This medicine is not in your system. "
+            "Please set the correct quantity and save it."
+        )
 
     if save_clicked:
         try:
-            sales_service.save_master_medicine(store_id, name, quantity)
+            if is_new:
+                sales_service.save_new_medicine(store_id, name, quantity)
+            else:
+                sales_service.save_master_medicine(store_id, name, quantity)
         except ValidationError as error:
             st.error(str(error))
         except Exception as error:
             st.error(f"Could not save this medicine right now: {error}")
         else:
             st.session_state.pop(qty_key, None)
-            st.session_state.pop("sales_selected_master_name", None)
+            st.session_state.pop(selection_key, None)
             st.session_state["sales_flash_success"] = f"Saved {quantity} × {name} to your system."
             bump_cache_epoch(store_id)
             st.rerun()

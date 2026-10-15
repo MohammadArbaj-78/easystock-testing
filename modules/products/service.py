@@ -16,6 +16,7 @@ from datetime import date, datetime
 from modules.products import repository as products_repository
 from config.product_schema import PRODUCT_FIELDS, FieldType
 from core.exceptions import ValidationError
+from core.name_matching import names_match, normalized_name
 from utils.validators import is_valid_expiry, parse_expiry_month_year
 
 
@@ -491,7 +492,42 @@ def find_quick_setup_placeholder_by_name(store_id: int, name: str) -> dict:
             and _normalize_lot_key(product["name"]) == _normalize_lot_key(name)
         ):
             return product
-    return None
+    # No exact-name placeholder. An invoice often prints the same medicine
+    # a little differently (TAB for Tablet, no dosage form, a hyphen), so
+    # try the careful similar-name match below before giving up.
+    return _find_placeholder_by_similar_name(store_id, name)
+
+
+def _find_placeholder_by_similar_name(store_id: int, name: str) -> dict:
+    """Find the ONE Quick Setup / Sales-saved placeholder row whose name
+    is the same medicine as `name` written differently - see
+    core.name_matching.names_match for exactly what counts as "the same".
+
+    Deliberately narrower than the exact-name lookup above, because a
+    wrong match overwrites a row:
+      - Only a TRUE placeholder qualifies: blank batch AND blank expiry
+        (a row saved with just a name and quantity). A real invoice lot
+        that happens to have a blank batch never does.
+      - It must be unambiguous: if more than one placeholder matches,
+        nothing is merged and the invoice row becomes its own new row.
+
+    Returns:
+        The single matching product dict, or None.
+    """
+    tokens = normalized_name(name).split()
+    if not tokens:
+        return None
+    # Narrow the database read by the first word of the name (the brand);
+    # the careful comparison then runs in memory on that small set.
+    candidates = products_repository.get_all_products(store_id, search_term=tokens[0])
+    matches = [
+        product
+        for product in candidates
+        if not str(product["batch_number"] or "").strip()
+        and not str(product["expiry_date"] or "").strip()
+        and names_match(product["name"], name)
+    ]
+    return matches[0] if len(matches) == 1 else None
 
 def _replace_zero_quantity_lot(store_id: int, existing: dict, cleaned: dict) -> None:
     """Reuse an existing zero-quantity product row for a newly scanned
@@ -718,7 +754,13 @@ def save_or_merge_invoice_lot(
     # differs.
     placeholder_match = find_quick_setup_placeholder_by_name(store_id, cleaned["name"])
     if placeholder_match is not None:
-        _replace_zero_quantity_lot(store_id, placeholder_match, cleaned)
+        # The placeholder's quantity is the owner's real counted stock, so
+        # the invoice quantity is ADDED to it (7 saved + 10 invoiced = 17),
+        # not allowed to overwrite it. The batch/expiry/MRP/rate details
+        # are still filled in from the invoice, exactly as before.
+        merged_lot = dict(cleaned)
+        merged_lot["quantity"] = float(placeholder_match["quantity"] or 0) + float(cleaned["quantity"])
+        _replace_zero_quantity_lot(store_id, placeholder_match, merged_lot)
         return {"status": "merged", "product_id": placeholder_match["product_id"]}
 
     if not cleaned["batch_number"] and not force_new:
