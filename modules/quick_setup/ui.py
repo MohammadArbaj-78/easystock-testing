@@ -38,6 +38,10 @@ def render_quick_setup_page() -> None:
     # uploaded file) get saved together with one click.
     _render_sticky_save_bar(store_id, cart)
 
+    flash_message = st.session_state.pop("quick_setup_flash", None)
+    if flash_message:
+        st.success(flash_message)
+
     search_tab, upload_tab = st.tabs(["🔍 Database Search", "📤 Upload Excel/CSV"])
     with search_tab:
         _render_database_search_tab(store_id, cart)
@@ -60,11 +64,11 @@ def _render_database_search_tab(store_id: int, cart: dict) -> None:
         st.button("🔎 Search", key="quick_setup_search_button", use_container_width=True)
 
     if search_term and search_term.strip():
-        results = quick_setup_service.search_medicines(search_term, SEARCH_RESULT_LIMIT)
+        results = quick_setup_service.search_medicines_ranked(search_term, SEARCH_RESULT_LIMIT)
         if not results:
             st.warning("Koi medicine nahi mili. Spelling check karo ya chhota naam try karo.")
             return
-        if len(results) == SEARCH_RESULT_LIMIT:
+        if len(results) >= SEARCH_RESULT_LIMIT:
             st.caption(f"Top {SEARCH_RESULT_LIMIT} results dikha rahe hain. Zyada specific likho.")
         for index, medicine in enumerate(results):
             _render_medicine_block(store_id, medicine, cart, index)
@@ -77,10 +81,6 @@ def _render_database_search_tab(store_id: int, cart: dict) -> None:
     total_pages = max(1, -(-total_medicines // BROWSE_PAGE_SIZE))
     current_page = min(max(1, st.session_state["quick_setup_browse_page"]), total_pages)
 
-    jump_reset_key = "_clear_quick_setup_jump_letter"
-    if st.session_state.pop(jump_reset_key, False):
-        st.session_state["quick_setup_jump_letter"] = None
-
     letter_col, _spacer = st.columns([1, 3])
     with letter_col:
         selected_letter = st.selectbox(
@@ -89,11 +89,11 @@ def _render_database_search_tab(store_id: int, cart: dict) -> None:
             placeholder="A-Z",
         )
     if selected_letter:
-        target_page = quick_setup_service.find_page_for_letter(selected_letter, BROWSE_PAGE_SIZE)
-        st.session_state["quick_setup_browse_page"] = target_page
-        quick_setup_service.save_last_page(store_id, target_page)
-        current_page = target_page
-        st.session_state[jump_reset_key] = True
+        # Only medicines that really begin with this letter, with their own
+        # Prev/Next. The saved "last page" of the full list is untouched, so
+        # clearing the letter returns exactly where the owner was.
+        _render_letter_list(store_id, cart, selected_letter)
+        return
 
     with st.container(key="qs_pager"):
         prev_col, label_col, next_col = st.columns([1, 2, 1])
@@ -109,6 +109,43 @@ def _render_database_search_tab(store_id: int, cart: dict) -> None:
     visible = quick_setup_service.browse_medicines_page(current_page, BROWSE_PAGE_SIZE)
     for index, medicine in enumerate(visible):
         _render_medicine_block(store_id, medicine, cart, index)
+
+def _render_letter_list(store_id: int, cart: dict, letter: str) -> None:
+    """The A-Z view: page through ONLY the medicines starting with `letter`."""
+    if st.session_state.get("quick_setup_letter_page_for") != letter:
+        st.session_state["quick_setup_letter_page_for"] = letter
+        st.session_state["quick_setup_letter_page"] = 1
+
+    total = quick_setup_service.count_medicines_starting_with(letter)
+    if total == 0:
+        st.warning(f"'{letter}' se shuru hone wali koi medicine nahi mili.")
+        return
+    total_pages = max(1, -(-total // BROWSE_PAGE_SIZE))
+    current_page = min(max(1, st.session_state.get("quick_setup_letter_page", 1)), total_pages)
+
+    with st.container(key="qs_pager"):
+        prev_col, label_col, next_col = st.columns([1, 2, 1])
+        with prev_col:
+            st.button("⬅️ Prev", key="quick_setup_letter_prev", use_container_width=True,
+                       disabled=current_page <= 1, on_click=_change_letter_page, args=(-1, total_pages))
+        with label_col:
+            st.markdown(
+                f"<div style='text-align:center;'>{letter}: Page {current_page} of {total_pages}</div>",
+                unsafe_allow_html=True,
+            )
+        with next_col:
+            st.button("Next ➡️", key="quick_setup_letter_next", use_container_width=True,
+                       disabled=current_page >= total_pages, on_click=_change_letter_page, args=(1, total_pages))
+
+    visible = quick_setup_service.browse_medicines_starting_with_page(letter, current_page, BROWSE_PAGE_SIZE)
+    for index, medicine in enumerate(visible):
+        _render_medicine_block(store_id, medicine, cart, index)
+
+
+def _change_letter_page(delta: int, total_pages: int) -> None:
+    current = st.session_state.get("quick_setup_letter_page", 1)
+    st.session_state["quick_setup_letter_page"] = min(max(1, current + delta), total_pages)
+
 
 _NAME_COLUMN_CANDIDATES = ["name", "medicine", "medicine name", "product", "product name", "item", "item name"]
 _QUANTITY_COLUMN_CANDIDATES = ["quantity", "qty", "stock", "stock qty", "available qty", "current stock", "balance qty"]
@@ -332,7 +369,14 @@ def _render_sticky_save_bar(store_id: int, cart: dict) -> None:
         saved = quick_setup_service.save_quantities(store_id, selected)
         bump_cache_epoch(store_id)
         st.session_state[_CART_KEY] = {}
-        st.success(f"✅ {saved} medicine(s) ki quantity save ho gayi.")
+        # The medicines just saved start again from 0 in every list (search,
+        # A-Z, uploaded file) so the owner can carry on with the next ones.
+        # (_render_medicine_block would otherwise read the quantity straight
+        # back from the database and show the same number again.)
+        st.session_state.setdefault(_zeroed_names_key(store_id), set()).update(selected)
+        # st.rerun() follows at once, so a plain st.success() here would
+        # vanish before it could be read - show it on the next run instead.
+        st.session_state["quick_setup_flash"] = f"✅ {saved} medicine(s) ki quantity save ho gayi."
         st.rerun()
 
     st.divider()
@@ -344,7 +388,10 @@ def _render_medicine_block(store_id: int, medicine: dict, cart: dict, index) -> 
     name = medicine["name"]
 
     if name not in cart:
-        cart[name] = quick_setup_service.get_saved_quantity(store_id, name)
+        if name in st.session_state.get(_zeroed_names_key(store_id), ()):
+            cart[name] = 0.0      # just saved: start again from 0
+        else:
+            cart[name] = quick_setup_service.get_saved_quantity(store_id, name)
 
     quantity = cart[name]
     row_key = f"qs_row_{index}"
@@ -375,6 +422,12 @@ def _render_medicine_block(store_id: int, medicine: dict, cart: dict, index) -> 
                 use_container_width=True,
                 on_click=_adjust_quantity, args=(cart, name, 1),
             )
+
+
+def _zeroed_names_key(store_id: int) -> str:
+    """session_state key holding the medicines this store has just saved
+    in this session (they are shown as 0 again - see the Save bar)."""
+    return f"quick_setup_zeroed_names_{store_id}"
 
 
 def _adjust_quantity(cart: dict, name: str, delta: int) -> None:

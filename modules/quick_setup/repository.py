@@ -424,3 +424,75 @@ def _find_page_for_letter_sqlite(letter: str, page_size: int) -> int:
 def _find_page_for_letter_supabase(letter: str, page_size: int) -> int:
     response = _medicine_master_table().select("name", count="exact").lt("name", letter).execute()
     return (response.count or 0) // page_size + 1
+
+
+# ---------------------------------------------------------------------
+# Browse by FIRST LETTER (A-Z jump)
+#
+# The older find_page_for_letter() above jumps to "the page where the
+# letter starts" by counting names before the letter and dividing by the
+# page size. Unless that count happens to be a multiple of the page size,
+# the landing page begins with the PREVIOUS letter's names (jumping to B
+# showed "Azzaris...", "Azzen..." first). These two functions list only
+# the medicines that really begin with the letter, so every row shown
+# starts with it. find_page_for_letter() itself is left in place.
+# ---------------------------------------------------------------------
+
+def _valid_letter(letter: str) -> str:
+    """A single A-Z letter (upper-cased), or "" - a wildcard or any other
+    character must never reach a LIKE pattern."""
+    letter = (letter or "").strip().upper()
+    return letter if len(letter) == 1 and "A" <= letter <= "Z" else ""
+
+
+def count_master_medicines_starting_with(letter: str) -> int:
+    """How many master medicines begin with this letter (any case)."""
+    letter = _valid_letter(letter)
+    if not letter:
+        return 0
+    if ACTIVE_DB_BACKEND == "supabase":
+        response = (
+            _medicine_master_table()
+            .select("name", count="exact")
+            .ilike("name", f"{letter}%")
+            .limit(1)
+            .execute()
+        )
+        return response.count or 0
+    with get_connection() as connection:
+        row = connection.execute(
+            "SELECT COUNT(*) AS c FROM medicine_master WHERE name LIKE ? COLLATE NOCASE",
+            (f"{letter}%",),
+        ).fetchone()
+    return row["c"]
+
+
+def browse_master_medicines_starting_with_page(letter: str, page_number: int, page_size: int) -> list:
+    """One page (1-indexed) of the medicines beginning with this letter,
+    in name order."""
+    letter = _valid_letter(letter)
+    if not letter:
+        return []
+    offset = (max(1, page_number) - 1) * page_size
+    if ACTIVE_DB_BACKEND == "supabase":
+        response = (
+            _medicine_master_table()
+            .select("name, manufacturer_name, short_composition1, short_composition2, price")
+            .ilike("name", f"{letter}%")
+            .order("name")
+            .range(offset, offset + page_size - 1)
+            .execute()
+        )
+        return [_format_master_row(row) for row in (response.data or [])]
+    with get_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT name, manufacturer_name, short_composition1, short_composition2, price
+            FROM medicine_master
+            WHERE name LIKE ? COLLATE NOCASE
+            ORDER BY name COLLATE NOCASE ASC LIMIT ? OFFSET ?
+            """,
+            (f"{letter}%", page_size, offset),
+        ).fetchall()
+    return [_format_master_row(dict(row)) for row in rows]
+
