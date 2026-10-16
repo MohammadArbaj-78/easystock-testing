@@ -31,6 +31,7 @@ def render_quick_setup_page() -> None:
     )
 
     store_id = get_current_store_id()
+    _reset_if_other_store(store_id)
     cart = st.session_state.setdefault(_CART_KEY, {})
 
     # Save bar is OUTSIDE the tabs - it works on the shared cart, so
@@ -52,6 +53,11 @@ def render_quick_setup_page() -> None:
 def _render_database_search_tab(store_id: int, cart: dict) -> None:
     """The original Quick Setup tab: search the medicine master list,
     or browse it page-by-page with A-Z jump navigation."""
+    # Streamlit forgets a widget's value while another page is shown, so the
+    # search text and the A-Z letter are also kept under plain keys and put
+    # back when the owner returns.
+    if "quick_setup_search_term" not in st.session_state:
+        st.session_state["quick_setup_search_term"] = st.session_state.get("quick_setup_search_memory", "")
     search_col, button_col = st.columns([5, 1.3])
     with search_col:
         search_term = st.text_input(
@@ -60,6 +66,7 @@ def _render_database_search_tab(store_id: int, cart: dict) -> None:
             placeholder="e.g. Dolo, Paracetamol, Augmentin",
             label_visibility="collapsed",
         )
+    st.session_state["quick_setup_search_memory"] = search_term
     with button_col:
         st.button("🔎 Search", key="quick_setup_search_button", use_container_width=True)
 
@@ -81,6 +88,8 @@ def _render_database_search_tab(store_id: int, cart: dict) -> None:
     total_pages = max(1, -(-total_medicines // BROWSE_PAGE_SIZE))
     current_page = min(max(1, st.session_state["quick_setup_browse_page"]), total_pages)
 
+    if "quick_setup_jump_letter" not in st.session_state and st.session_state.get("quick_setup_letter_memory"):
+        st.session_state["quick_setup_jump_letter"] = st.session_state["quick_setup_letter_memory"]
     letter_col, _spacer = st.columns([1, 3])
     with letter_col:
         selected_letter = st.selectbox(
@@ -88,6 +97,7 @@ def _render_database_search_tab(store_id: int, cart: dict) -> None:
             key="quick_setup_jump_letter", index=None,
             placeholder="A-Z",
         )
+    st.session_state["quick_setup_letter_memory"] = selected_letter
     if selected_letter:
         # Only medicines that really begin with this letter, with their own
         # Prev/Next. The saved "last page" of the full list is untouched, so
@@ -161,28 +171,44 @@ def _render_upload_tab(store_id: int, cart: dict) -> None:
         "medicine naam aur quantity ka column hona chahiye (jaise "
         "'Name'/'Medicine' aur 'Quantity'/'Qty')."
     )
+    # The uploader widget forgets its file when another page is shown, so the
+    # parsed list lives under plain session keys instead and stays until the
+    # owner presses "File hatao" (like the Invoice Scan review). The widget
+    # key carries a version number so that "File hatao" can give a fresh,
+    # empty uploader.
+    uploader_version = st.session_state.get("quick_setup_uploader_version", 0)
     uploaded_file = st.file_uploader(
         "Excel ya CSV file chuno", type=["xlsx", "xls", "csv"],
-        key="quick_setup_uploaded_file",
+        key=f"quick_setup_uploaded_file_{uploader_version}",
     )
-    if uploaded_file is None:
-        st.session_state.pop("quick_setup_uploaded_rows", None)
-        st.session_state.pop("quick_setup_uploaded_file_name", None)
+
+    if uploaded_file is not None:
+        file_id = f"{uploaded_file.name}:{hashlib.sha1(uploaded_file.getvalue()).hexdigest()}"
+        if st.session_state.get("quick_setup_uploaded_file_id") != file_id:
+            try:
+                rows = _parse_uploaded_stock_file(uploaded_file)
+            except ValueError as error:
+                st.error(str(error))
+                return
+            _forget_uploaded_file(cart)          # a new file replaces the previous one
+            st.session_state["quick_setup_uploaded_rows"] = rows
+            st.session_state["quick_setup_uploaded_file_name"] = uploaded_file.name
+            st.session_state["quick_setup_uploaded_file_id"] = file_id
+            st.session_state["quick_setup_upload_limit"] = BROWSE_PAGE_SIZE
+            for row in rows:
+                cart[row["name"]] = row["quantity"]
+                _touch(row["name"])
+
+    rows = st.session_state.get("quick_setup_uploaded_rows")
+    if rows is None:
         return
 
-    if st.session_state.get("quick_setup_uploaded_file_name") != uploaded_file.name:
-        try:
-            rows = _parse_uploaded_stock_file(uploaded_file)
-        except ValueError as error:
-            st.error(str(error))
-            return
-        st.session_state["quick_setup_uploaded_rows"] = rows
-        st.session_state["quick_setup_uploaded_file_name"] = uploaded_file.name
-        st.session_state["quick_setup_upload_limit"] = BROWSE_PAGE_SIZE
-        for row in rows:
-            cart[row["name"]] = row["quantity"]
-
-    rows = st.session_state.get("quick_setup_uploaded_rows", [])
+    file_name = st.session_state.get("quick_setup_uploaded_file_name", "")
+    st.button(
+        f"🗑️ File hatao ({file_name})", key="quick_setup_remove_file",
+        use_container_width=True, on_click=_remove_uploaded_file,
+    )
+    st.caption("Doosre feature par jaane ke baad bhi ye list yahin rahegi, jab tak aap 'File hatao' na dabao.")
     if not rows:
         st.warning("Is file mein koi usable row nahi mili.")
         return
@@ -204,12 +230,31 @@ def _render_upload_tab(store_id: int, cart: dict) -> None:
         )
 
 
+def _forget_uploaded_file(cart: dict) -> None:
+    """Drop the uploaded list and the quantities it put in the cart."""
+    touched = st.session_state.get("quick_setup_touched_names", set())
+    for row in st.session_state.get("quick_setup_uploaded_rows") or []:
+        cart.pop(row["name"], None)
+        touched.discard(row["name"])
+    for key in ("quick_setup_uploaded_rows", "quick_setup_uploaded_file_name",
+                "quick_setup_uploaded_file_id", "quick_setup_upload_limit"):
+        st.session_state.pop(key, None)
+
+
+def _remove_uploaded_file() -> None:
+    """on_click for "File hatao": forget the list AND hand back a fresh,
+    empty uploader (the old one would otherwise re-load the same file)."""
+    _forget_uploaded_file(st.session_state.setdefault(_CART_KEY, {}))
+    st.session_state["quick_setup_uploader_version"] = st.session_state.get("quick_setup_uploader_version", 0) + 1
+
+
 def _load_more_upload() -> None:
     st.session_state["quick_setup_upload_limit"] = (
         st.session_state.get("quick_setup_upload_limit", BROWSE_PAGE_SIZE) + BROWSE_PAGE_SIZE
     )
 
 
+import hashlib
 import re
 
 _NAME_HEADER_KEYWORDS = ["name", "medicine", "product", "item", "drug"]
@@ -369,6 +414,7 @@ def _render_sticky_save_bar(store_id: int, cart: dict) -> None:
         saved = quick_setup_service.save_quantities(store_id, selected)
         bump_cache_epoch(store_id)
         st.session_state[_CART_KEY] = {}
+        st.session_state["quick_setup_touched_names"] = set()
         # The medicines just saved start again from 0 in every list (search,
         # A-Z, uploaded file) so the owner can carry on with the next ones.
         # (_render_medicine_block would otherwise read the quantity straight
@@ -430,8 +476,44 @@ def _zeroed_names_key(store_id: int) -> str:
     return f"quick_setup_zeroed_names_{store_id}"
 
 
+def _touch(name: str) -> None:
+    """Remember that the owner (or an uploaded file) set this medicine's
+    quantity - a pending edit, as opposed to a number merely READ from the
+    database for display. Pending edits survive leaving Quick Setup."""
+    st.session_state.setdefault("quick_setup_touched_names", set()).add(name)
+
+
+def discard_database_quantities() -> None:
+    """Called by app.py when the owner leaves Quick Setup. Keeps every
+    pending edit (typed +/- quantities, an uploaded file's quantities) and
+    drops only the quantities that were merely read from the database, so
+    they are read fresh next time. Without this, a stale number (say, a
+    medicine sold in Sales in the meantime) could be written back by
+    Save All."""
+    cart = st.session_state.get(_CART_KEY)
+    if not cart:
+        return
+    touched = st.session_state.get("quick_setup_touched_names", set())
+    for name in [name for name in cart if name not in touched]:
+        del cart[name]
+
+
+def _reset_if_other_store(store_id: int) -> None:
+    """Logout only removes the login, not other session keys, so a
+    different store logging in on the same browser session must never see
+    the previous store's pending quantities, uploaded list or search."""
+    owner_key = "quick_setup_session_store"
+    previous = st.session_state.get(owner_key)
+    if previous is not None and previous != store_id:
+        for key in [key for key in st.session_state if str(key).startswith("quick_setup_") and key != owner_key]:
+            del st.session_state[key]
+    st.session_state[owner_key] = store_id
+
+
 def _adjust_quantity(cart: dict, name: str, delta: int) -> None:
     cart[name] = max(0, cart.get(name, 0) + delta)
+    _touch(name)
 
 def _set_quantity_from_input(cart: dict, name: str, qty_input_key: str) -> None:
     cart[name] = max(0, int(st.session_state.get(qty_input_key, 0)))
+    _touch(name)

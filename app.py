@@ -31,7 +31,7 @@ from modules.invoice_scan.upload_ui import render_invoice_scan_page
 from modules.invoice_scan import review_service
 from modules.sales.ui import render_sales_page
 from modules.agencies.ui import render_agencies_page
-from modules.quick_setup.ui import render_quick_setup_page
+from modules.quick_setup.ui import render_quick_setup_page, discard_database_quantities
 
 st.set_page_config(
     page_title=APP_NAME,
@@ -131,8 +131,13 @@ def render_main_app() -> None:
         st.session_state.pop("sales_history_visible_limit", None)
     
     if page_function is not render_quick_setup_page:
-        for key in ("quick_setup_cart", "quick_setup_browse_page"):
-            st.session_state.pop(key, None)
+        # Quick Setup now keeps what the owner was doing when another page is
+        # opened: typed quantities, an uploaded file's list, the search text
+        # and A-Z letter. Only quantities merely READ from the database are
+        # dropped here, so they are read fresh on return (a sale made in
+        # Sales in between must never be undone by Save All).
+        discard_database_quantities()
+        st.session_state.pop("quick_setup_browse_page", None)
             
     page_function()
 
