@@ -168,8 +168,8 @@ def _render_upload_tab(store_id: int, cart: dict) -> None:
     shared cart, so one Save All (above the tabs) saves everything."""
     st.caption(
         "Distributor/seller ki Excel ya CSV file upload karo. File mein "
-        "medicine naam aur quantity ka column hona chahiye (jaise "
-        "'Name'/'Medicine' aur 'Quantity'/'Qty')."
+        "medicine naam ka column hona chahiye (jaise 'Name'/'Medicine'). "
+        "File ki quantity nahi li jaati - quantity aap niche set karoge."
     )
     # The uploader widget forgets its file when another page is shown, so the
     # parsed list lives under plain session keys instead and stays until the
@@ -196,7 +196,7 @@ def _render_upload_tab(store_id: int, cart: dict) -> None:
             st.session_state["quick_setup_uploaded_file_id"] = file_id
             st.session_state["quick_setup_upload_limit"] = BROWSE_PAGE_SIZE
             for row in rows:
-                cart[row["name"]] = row["quantity"]
+                cart[row["name"]] = 0.0      # the file gives names only; quantities are set below
                 _touch(row["name"])
 
     rows = st.session_state.get("quick_setup_uploaded_rows")
@@ -213,7 +213,7 @@ def _render_upload_tab(store_id: int, cart: dict) -> None:
         st.warning("Is file mein koi usable row nahi mili.")
         return
 
-    st.success(f"✅ {len(rows)} medicine(s) file mein mili. Niche check/adjust karo, phir upar Save All dabao.")
+    st.success(f"✅ {len(rows)} medicine(s) file mein mili. Har ek ki quantity 0 se set karo, phir upar Save All dabao.")
 
     limit = st.session_state.get("quick_setup_upload_limit", BROWSE_PAGE_SIZE)
     visible = rows[:limit]
@@ -274,17 +274,19 @@ def _find_column(dataframe, keywords):
 
 
 def _parse_uploaded_stock_file(uploaded_file) -> list:
-    """Parse an uploaded Excel/CSV into [{"name": str, "quantity": float}].
+    """Parse an uploaded Excel/CSV into [{"name": str, "quantity": 0.0}].
 
-    Matches a name-like and quantity-like column by FLEXIBLE keyword
-    matching on the header (case/punctuation/spacing-insensitive), so
-    "Medicine Name", "Item_Name", "Available Qty" etc. all work -
-    exact column order/extra columns don't matter.
+    Only the medicine NAME is taken from the file - the owner sets every
+    quantity on screen - so a quantity column is not needed (and, if the
+    file has one, it is ignored). The name column is found by FLEXIBLE
+    keyword matching on the header (case/punctuation/spacing-insensitive),
+    so "Medicine Name", "Item_Name" etc. all work. A medicine that appears
+    more than once (same name apart from case/spaces) is listed once.
 
     Raises:
-        ValueError: If the file can't be read, or no matching columns
-            were found (lists the file's actual headers, so the real
-            cause is visible instead of a generic "not found").
+        ValueError: If the file can't be read, or no name column was
+            found (lists the file's actual headers, so the real cause is
+            visible instead of a generic "not found").
     """
     import pandas as pd
 
@@ -297,29 +299,26 @@ def _parse_uploaded_stock_file(uploaded_file) -> list:
         raise ValueError(f"File padhi nahi ja saki: {error}") from error
 
     name_column = _find_column(dataframe, _NAME_HEADER_KEYWORDS)
-    quantity_column = _find_column(dataframe, _QUANTITY_HEADER_KEYWORDS)
 
-    if name_column is None or quantity_column is None:
+    if name_column is None:
         found = ", ".join(str(c) for c in dataframe.columns)
         raise ValueError(
-            "File mein medicine naam aur quantity wala column nahi mila. "
+            "File mein medicine naam wala column nahi mila. "
             f"File mein ye columns hain: {found}. "
-            "Column header mein kahin 'name'/'medicine'/'item' aur "
-            "'qty'/'quantity'/'stock' jaisa shabd hona chahiye."
+            "Column header mein kahin 'name'/'medicine'/'item'/'product' "
+            "jaisa shabd hona chahiye."
         )
 
     rows = []
+    seen = set()
     for _, record in dataframe.iterrows():
-        name = str(record[name_column] or "").strip()
+        name = " ".join(str(record[name_column] or "").split())
         if not name or name.lower() == "nan":
             continue
-        try:
-            quantity = float(record[quantity_column])
-        except (ValueError, TypeError):
+        if name.lower() in seen:
             continue
-        if quantity <= 0:
-            continue
-        rows.append({"name": name, "quantity": quantity})
+        seen.add(name.lower())
+        rows.append({"name": name, "quantity": 0.0})
     return rows
 
 def _change_page(store_id: int, delta: int, total_pages: int) -> None:
@@ -415,11 +414,11 @@ def _render_sticky_save_bar(store_id: int, cart: dict) -> None:
         bump_cache_epoch(store_id)
         st.session_state[_CART_KEY] = {}
         st.session_state["quick_setup_touched_names"] = set()
-        # The medicines just saved start again from 0 in every list (search,
-        # A-Z, uploaded file) so the owner can carry on with the next ones.
-        # (_render_medicine_block would otherwise read the quantity straight
-        # back from the database and show the same number again.)
-        st.session_state.setdefault(_zeroed_names_key(store_id), set()).update(selected)
+        # After every Save All, EVERY medicine in every list (search, A-Z,
+        # uploaded file) starts again from 0, so the owner can carry on with
+        # the next ones. (_render_medicine_block would otherwise read the
+        # quantity straight back from the database and show the same number.)
+        st.session_state[_zero_all_key(store_id)] = True
         # st.rerun() follows at once, so a plain st.success() here would
         # vanish before it could be read - show it on the next run instead.
         st.session_state["quick_setup_flash"] = f"✅ {saved} medicine(s) ki quantity save ho gayi."
@@ -434,8 +433,8 @@ def _render_medicine_block(store_id: int, medicine: dict, cart: dict, index) -> 
     name = medicine["name"]
 
     if name not in cart:
-        if name in st.session_state.get(_zeroed_names_key(store_id), ()):
-            cart[name] = 0.0      # just saved: start again from 0
+        if st.session_state.get(_zero_all_key(store_id)):
+            cart[name] = 0.0      # after a Save All: start again from 0
         else:
             cart[name] = quick_setup_service.get_saved_quantity(store_id, name)
 
@@ -470,10 +469,11 @@ def _render_medicine_block(store_id: int, medicine: dict, cart: dict, index) -> 
             )
 
 
-def _zeroed_names_key(store_id: int) -> str:
-    """session_state key holding the medicines this store has just saved
-    in this session (they are shown as 0 again - see the Save bar)."""
-    return f"quick_setup_zeroed_names_{store_id}"
+def _zero_all_key(store_id: int) -> str:
+    """session_state key that is True once this store has pressed Save All
+    in this session: from then on every medicine in every list (search,
+    A-Z, uploaded file) starts from 0 instead of its saved quantity."""
+    return f"quick_setup_zero_all_{store_id}"
 
 
 def _touch(name: str) -> None:
