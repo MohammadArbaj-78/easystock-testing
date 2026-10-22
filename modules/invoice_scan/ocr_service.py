@@ -23,6 +23,7 @@ from google.genai import types as genai_types
 
 from config.settings import DEBUG_PREPROCESSING, GEMINI_MODEL, GEMINI_TIMEOUT_SECONDS
 from core.exceptions import GeminiAPIError, OCRError
+from core.pack_parsing import format_pack, pack_number
 from utils.file_utils import get_image_preview, get_pdf_preview
 
 # .env is loaded once, at import time, by config/settings.py itself (the
@@ -103,13 +104,15 @@ MEDICINE_FIELDS = [
     "mrp",
     "rate",
     "gst_percent",
+    "pack",       # the PACK column text exactly as printed (asked from Gemini)
+    "pack_size",  # that text as ONE number, worked out by core/pack_parsing.py
 ]
 
 # ---------------------------------------------------------------------------
 # Prompt
 # ---------------------------------------------------------------------------
 
-_PROMPT_FIELDS = ["name", "batch_number", "expiry_date", "qty", "free", "mrp", "rate", "gst_percent"]
+_PROMPT_FIELDS = ["name", "batch_number", "expiry_date", "qty", "free", "mrp", "rate", "gst_percent", "pack"]
 
 INVOICE_HEADER_FIELDS = ["agency_name", "invoice_date", "grand_total"]
 
@@ -128,6 +131,7 @@ Extract EVERY medicine line item (one object per row). For each row return EXACT
 - "mrp": value from the MRP / M.R.P column. Not RATE, not amount, not taxable value.
 - "rate": value from the RATE column. Do NOT substitute MRP. MRP and Rate are separate.
 - "gst_percent": the percentage from the GST / GST % column (e.g. "5", "12", "18"). Do NOT use CGST/SGST amounts, GST total amount, or discount %.
+- "pack": the text from the PACK / PACKING / PACKAGE column, copied exactly as printed (e.g. "1*15", "10 Tablets", "100 ml", "10*2ML"). Keep it as printed even if it is cut off (e.g. "30 Table..."). If there is no pack column or the cell is empty, set it to "". Do NOT put this into "qty".
 
 CRITICAL RULES:
 1. Keep row-to-column alignment perfect. A medicine must never receive another row's batch/expiry/mrp/qty.
@@ -440,6 +444,19 @@ def _apply_quantity_formula(medicines: list) -> list:
     return medicines
 
 
+def _apply_pack_size(medicines: list) -> list:
+    """Work out each row's "pack_size" (ONE number) from the PACK text
+    Gemini copied into "pack", in place.
+
+    The number comes from fixed rules in core/pack_parsing.py, never from
+    the AI model. Unknown or unclear pack text gives "" - the owner fills it
+    in on the Review screen. "pack" itself is left as it is.
+    """
+    for row in medicines:
+        row["pack_size"] = format_pack(pack_number(row.get("pack", "")))
+    return medicines
+
+
 def _build_genai_client(api_key: str):
     """Create and return a google.genai Client.
 
@@ -635,6 +652,7 @@ def extract_medicines_from_file(file_obj) -> dict:
 
     medicines, invoice_header = _parse_combined_response(raw_text)
     medicines = _apply_quantity_formula(medicines)
+    medicines = _apply_pack_size(medicines)
 
     return {
         "medicines": medicines,

@@ -98,6 +98,7 @@ _BLOCKING_FIELD_INFO = [
     ("Enter a valid rate", "rate", "Numeric value only."),
     ("GST is required", "gst_percent", "A numeric GST % value (required)."),
     ("Enter a valid GST value", "gst_percent", "Numeric value only."),
+    ("Enter a valid pack", "pack_size", "A number like 10 or 15 (leave blank if unknown)."),
 ]
 
 # Column display config: (field_key, label, width_hint)
@@ -107,6 +108,8 @@ _COLUMNS = [
     ("batch_number", "Batch No",       2),
     ("expiry_date",  "Expiry (MM/YY)", 2),
     ("quantity",     "TQT",            1),
+    ("_times",       "",               0.35),   # not a field: just the "x" between TQT and Pack
+    ("pack_size",    "Pack",           1),
     ("mrp",          "MRP",            1),
     ("rate",         "Rate",           1),
     ("gst_percent",  "GST %",          1),
@@ -246,6 +249,8 @@ def _sync_pending_widget_edits() -> None:
         if not row_id:
             continue
         for field_key, _, _ in _COLUMNS:
+            if field_key.startswith("_"):
+                continue            # the "x" separator is not an editable field
             widget_key = f"review_row_{row_id}_{field_key}"
             if widget_key not in st.session_state:
                 continue
@@ -327,10 +332,12 @@ def _render_table_scroll_css() -> None:
             .st-key-review_table_scroll [data-testid="stColumn"]:nth-child(2) { width: 140px !important; }
             .st-key-review_table_scroll [data-testid="stColumn"]:nth-child(3) { width: 140px !important; }
             .st-key-review_table_scroll [data-testid="stColumn"]:nth-child(4) { width: 70px  !important; }
-            .st-key-review_table_scroll [data-testid="stColumn"]:nth-child(5) { width: 70px  !important; }
+            .st-key-review_table_scroll [data-testid="stColumn"]:nth-child(5) { width: 24px  !important; }
             .st-key-review_table_scroll [data-testid="stColumn"]:nth-child(6) { width: 70px  !important; }
             .st-key-review_table_scroll [data-testid="stColumn"]:nth-child(7) { width: 70px  !important; }
-            .st-key-review_table_scroll [data-testid="stColumn"]:nth-child(8) { width: 55px  !important; }
+            .st-key-review_table_scroll [data-testid="stColumn"]:nth-child(8) { width: 70px  !important; }
+            .st-key-review_table_scroll [data-testid="stColumn"]:nth-child(9) { width: 70px  !important; }
+            .st-key-review_table_scroll [data-testid="stColumn"]:nth-child(10) { width: 55px  !important; }
             .easystock-mobile-scroll-hint {
                 display: block;
                 font-size: 0.8rem;
@@ -353,7 +360,8 @@ def _render_table_header() -> None:
     widths = [col[2] for col in _COLUMNS] + [1]  # +1 for Delete column
     cols = st.columns(widths)
     for col_widget, (_, label, _) in zip(cols[:-1], _COLUMNS):
-        col_widget.markdown(f"**{label}**")
+        if label:
+            col_widget.markdown(f"**{label}**")
     cols[-1].markdown("**Action**")
     st.divider()
 
@@ -513,6 +521,14 @@ def _render_medicine_row(idx: int, medicine: dict, row_errors: list) -> None:
         cols = st.columns(widths)
 
         for col_widget, (field_key, label, _) in zip(cols[:-1], _COLUMNS):
+            if field_key.startswith("_"):
+                # The "x" between TQT and Pack: "this many units  x  this many
+                # pieces in each". Display only, nothing to edit or save.
+                col_widget.markdown(
+                    "<div style='text-align:center; padding-top:0.45rem;'>×</div>",
+                    unsafe_allow_html=True,
+                )
+                continue
             widget_key = f"review_row_{row_id}_{field_key}"
             current_value = medicine.get(field_key, "")
 

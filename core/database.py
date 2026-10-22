@@ -170,12 +170,27 @@ def initialize_database() -> None:
                 rate REAL,
                 gst_percent REAL,
                 purchase_date TEXT,
+                pack_size REAL,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now')),
                 FOREIGN KEY (store_id) REFERENCES stores (store_id)
             )
             """
         )
+
+        # pack_size: how many tablets / capsules / ampoules one unit of
+        # quantity holds (from the invoice's PACK column). NULL = unknown.
+        # Added the same way as stores.supabase_user_id above, so an
+        # existing database upgrades in place on startup.
+        product_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(products)").fetchall()
+        }
+        if "pack_size" not in product_columns:
+            try:
+                connection.execute("ALTER TABLE products ADD COLUMN pack_size REAL")
+            except sqlite3.OperationalError as error:
+                if "duplicate column name" not in str(error).lower():
+                    raise
 
         # Every Dashboard/Alerts query filters by store_id, and most also
         # filter or sort by expiry_date - indexing both means those

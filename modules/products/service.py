@@ -555,6 +555,8 @@ def _replace_zero_quantity_lot(store_id: int, existing: dict, cleaned: dict) -> 
         "gst_percent": cleaned["gst_percent"],
         "purchase_date": cleaned["purchase_date"],
         "minimum_stock_threshold": existing.get("minimum_stock_threshold"),
+        # None (the invoice had no pack) leaves the stored pack_size alone.
+        "pack_size": cleaned.get("pack_size"),
     }
     products_repository.update_product(store_id, existing["product_id"], updated_data)
 
@@ -640,6 +642,18 @@ def _clean_invoice_lot_data(raw: dict) -> dict:
         except (TypeError, ValueError):
             raise ValidationError("GST % must be a number.")
 
+    # pack_size: how many tablets / capsules / ampoules one unit of quantity
+    # holds (from the invoice's PACK column). Optional - blank means unknown.
+    pack_size_raw = raw.get("pack_size")
+    pack_size = None
+    if pack_size_raw is not None and str(pack_size_raw).strip():
+        try:
+            pack_size = float(pack_size_raw)
+        except (TypeError, ValueError):
+            raise ValidationError("Pack must be a number.")
+        if not 0 < pack_size <= 5000:
+            raise ValidationError("Pack must be a number greater than zero.")
+
     return {
         "name": name,
         "batch_number": batch_number,
@@ -648,12 +662,13 @@ def _clean_invoice_lot_data(raw: dict) -> dict:
         "mrp": mrp,
         "rate": rate,
         "gst_percent": gst_percent,
+        "pack_size": pack_size,
         "purchase_date": raw.get("purchase_date") or None,
         "minimum_stock_threshold": None,
     }
 
 
-def _add_quantity_to_existing_lot(store_id: int, existing: dict, additional_quantity: int) -> None:
+def _add_quantity_to_existing_lot(store_id: int, existing: dict, additional_quantity: int, pack_size=None) -> None:
     """Add additional_quantity to an existing product row's quantity,
     leaving every other field (name, batch_number, expiry_date, mrp,
     rate, gst_percent, purchase_date, minimum_stock_threshold) exactly
@@ -671,6 +686,9 @@ def _add_quantity_to_existing_lot(store_id: int, existing: dict, additional_quan
         )
     }
     updated_data["quantity"] = existing["quantity"] + additional_quantity
+    # Fill the pack in only if this lot has none yet - never replace one that
+    # is already stored. None leaves the stored value untouched.
+    updated_data["pack_size"] = existing.get("pack_size") or pack_size
     products_repository.update_product(store_id, existing["product_id"], updated_data)
 
 
@@ -721,14 +739,14 @@ def save_or_merge_invoice_lot(
         existing = products_repository.get_product_by_id(store_id, merge_into_product_id)
         if existing is None:
             raise ValidationError("The medicine to merge into could not be found.")
-        _add_quantity_to_existing_lot(store_id, existing, cleaned["quantity"])
+        _add_quantity_to_existing_lot(store_id, existing, cleaned["quantity"], cleaned.get("pack_size"))
         return {"status": "merged", "product_id": existing["product_id"]}
 
     exact_match = find_exact_lot_match(
         store_id, cleaned["name"], cleaned["batch_number"], cleaned["expiry_date"]
     )
     if exact_match is not None:
-        _add_quantity_to_existing_lot(store_id, exact_match, cleaned["quantity"])
+        _add_quantity_to_existing_lot(store_id, exact_match, cleaned["quantity"], cleaned.get("pack_size"))
         return {"status": "merged", "product_id": exact_match["product_id"]}
 
     # Zero-quantity reuse (Requirement 1): checked after an exact lot

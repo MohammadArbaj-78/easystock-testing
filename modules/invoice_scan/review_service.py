@@ -371,6 +371,7 @@ def save_invoice_medicines(store_id: int) -> dict:
             "mrp":          row.get("mrp", ""),
             "rate":         row.get("rate", ""),
             "gst_percent":  row.get("gst_percent", ""),
+            "pack_size":    row.get("pack_size", ""),
             "purchase_date": "",
         }
         try:
@@ -543,6 +544,17 @@ def validate_medicine(row: dict) -> list:
             errors.append(required_label)
         elif not _is_numeric(val):
             errors.append(invalid_label)
+
+    # Pack is optional (blank = unknown), but if it is filled it must be a
+    # number above zero.
+    pack_size = str(row.get("pack_size", "")).strip()
+    if pack_size:
+        try:
+            pack_ok = 0 < float(pack_size) <= 5000
+        except ValueError:
+            pack_ok = False
+        if not pack_ok:
+            errors.append("Enter a valid pack number.")
 
     return errors
 

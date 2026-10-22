@@ -536,8 +536,9 @@ def _create_product_sqlite(store_id: int, product_data: dict) -> int:
             """
             INSERT INTO products (
                 store_id, name, batch_number, expiry_date, quantity,
-                minimum_stock_threshold, mrp, rate, gst_percent, purchase_date
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                minimum_stock_threshold, mrp, rate, gst_percent, purchase_date,
+                pack_size
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 store_id,
@@ -550,6 +551,7 @@ def _create_product_sqlite(store_id: int, product_data: dict) -> int:
                 product_data.get("rate"),
                 product_data.get("gst_percent"),
                 product_data.get("purchase_date"),
+                product_data.get("pack_size"),
             ),
         )
         return cursor.lastrowid
@@ -569,6 +571,7 @@ def _update_product_sqlite(store_id: int, product_id: int, product_data: dict) -
                 rate = ?,
                 gst_percent = ?,
                 purchase_date = ?,
+                pack_size = COALESCE(?, pack_size),
                 updated_at = ?
             WHERE store_id = ? AND product_id = ?
             """,
@@ -582,6 +585,7 @@ def _update_product_sqlite(store_id: int, product_id: int, product_data: dict) -
                 product_data.get("rate"),
                 product_data.get("gst_percent"),
                 product_data.get("purchase_date"),
+                product_data.get("pack_size"),   # None = leave the stored pack_size as it is
                 datetime.now().isoformat(timespec="seconds"),
                 store_id,
                 product_id,
@@ -784,6 +788,10 @@ def _create_product_supabase(store_id: int, product_data: dict) -> int:
         "gst_percent": product_data.get("gst_percent"),
         "purchase_date": product_data.get("purchase_date"),
     }
+    # Only sent when there is a pack_size, so a row without one (Quick Setup,
+    # manual entry, an invoice row with no pack) never depends on the column.
+    if product_data.get("pack_size") is not None:
+        payload["pack_size"] = product_data["pack_size"]
     response = _supabase_products_table().insert(payload).execute()
     return response.data[0]["product_id"]
 
@@ -801,6 +809,10 @@ def _update_product_supabase(store_id: int, product_id: int, product_data: dict)
         "purchase_date": product_data.get("purchase_date"),
         "updated_at": datetime.now().isoformat(timespec="seconds"),
     }
+    # None = leave the stored pack_size untouched (an edit or a quantity merge
+    # that knows nothing about pack must never wipe it).
+    if product_data.get("pack_size") is not None:
+        payload["pack_size"] = product_data["pack_size"]
     response = (
         _supabase_products_table()
         .update(payload)
