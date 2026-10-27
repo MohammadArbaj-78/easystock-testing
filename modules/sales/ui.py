@@ -71,6 +71,7 @@ from datetime import datetime, timezone
 
 from core.cache_utils import get_cache_epoch, bump_cache_epoch
 from modules.sales import service as sales_service
+from modules.sales.bill_ui import render_bill_mode
 from core.session import get_current_store_id
 from core.exceptions import ValidationError
 
@@ -186,6 +187,11 @@ def _render_sell_section() -> None:
         suggestions (name, batch, stock only - no expiry/MRP/GST).
     """
     store_id = get_current_store_id()
+
+    # Bill mode (several medicines, one total, one Sell). With the switch OFF
+    # nothing below changes at all.
+    if render_bill_mode(store_id):
+        return
 
     search_col, search_btn_col, clear_col = st.columns([5.5, 1.5, 0.8])
 
