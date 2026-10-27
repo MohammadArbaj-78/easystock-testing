@@ -930,3 +930,77 @@ def _cleanup_zero_quantity_duplicate_supabase(store_id: int, product_id: int) ->
         )
         if sibling_response.data:
             _delete_product_supabase(store_id, product_id)
+
+
+
+# =====================================================================
+# Reduce stock by TABLETS (selling part of a strip)
+# =====================================================================
+
+def reduce_stock_tablets(store_id: int, product_id: int, tablets: int, pack_size: int) -> None:
+    """Reduce one lot's stock by a number of tablets (pieces), atomically.
+
+    Stock is kept in strips (a number that may be fractional), so part of a
+    strip is a fraction such as 10/15. To keep that exact, both the check and
+    the new value are worked out from a WHOLE number of tablets (quantity x
+    pack, rounded) and the result is stored rounded to 12 decimals - no
+    drift builds up however many tablet sales follow.
+
+    The check and the write are ONE atomic statement, exactly like
+    reduce_stock, so two near-simultaneous sales cannot both take the last
+    tablets. reduce_stock itself is left as it was (it only handles whole
+    strips: on Supabase its function takes an integer).
+
+    Raises:
+        ValidationError: If the product is not found for this store, or has
+            fewer than `tablets` tablets left.
+    """
+    if ACTIVE_DB_BACKEND == "supabase":
+        return _reduce_stock_tablets_supabase(store_id, product_id, tablets, pack_size)
+    return _reduce_stock_tablets_sqlite(store_id, product_id, tablets, pack_size)
+
+
+def _reduce_stock_tablets_sqlite(store_id: int, product_id: int, tablets: int, pack_size: int) -> None:
+    with get_connection() as connection:
+        cursor = connection.execute(
+            """
+            UPDATE products
+            SET quantity = ROUND((ROUND(quantity * ?) - ?) / ?, 12), updated_at = ?
+            WHERE store_id = ? AND product_id = ? AND ROUND(quantity * ?) >= ?
+            """,
+            (
+                pack_size,
+                tablets,
+                pack_size,
+                datetime.now().isoformat(timespec="seconds"),
+                store_id,
+                product_id,
+                pack_size,
+                tablets,
+            ),
+        )
+        if cursor.rowcount == 0:
+            raise ValidationError(
+                "Unable to sell this quantity - not enough stock available, "
+                "or the product could not be found."
+            )
+
+
+def _reduce_stock_tablets_supabase(store_id: int, product_id: int, tablets: int, pack_size: int) -> None:
+    """Calls the reduce_product_tablets Postgres function (see the SQL that
+    creates it) - the tablets version of reduce_product_stock."""
+    from core.supabase_client import get_supabase_client
+    response = get_supabase_client().rpc(
+        "reduce_product_tablets",
+        {
+            "p_store_id": store_id,
+            "p_product_id": product_id,
+            "p_tablets": int(tablets),
+            "p_pack": pack_size,
+        },
+    ).execute()
+    if not response.data:
+        raise ValidationError(
+            "Unable to sell this quantity - not enough stock available, "
+            "or the product could not be found."
+        )

@@ -227,11 +227,26 @@ def initialize_database() -> None:
                 medicine_name TEXT NOT NULL,
                 batch_number TEXT NOT NULL,
                 sold_quantity INTEGER NOT NULL,
+                pack_size REAL,
                 sold_at TEXT NOT NULL DEFAULT (datetime('now')),
                 FOREIGN KEY (store_id) REFERENCES stores (store_id)
             )
             """
         )
+
+        # pack_size: set only when part of a strip was sold (sold_quantity is
+        # then a fraction of a strip), so the history can show "5 tablets".
+        # Added like products.pack_size above so an existing database upgrades
+        # in place. (SQLite keeps a fractional value in sold_quantity as it is.)
+        sales_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(sales_history)").fetchall()
+        }
+        if "pack_size" not in sales_columns:
+            try:
+                connection.execute("ALTER TABLE sales_history ADD COLUMN pack_size REAL")
+            except sqlite3.OperationalError as error:
+                if "duplicate column name" not in str(error).lower():
+                    raise
 
         # store_id alone for ownership-scoped lookups (matches every
         # other table); store_id + sold_at composite for

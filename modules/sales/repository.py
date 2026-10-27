@@ -220,7 +220,7 @@ def _get_sales_history_sqlite(store_id: int) -> list:
         rows = connection.execute(
             """
             SELECT sale_id, store_id, product_id, medicine_name,
-                   batch_number, sold_quantity, sold_at
+                   batch_number, sold_quantity, pack_size, sold_at
             FROM sales_history
             WHERE store_id = ?
             ORDER BY sold_at DESC
@@ -292,10 +292,50 @@ def _get_top_sold_product_ids_supabase(store_id: int, limit: int) -> list:
 def _get_sales_history_supabase(store_id: int) -> list:
     response = (
         _supabase_sales_history_table()
-        .select("sale_id, store_id, product_id, medicine_name, batch_number, sold_quantity, sold_at")
+        .select("*")   # includes pack_size when that column exists, and works when it does not
         .eq("store_id", store_id)
         .order("sold_at", desc=True)
         .limit(SALES_HISTORY_DISPLAY_LIMIT)
         .execute()
     )
     return [dict(row) for row in response.data]
+
+def record_sale_with_pack(
+    store_id: int,
+    product_id: int,
+    medicine_name: str,
+    batch_number: str,
+    sold_quantity: float,
+    pack_size: int,
+) -> int:
+    """Insert a sale record for PART of a strip.
+
+    Same as record_sale, except sold_quantity may be a fraction of a strip
+    (5 tablets of a 15-tablet strip = 1/3) and the pack size is stored with
+    it, so the history can show the sale as "5 tablets" again. record_sale
+    itself is unchanged and is still used for whole strips.
+
+    Needs sales_history.sold_quantity to be numeric and a pack_size column
+    (the Supabase SQL that comes with this feature).
+    """
+    if ACTIVE_DB_BACKEND == "supabase":
+        payload = {
+            "store_id": store_id,
+            "product_id": product_id,
+            "medicine_name": medicine_name,
+            "batch_number": batch_number,
+            "sold_quantity": sold_quantity,
+            "pack_size": pack_size,
+        }
+        response = _supabase_sales_history_table().insert(payload).execute()
+        return response.data[0]["sale_id"]
+    with get_connection() as connection:
+        cursor = connection.execute(
+            """
+            INSERT INTO sales_history (
+                store_id, product_id, medicine_name, batch_number, sold_quantity, pack_size
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (store_id, product_id, medicine_name, batch_number, sold_quantity, pack_size),
+        )
+        return cursor.lastrowid

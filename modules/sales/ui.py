@@ -354,6 +354,8 @@ def _select_product(product: dict) -> None:
     st.session_state.pop("sales_selected_master_name", None)
     st.session_state.pop("sales_selected_new_name", None)
     st.session_state[f"sales_qty_{product['product_id']}"] = 1
+    st.session_state.pop(f"sales_tabs_{product['product_id']}", None)
+    st.session_state.pop(f"sales_tablet_info_{product['product_id']}", None)
 
 
 def _select_master_medicine(name: str) -> None:
@@ -516,6 +518,8 @@ def _render_stepper_and_action_row(
     action_label: str,
     action_key: str,
     action_disabled: bool,
+    step: int = 1,
+    quantity_label=None,
 ) -> bool:
     """Render the shared [-] quantity [+] row with the action button
     (Sell or Save) directly under the +. Used by both the normal Sell row
@@ -539,21 +543,24 @@ def _render_stepper_and_action_row(
         minus_col, qty_col, plus_col = st.columns([1, 3, 1], vertical_alignment="center")
 
         with minus_col:
-            if st.button("➖", key=minus_key, disabled=(quantity <= 1), use_container_width=True):
-                st.session_state[qty_key] = quantity - 1
+            if st.button("➖", key=minus_key, disabled=(quantity - step < 1), use_container_width=True):
+                st.session_state[qty_key] = quantity - step
                 st.rerun(scope="fragment")
 
         with qty_col:
             st.markdown(
                 f"<div style='text-align:center; font-size:1.3rem; font-weight:700;'>"
-                f"Qty: {quantity}</div>",
+                f"{quantity_label or 'Qty: ' + str(quantity)}</div>",
                 unsafe_allow_html=True,
             )
 
         with plus_col:
             plus_disabled = max_quantity is not None and quantity >= max_quantity
             if st.button("➕", key=plus_key, disabled=plus_disabled, use_container_width=True):
-                st.session_state[qty_key] = quantity + 1
+                new_quantity = quantity + step
+                if max_quantity is not None:
+                    new_quantity = min(new_quantity, max_quantity)
+                st.session_state[qty_key] = new_quantity
                 st.rerun(scope="fragment")
 
         _left_spacer, _middle_spacer, action_col = st.columns([1, 3, 1])
@@ -586,6 +593,11 @@ def _render_sale_row(store_id: int, product: dict) -> None:
     stock in arrival order across all of this medicine's lots.
     """
     product_id = product["product_id"]
+    tablet_info = _get_tablet_info(store_id, product)
+    if tablet_info is not None:
+        _render_tablet_sale_row(store_id, product, tablet_info)
+        return
+
     stock_key = f"sales_stock_{product_id}"
     if stock_key not in st.session_state:
         st.session_state[stock_key] = sales_service.get_sellable_stock(store_id, product["name"])
@@ -622,6 +634,106 @@ def _render_sale_row(store_id: int, product: dict) -> None:
             st.session_state.pop(stock_key, None)
             bump_cache_epoch(store_id)
             st.success(f"Sold {quantity} × {product['name']}.")
+            st.rerun()
+        except ValidationError as error:
+            st.error(str(error))
+
+
+def _format_tablets(tablets: int, pack: int) -> str:
+    """Tablets as strips + loose tablets: 28 of a 15-pack -> "1 strip + 13
+    tablets"; 30 -> "2 strips"; 10 -> "10 tablets". Never a decimal."""
+    strips, loose = divmod(int(tablets), int(pack))
+    parts = []
+    if strips:
+        parts.append(f"{strips} strip" + ("" if strips == 1 else "s"))
+    if loose or not parts:
+        parts.append(f"{loose} tablet" + ("" if loose == 1 else "s"))
+    return " + ".join(parts)
+
+
+def _format_sold_quantity(sale: dict) -> str:
+    """The quantity of one sales-history row. A whole number of strips as
+    before; part of a strip as tablets (the row stores its pack size)."""
+    quantity = sale["sold_quantity"]
+    pack = sale.get("pack_size")
+    try:
+        quantity = float(quantity)
+    except (TypeError, ValueError):
+        return str(quantity)
+    if abs(quantity - round(quantity)) < 1e-9:
+        return str(int(round(quantity)))
+    if pack:
+        return _format_tablets(int(round(quantity * float(pack))), int(pack))
+    return f"{quantity:.2f}"
+
+
+def _get_tablet_info(store_id: int, product: dict):
+    """{"pack", "tablets"} if this medicine can be sold by the tablet, else
+    None. Kept in session_state per medicine and re-read whenever the
+    medicine is picked again or sold."""
+    key = f"sales_tablet_info_{product['product_id']}"
+    if key not in st.session_state:
+        st.session_state[key] = sales_service.get_tablet_stock(store_id, product["name"])
+    return st.session_state[key]
+
+
+def _remember_unit_choice(mode_key: str) -> None:
+    st.session_state["sales_unit_choice"] = st.session_state[mode_key]
+
+
+def _render_tablet_sale_row(store_id: int, product: dict, info: dict) -> None:
+    """The Sell row for a medicine whose pack size is known: the same
+    [-] quantity [+] and Sell button, plus a Strip | Tablet choice above it
+    that sets the STEP of - and +: a whole strip, or one tablet. Strip is the
+    default; the last choice is remembered. The quantity is shown as
+    "1 strip + 3 tablets", never as a decimal, and is kept as a whole number
+    of tablets underneath."""
+    product_id = product["product_id"]
+    pack, stock = info["pack"], info["tablets"]
+
+    st.markdown(
+        f"**{product['name']}**  •  Batch: {_display_value(product['batch_number'])}  •  "
+        f"Stock: {_format_tablets(stock, pack)}  •  Expires: {_display_value(product['expiry_date'])}  •  "
+        f"MRP: {_display_value(product['mrp'])}  •  Rate: {_display_value(product['rate'])}"
+    )
+
+    mode_key = f"sales_unit_{product_id}"
+    if mode_key not in st.session_state:
+        st.session_state[mode_key] = st.session_state.get("sales_unit_choice", "Strip")
+    st.radio(
+        "Unit", ["Strip", "Tablet"], key=mode_key, horizontal=True,
+        label_visibility="collapsed", on_change=_remember_unit_choice, args=(mode_key,),
+    )
+    step = 1 if st.session_state[mode_key] == "Tablet" else pack
+
+    tabs_key = f"sales_tabs_{product_id}"
+    if tabs_key not in st.session_state:
+        st.session_state[tabs_key] = min(step, stock)
+    # Defensive clamp: stock may have changed since this value was set.
+    tablets = max(1, min(st.session_state[tabs_key], stock)) if stock > 0 else 1
+    st.session_state[tabs_key] = tablets
+
+    sell_clicked = _render_stepper_and_action_row(
+        quantity=tablets,
+        qty_key=tabs_key,
+        max_quantity=stock,
+        minus_key=f"sales_minus_{product_id}",
+        plus_key=f"sales_plus_{product_id}",
+        action_label="Sell",
+        action_key=f"sales_sell_{product_id}",
+        action_disabled=(stock == 0),
+        step=step,
+        quantity_label=f"Qty: {_format_tablets(tablets, pack)}",
+    )
+
+    if sell_clicked:
+        try:
+            sales_service.sell_tablets(store_id, product_id, tablets)
+            st.session_state.pop(tabs_key, None)
+            st.session_state.pop(f"sales_tablet_info_{product_id}", None)
+            st.session_state.pop(f"sales_stock_{product_id}", None)
+            bump_cache_epoch(store_id)
+            st.success(f"Sold {_format_tablets(tablets, pack)} × {product['name']}.")
             st.rerun()
         except ValidationError as error:
             st.error(str(error))
@@ -739,7 +851,7 @@ def _render_sales_history_section() -> None:
             st.markdown(f"**{sale['medicine_name']}**")
             st.caption(
                 f"Batch: {sale['batch_number']}  •  "
-                f"Sold Qty: {sale['sold_quantity']}  •  "
+                f"Sold Qty: {_format_sold_quantity(sale)}  •  "
                 f"Sold: {_format_sold_at(sale['sold_at'])}"
             )
     

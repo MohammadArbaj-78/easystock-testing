@@ -546,6 +546,166 @@ def is_valid_new_medicine_name(name: str):
 
     return name_matching.is_valid_new_medicine_name(name)
 
+# ---------------------------------------------------------------------------
+# Selling by the strip OR by the tablet
+#
+# Stock is kept in strips (a number that may be a fraction). When the pack
+# size (tablets per strip, from the invoice's PACK column) is known for every
+# lot of a medicine, it can also be sold tablet by tablet. All tablet maths
+# is done on WHOLE tablets, never on fractions of a strip, so nothing drifts.
+# sell_product() above is not changed.
+# ---------------------------------------------------------------------------
+
+def _common_pack(lots: list):
+    """The pack size (a whole number of tablets, at least 2) that EVERY lot
+    shares, or None. A medicine whose lots have different, missing or
+    non-whole pack sizes cannot be sold by the tablet - guessing which
+    pack a loose tablet came from would corrupt the stock."""
+    packs = {lot.get("pack_size") for lot in lots}
+    if len(packs) != 1:
+        return None
+    pack = next(iter(packs))
+    if pack is None:
+        return None
+    pack = float(pack)
+    if pack != int(pack) or pack < 2:
+        return None
+    return int(pack)
+
+
+def get_tablet_stock(store_id: int, name: str):
+    """What the Sales screen needs to offer the Strip / Tablet choice.
+
+    Returns:
+        {"pack": tablets per strip, "tablets": total tablets in stock across
+        every lot} or None if this medicine cannot be sold by the tablet.
+    """
+    from modules.products.service import get_lots_by_name_sorted_by_expiry
+
+    lots = get_lots_by_name_sorted_by_expiry(store_id, name)
+    pack = _common_pack(lots)
+    if pack is None:
+        return None
+    return {"pack": pack, "tablets": sum(int(round(lot["quantity"] * pack)) for lot in lots)}
+
+
+def sell_tablets(store_id: int, product_id: int, tablets: int) -> int:
+    """Sell a number of TABLETS of a medicine, oldest lot first (the same
+    FIFO order as sell_product).
+
+    Whole strips out of whole-strip stock go through sell_product exactly as
+    before. Anything else (loose tablets, or stock that already has loose
+    tablets) is done in whole tablets: per lot the stock is reduced first
+    (atomically, in tablets), then the sale is recorded. If recording fails,
+    that lot's stock is put back, so stock never disappears without a record.
+
+    Args:
+        store_id: The currently logged-in store's ID.
+        product_id: The batch row the sale was started from (used only to
+            find the medicine name).
+        tablets: Whole number of tablets, at least 1.
+
+    Returns:
+        The sale_id of the last sales_history row written.
+
+    Raises:
+        ValidationError: Not a positive whole number, product not found, the
+            lots do not share one pack size, or not enough stock.
+    """
+    from modules.products.service import _add_quantity_to_existing_lot, get_lots_by_name_sorted_by_expiry
+
+    if not isinstance(tablets, int) or isinstance(tablets, bool):
+        raise ValidationError("Quantity must be a whole number.")
+    if tablets < 1:
+        raise ValidationError("Quantity must be at least 1.")
+
+    product = products_repository.get_product_by_id(store_id, product_id)
+    if product is None:
+        raise ValidationError("Product not found.")
+
+    lots = get_lots_by_name_sorted_by_expiry(store_id, product["name"])
+    pack = _common_pack(lots)
+    if pack is None:
+        raise ValidationError(
+            "Selling by tablet needs the same pack size on every batch of this medicine."
+        )
+    lot_tablets = {lot["product_id"]: int(round(lot["quantity"] * pack)) for lot in lots}
+    if sum(lot_tablets.values()) < tablets:
+        raise ValidationError(
+            "Unable to sell this quantity - not enough stock available, "
+            "or the product could not be found."
+        )
+
+    # Whole strips out of stock that is all whole strips: the existing path.
+    if tablets % pack == 0 and all(abs(lot["quantity"] - round(lot["quantity"])) < 1e-9 for lot in lots):
+        return sell_product(store_id, product_id, tablets // pack)
+
+    remaining = tablets
+    last_sale_id = None
+    zeroed_product_ids = []
+    zeroed_names = {}
+
+    for lot in lots:
+        if remaining <= 0:
+            break
+        available = lot_tablets[lot["product_id"]]
+        take = min(available, remaining)
+        if take <= 0:
+            continue
+
+        products_repository.reduce_stock_tablets(store_id, lot["product_id"], take, pack)
+        try:
+            if take % pack == 0:
+                last_sale_id = sales_repository.record_sale(
+                    store_id=store_id,
+                    product_id=lot["product_id"],
+                    medicine_name=lot["name"],
+                    batch_number=lot["batch_number"],
+                    sold_quantity=take // pack,
+                )
+            else:
+                last_sale_id = sales_repository.record_sale_with_pack(
+                    store_id=store_id,
+                    product_id=lot["product_id"],
+                    medicine_name=lot["name"],
+                    batch_number=lot["batch_number"],
+                    sold_quantity=take / pack,
+                    pack_size=pack,
+                )
+        except Exception as error:
+            fresh = products_repository.get_product_by_id(store_id, lot["product_id"])
+            if fresh is not None:
+                _add_quantity_to_existing_lot(store_id, fresh, take / pack)
+            raise ValidationError(
+                "This sale could not be saved, so the stock was put back. "
+                "(If this is the first sale by tablet, the sales history table "
+                f"may still need the SQL update.) Details: {error}"
+            ) from error
+
+        if take == available:
+            zeroed_product_ids.append(lot["product_id"])
+            zeroed_names[lot["product_id"]] = lot["name"]
+        remaining -= take
+
+    for zeroed_id in zeroed_product_ids:
+        products_repository.cleanup_zero_quantity_duplicate(store_id, zeroed_id)
+
+    zeroed_by_name = {}
+    for zeroed_id in zeroed_product_ids:
+        name_key = zeroed_names[zeroed_id].strip().lower()
+        zeroed_by_name.setdefault(name_key, []).append(zeroed_id)
+
+    for product_ids in zeroed_by_name.values():
+        if len(product_ids) < 2:
+            continue
+        survivors = [
+            pid for pid in product_ids
+            if products_repository.get_product_by_id(store_id, pid) is not None
+        ]
+        for survivor_id in survivors[1:]:
+            products_repository.delete_product(store_id, survivor_id)
+
+    return last_sale_id
 
 def _save_new_stock_row(store_id: int, clean_name: str, quantity: int) -> None:
     """Shared by save_master_medicine and save_new_medicine: validate the
