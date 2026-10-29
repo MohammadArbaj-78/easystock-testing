@@ -51,18 +51,17 @@ def format_tablets(tablets: int, pack: int) -> str:
 
 
 def quantity_text(line: dict) -> str:
-    """The quantity of a line as the owner reads it."""
-    if line.get("pack"):
-        return format_tablets(line["qty"], line["pack"])
+    pack = line.get("pack") or line.get("pack_guess")
+    if pack and int(pack) >= 2:
+        return format_tablets(line["qty"], int(pack))
     return str(line["qty"])
 
 
 def line_amount(line: dict) -> float:
-    """Price of the line: MRP per strip x number of strips. Loose tablets
-    cost MRP / pack each."""
     mrp = to_number(line.get("mrp"))
-    if line.get("pack"):
-        return round(mrp * line["qty"] / line["pack"], 2)
+    pack = line.get("pack") or line.get("pack_guess")
+    if pack and int(pack) >= 2:
+        return round(mrp * line["qty"] / int(pack), 2)
     return round(mrp * line["qty"], 2)
 
 

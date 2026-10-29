@@ -42,7 +42,7 @@ _SEARCH_VERSION = "sales_bill_search_version"
 _FLASH = "sales_bill_flash"
 _UNIT_CHOICE = "sales_bill_unit_choice"
 _STORE_OWNER = "sales_bill_store"
-_KEYUP_DEBOUNCE_MS = 400
+_KEYUP_DEBOUNCE_MS = 700
 
 
 # ---------------------------------------------------------------------------
@@ -118,6 +118,11 @@ def _inject_css() -> None:
             aspect-ratio: 1 / 1;
             font-size: 1.4rem;
         }
+        /* Swipe-to-remove: the card slides right, a red zone is revealed */
+        .bill-swipe-wrap { position: relative; overflow: hidden; touch-action: pan-y; }
+        .bill-swipe-inner { transition: transform 0.2s; will-change: transform; background: var(--background-color, #fff); }
+        .bill-swipe-delete { position: absolute; right: 0; top: 0; bottom: 0; width: 72px; background: #e53935;
+          display: flex; align-items: center; justify-content: center; color: #fff; font-size: 1.4rem; }
         </style>
         """,
         unsafe_allow_html=True,
@@ -169,6 +174,7 @@ def _suggestions_cached(store_id: int, term: str, _epoch: int) -> dict:
 def _render_search(store_id: int) -> None:
     term = _search_box().strip()
     if not term:
+        _render_frequently_sold_in_bill(store_id)
         return
     result = _suggestions_cached(store_id, term, get_cache_epoch(store_id))
 
@@ -197,6 +203,27 @@ def _render_search(store_id: int) -> None:
     else:
         st.info("No products match your search.")
 
+
+@st.cache_data(show_spinner=False, ttl=300)
+def _bill_frequently_sold_cached(store_id: int, _epoch: int) -> list:
+    return sales_service.get_frequently_sold(store_id)
+
+
+def _render_frequently_sold_in_bill(store_id: int) -> None:
+    """Frequently Sold tiles in Bill mode - tapping adds to the bill."""
+    products = _bill_frequently_sold_cached(store_id, get_cache_epoch(store_id))
+    if not products:
+        return
+    st.caption("⭐ Frequently Sold")
+    for index, product in enumerate(products):
+        mrp = bill_service.to_number(product.get("mrp"))
+        st.button(
+            f"**{product['name']}**  •  Stock: {_stock_text(product['quantity'])}",
+            key=f"bill_freq_{index}",
+            use_container_width=True,
+            on_click=_add_stock_line,
+            args=(store_id, product),
+        )
 
 def _stock_text(quantity) -> str:
     """Stock of the first batch for a suggestion. A whole number as it is;
@@ -237,11 +264,12 @@ def _add_stock_line(store_id: int, product: dict) -> None:
     lines = st.session_state.setdefault(_LINES, [])
     existing = next((line for line in lines if bill_service.same_medicine(line, "stock", product["name"])), None)
     if existing is not None:
-        _change_quantity(existing["id"], 1)      # the same medicine again: one more
+        _change_quantity(existing["id"], 1)
     else:
         unit = st.session_state.get(_UNIT_CHOICE, "Strip")
         lines.append(bill_service.build_stock_line(store_id, _new_line_id(), product, unit))
-    _clear_search()
+    # Version bump separately so the search clears without blocking the add
+    st.session_state[_SEARCH_VERSION] = st.session_state.get(_SEARCH_VERSION, 0) + 1
 
 
 def _add_unlisted_line(kind: str, name: str) -> None:
@@ -251,16 +279,28 @@ def _add_unlisted_line(kind: str, name: str) -> None:
         _change_quantity(existing["id"], 1)
     else:
         lines.append(bill_service.build_unlisted_line(_new_line_id(), kind, name))
-    _clear_search()
+    st.session_state[_SEARCH_VERSION] = st.session_state.get(_SEARCH_VERSION, 0) + 1
 
 
 def _step(line: dict) -> int:
-    """How much - and + change the quantity: one whole strip (its tablets) or
-    one tablet when the pack is known and Tablet is chosen; else 1."""
-    if not line.get("pack"):
+    if not _get_effective_pack(line):
         return 1
     mode = st.session_state.get(f"bill_unit_{line['id']}") or st.session_state.get(_UNIT_CHOICE, "Strip")
-    return 1 if mode == "Tablet" else line["pack"]
+    pack = _get_effective_pack(line)
+    return 1 if mode == "Tablet" else pack
+
+def _set_unit(line_id: int, unit: str) -> None:
+    """Strip या Tablet चुनना।"""
+    st.session_state[f"bill_unit_{line_id}"] = unit
+    st.session_state[_UNIT_CHOICE] = unit
+
+
+def _get_effective_pack(line: dict) -> int | None:
+    """Stock lines का pack, unlisted का pack_guess (owner ने set किया), या None।"""
+    if line.get("pack"):
+        return int(line["pack"])
+    guess = line.get("pack_guess")
+    return int(guess) if guess and int(guess) >= 2 else None
 
 
 def _change_quantity(line_id: int, direction: int) -> None:
@@ -309,21 +349,63 @@ def _render_bill_lines(lines: list) -> None:
 
 
 def _render_line(line: dict) -> None:
-    """One medicine, laid out like a Quick Setup block: square - and + on both
-    sides, the name in the middle with MRP / Rate where the company name is,
-    and the quantity big underneath."""
+    """One medicine block: Strip/Tablet toggle buttons above the - / + buttons,
+    name and price info in the middle. Swipe right to remove (mobile)."""
     line_id = line["id"]
-    step = _step(line)
     cap = line.get("stock_units")
     if cap is not None and cap >= 1:
-        line["qty"] = max(1, min(line["qty"], cap))           # stock may have changed
+        line["qty"] = max(1, min(line["qty"], cap))
 
     mrp = bill_service.to_number(line.get("mrp"))
     rate = line.get("rate")
     subtitle = f"MRP {_money(mrp)} • Rate {_money(rate) if rate else '—'}"
-    amount_text = f" • {_money(bill_service.line_amount(line))}" if mrp > 0 else ""
+    amount_text = _money(bill_service.line_amount(line)) if mrp > 0 else ""
+
+    # Strip / Tablet toggle: which unit is active changes the step
+    pack = line.get("pack")
+    if not pack and line["kind"] in ("master", "new"):
+        # Unlisted line: owner chooses Strip or Tablet for calculation
+        unit_key = f"bill_unit_{line_id}"
+        if unit_key not in st.session_state:
+            st.session_state[unit_key] = st.session_state.get(_UNIT_CHOICE, "Strip")
+        # We synthesise a "pack" of 10 as a default for unlisted so the user
+        # can at least choose tablets; they set the actual pack via a small input.
+        pack_input_key = f"bill_pack_{line_id}"
+        pack = st.session_state.get(pack_input_key, line.get("pack_guess", 10))
+        line["pack_guess"] = pack  # remember for quantity text
+
+    step = _step(line)
+
+    # ---- swipe wrapper (inject a small HTML island) ----
+    remove_key = f"bill_remove_{line_id}"
+    remove_btn_key = f"bill_rm_hidden_{line_id}"
+    st.markdown(
+        f'<div class="bill-swipe-wrap" id="swipe_{line_id}">'
+        f'  <div class="bill-swipe-delete">🗑️</div>'
+        f'  <div class="bill-swipe-inner" id="swipe_inner_{line_id}">',
+        unsafe_allow_html=True,
+    )
 
     with st.container(border=True, key=f"bill_card_{line_id}"):
+        # ---- row 1: Strip / Tablet buttons above - and + ----
+        if pack:
+            unit_key = f"bill_unit_{line_id}"
+            if unit_key not in st.session_state:
+                st.session_state[unit_key] = st.session_state.get(_UNIT_CHOICE, "Strip")
+            mode = st.session_state[unit_key]
+            top_l, top_mid, top_r = st.columns([1, 3, 1])
+            with top_l:
+                strip_type = "primary" if mode == "Strip" else "secondary"
+                if st.button("Strip", key=f"bill_strip_{line_id}", type=strip_type,
+                             use_container_width=True, on_click=_set_unit, args=(line_id, "Strip")):
+                    pass
+            with top_r:
+                tab_type = "primary" if mode == "Tablet" else "secondary"
+                if st.button("Tablet", key=f"bill_tablet_{line_id}", type=tab_type,
+                             use_container_width=True, on_click=_set_unit, args=(line_id, "Tablet")):
+                    pass
+
+        # ---- row 2: - | name info | + ----
         with st.container(key=f"bill_row_{line_id}"):
             minus_col, middle_col, plus_col = st.columns([1, 3, 1], vertical_alignment="center")
             with minus_col:
@@ -335,11 +417,11 @@ def _render_line(line: dict) -> None:
             with middle_col:
                 st.markdown(
                     "<div style='text-align:center;'>"
-                    f"<div style='font-size:1.05rem; font-weight:600;'>{html.escape(line['name'])}</div>"
-                    f"<div style='font-size:0.75rem; color:#888;'>{html.escape(subtitle)}</div>"
-                    "<div style='font-size:1.3rem; font-weight:700; margin-top:2px;'>"
+                    f"<div style='font-size:0.95rem;font-weight:600'>{html.escape(line['name'])}</div>"
+                    f"<div style='font-size:0.72rem;color:#888'>{html.escape(subtitle)}</div>"
+                    f"<div style='font-size:1.15rem;font-weight:700;margin-top:2px'>"
                     f"Qty: {html.escape(bill_service.quantity_text(line))}</div>"
-                    f"<div style='font-size:0.8rem; color:#888;'>{html.escape(amount_text.lstrip(' •'))}</div>"
+                    f"<div style='font-size:0.75rem;color:#888'>{html.escape(amount_text)}</div>"
                     "</div>",
                     unsafe_allow_html=True,
                 )
@@ -350,13 +432,84 @@ def _render_line(line: dict) -> None:
                     on_click=_change_quantity, args=(line_id, 1),
                 )
 
-        _render_controls(line, mrp)
+        # ---- MRP editor (for unlisted lines with mrp=0) ----
+        if mrp <= 0 or st.session_state.get(f"bill_mrp_edit_{line_id}"):
+            editing = st.session_state.get(f"bill_mrp_edit_{line_id}", False)
+            st.button(
+                "✔ MRP set" if editing else "MRP set karo",
+                key=f"bill_mrp_button_{line_id}", use_container_width=True,
+                on_click=_toggle_mrp_editor, args=(line_id,),
+            )
+            if editing:
+                value = st.number_input(
+                    "MRP (₹ per strip)", min_value=0.0, step=1.0, format="%.2f",
+                    value=float(line["mrp"]), key=f"bill_mrp_val_{line_id}",
+                )
+                line["mrp"] = float(value)
+
+        # ---- Pack input for unlisted lines ----
+        if line["kind"] in ("master", "new") and not line.get("pack"):
+            pack_input_key = f"bill_pack_{line_id}"
+            pack_val = st.number_input(
+                "Ek strip mein goliyan (0 = pata nahi)", min_value=0, step=1,
+                value=int(st.session_state.get(pack_input_key, 0)),
+                key=f"bill_pack_input_{line_id}",
+            )
+            if pack_val >= 2:
+                st.session_state[pack_input_key] = pack_val
+                line["pack_guess"] = pack_val
+            elif pack_val == 0:
+                st.session_state.pop(pack_input_key, None)
+                line.pop("pack_guess", None)
 
         if line["kind"] == "master":
-            st.error("⚠️ This medicine is not in your system. It will be added (with 0 stock) when you sell it.")
+            st.error("⚠️ System mein nahi hai. Bechte waqt 0 stock pe add hoga.")
         elif line["kind"] == "new":
-            st.error("⚠️ This medicine is not in your system. Please type the correct name.")
+            st.error("⚠️ System mein nahi hai. Sahi naam type karo.")
 
+    # ---- close swipe wrapper ----
+    st.markdown("</div></div>", unsafe_allow_html=True)
+
+    # ---- hidden remove button triggered by swipe ----
+    st.button("🗑️ Hatao", key=remove_btn_key, on_click=_remove_line, args=(line_id,),
+              help="Swipe right ya yahan click karo")
+
+    # ---- swipe JavaScript ----
+    st.components.v1.html(
+        f"""<script>
+        (function() {{
+          var wrap = window.parent.document.getElementById('swipe_{line_id}');
+          if (!wrap) return;
+          var inner = window.parent.document.getElementById('swipe_inner_{line_id}');
+          var startX, isDragging = false, THRESHOLD = 80;
+          function findRemoveBtn() {{
+            var buttons = window.parent.document.querySelectorAll('button');
+            for (var i=0; i<buttons.length; i++) {{
+              if (buttons[i].textContent.trim() === '🗑️ Hatao') return buttons[i];
+            }}
+          }}
+          wrap.addEventListener('touchstart', function(e) {{
+            startX = e.touches[0].clientX; isDragging = true;
+          }}, {{passive: true}});
+          wrap.addEventListener('touchmove', function(e) {{
+            if (!isDragging) return;
+            var dx = e.touches[0].clientX - startX;
+            if (dx > 0) inner.style.transform = 'translateX(' + Math.min(dx, 100) + 'px)';
+          }}, {{passive: true}});
+          wrap.addEventListener('touchend', function(e) {{
+            isDragging = false;
+            var dx = e.changedTouches[0].clientX - startX;
+            if (dx > THRESHOLD) {{
+              inner.style.transform = 'translateX(100%)';
+              setTimeout(function() {{ var b = findRemoveBtn(); if (b) b.click(); }}, 200);
+            }} else {{
+              inner.style.transform = '';
+            }}
+          }});
+        }})();
+        </script>""",
+        height=0,
+    )
 
 def _render_controls(line: dict, mrp: float) -> None:
     """Under the quantity: Strip | Tablet (when the pack is known), an MRP

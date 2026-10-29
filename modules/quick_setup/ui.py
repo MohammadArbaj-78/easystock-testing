@@ -228,6 +228,50 @@ def _render_upload_tab(store_id: int, cart: dict) -> None:
             key="quick_setup_upload_load_more", use_container_width=True,
             on_click=_load_more_upload,
         )
+    
+    st.markdown("---")
+    st.subheader("✍️ Bill ke liye Seal / Sign")
+    st.caption("Ek baar upload karo — har bill par apne-aap chhapega.")
+    
+    # Load current from DB
+    from modules.sales.bill_service import prepare_signature, SIGNATURE_PREFIX
+    store_sig_key = f"store_signature_{store_id}"
+    if store_sig_key not in st.session_state:
+        try:
+            # Load from Supabase
+            from core.supabase_client import get_supabase_client
+            row = get_supabase_client().table("stores").select("bill_signature").eq("store_id", store_id).single().execute()
+            st.session_state[store_sig_key] = (row.data or {}).get("bill_signature")
+        except Exception:
+            st.session_state[store_sig_key] = None
+    
+    current_sig = st.session_state.get(store_sig_key)
+    if current_sig:
+        st.markdown(f"<img src='{current_sig}' style='max-height:70px;background:#fff;border:1px solid #ddd;border-radius:4px;'>", unsafe_allow_html=True)
+        if st.button("🗑️ Signature/Seal hatao", key="qs_sig_remove"):
+            try:
+                from core.supabase_client import get_supabase_client
+                get_supabase_client().table("stores").update({"bill_signature": None}).eq("store_id", store_id).execute()
+                st.session_state[store_sig_key] = None
+                st.success("Signature hata diya.")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Hata nahi saka: {e}")
+    
+    sig_upload = st.file_uploader("Signature ya Seal ki photo", type=["png", "jpg", "jpeg"], key="qs_sig_upload")
+    if sig_upload is not None:
+        try:
+            processed = prepare_signature(sig_upload.getvalue())
+            try:
+                from core.supabase_client import get_supabase_client
+                get_supabase_client().table("stores").update({"bill_signature": processed}).eq("store_id", store_id).execute()
+                st.session_state[store_sig_key] = processed
+                st.success("✅ Signature save ho gaya. Ab har bill par chhapega.")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Save nahi ho saka: {e}")
+        except ValueError as e:
+            st.error(str(e))    
 
 
 def _forget_uploaded_file(cart: dict) -> None:
