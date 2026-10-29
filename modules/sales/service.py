@@ -101,7 +101,7 @@ def search_products(store_id: int, search_term: str) -> list:
             fifo_lots = get_lots_by_name_sorted_by_expiry(store_id, product["name"])
 
         if fifo_lots:
-            results.append(fifo_lots[0])
+            results.append(dict(fifo_lots[0], lots=fifo_lots))
         if len(results) >= SALES_SEARCH_SUGGESTION_LIMIT:
             break
 
@@ -162,7 +162,7 @@ def get_frequently_sold(store_id: int) -> list:
 
         fifo_lots = lots_by_name.get(name_key)
         if fifo_lots:
-            results.append(fifo_lots[0])
+            results.append(dict(fifo_lots[0], lots=fifo_lots))
 
         if len(results) >= SALES_FREQUENTLY_SOLD_LIMIT:
             break
@@ -435,7 +435,7 @@ def search_store_products(store_id: int, search_term: str) -> list:
         tier = name_matching.match_tier(in_stock[0]["name"], words)
         if tier is None:
             continue
-        ranked.append((tier, in_stock[0]["name"].lower(), in_stock[0]))
+        ranked.append((tier, in_stock[0]["name"].lower(), dict(in_stock[0], lots=in_stock)))
 
     ranked.sort(key=lambda item: (item[0], item[1]))
     return [item[2] for item in ranked[:SALES_SEARCH_SUGGESTION_LIMIT]]

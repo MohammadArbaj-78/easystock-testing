@@ -166,6 +166,7 @@ def _render_upload_tab(store_id: int, cart: dict) -> None:
     rows are previewed below using the SAME medicine-block UI (+/-,
     Load more) as the database-search tab, and feed into the SAME
     shared cart, so one Save All (above the tabs) saves everything."""
+    _render_seal_sign_section(store_id)
     st.caption(
         "Distributor/seller ki Excel ya CSV file upload karo. File mein "
         "medicine naam ka column hona chahiye (jaise 'Name'/'Medicine'). "
@@ -229,49 +230,41 @@ def _render_upload_tab(store_id: int, cart: dict) -> None:
             on_click=_load_more_upload,
         )
     
-    st.markdown("---")
-    st.subheader("✍️ Bill ke liye Seal / Sign")
-    st.caption("Ek baar upload karo — har bill par apne-aap chhapega.")
-    
-    # Load current from DB
-    from modules.sales.bill_service import prepare_signature, SIGNATURE_PREFIX
-    store_sig_key = f"store_signature_{store_id}"
-    if store_sig_key not in st.session_state:
+
+def _render_seal_sign_section(store_id: int) -> None:
+    """Bill seal / sign: saved for this store and printed at the bottom of
+    every bill, until a new one is uploaded here."""
+    from core.exceptions import ValidationError
+    from modules.billing import service as billing_service
+
+    with st.expander("🖋️ Bill seal / sign"):
+        image = st.file_uploader(
+            "Seal ya sign ki image chuno", type=["png", "jpg", "jpeg"], key="bill_seal_uploader",
+        )
+        if image is not None and st.button(
+            "💾 Seal / sign save karo", key="bill_seal_save", use_container_width=True,
+        ):
+            try:
+                billing_service.save_seal_sign(store_id, image.getvalue())
+            except ValidationError as error:
+                st.error(str(error))
+            except Exception as error:
+                st.error(f"Save nahi ho saki (Supabase me store_bill_settings table bani hai?): {error}")
+            else:
+                bump_cache_epoch(store_id)
+                st.success("Seal / sign save ho gayi. Ab har bill ke neeche chhapegi.")
         try:
-            # Load from Supabase
-            from core.supabase_client import get_supabase_client
-            row = get_supabase_client().table("stores").select("bill_signature").eq("store_id", store_id).single().execute()
-            st.session_state[store_sig_key] = (row.data or {}).get("bill_signature")
+            current = billing_service.get_seal_sign(store_id)
         except Exception:
-            st.session_state[store_sig_key] = None
-    
-    current_sig = st.session_state.get(store_sig_key)
-    if current_sig:
-        st.markdown(f"<img src='{current_sig}' style='max-height:70px;background:#fff;border:1px solid #ddd;border-radius:4px;'>", unsafe_allow_html=True)
-        if st.button("🗑️ Signature/Seal hatao", key="qs_sig_remove"):
-            try:
-                from core.supabase_client import get_supabase_client
-                get_supabase_client().table("stores").update({"bill_signature": None}).eq("store_id", store_id).execute()
-                st.session_state[store_sig_key] = None
-                st.success("Signature hata diya.")
-                st.rerun()
-            except Exception as e:
-                st.error(f"Hata nahi saka: {e}")
-    
-    sig_upload = st.file_uploader("Signature ya Seal ki photo", type=["png", "jpg", "jpeg"], key="qs_sig_upload")
-    if sig_upload is not None:
-        try:
-            processed = prepare_signature(sig_upload.getvalue())
-            try:
-                from core.supabase_client import get_supabase_client
-                get_supabase_client().table("stores").update({"bill_signature": processed}).eq("store_id", store_id).execute()
-                st.session_state[store_sig_key] = processed
-                st.success("✅ Signature save ho gaya. Ab har bill par chhapega.")
-                st.rerun()
-            except Exception as e:
-                st.error(f"Save nahi ho saka: {e}")
-        except ValueError as e:
-            st.error(str(e))    
+            current = None
+        if current:
+            st.caption("Abhi ki seal / sign:")
+            st.markdown(
+                f"<img src='{current}' style='max-width:220px;max-height:110px;' alt='seal and sign'>",
+                unsafe_allow_html=True,
+            )
+        else:
+            st.caption("Abhi koi seal / sign upload nahi hui.")
 
 
 def _forget_uploaded_file(cart: dict) -> None:

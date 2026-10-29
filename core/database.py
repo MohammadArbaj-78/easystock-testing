@@ -356,3 +356,14 @@ def initialize_database() -> None:
             )
             """
         )
+
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS store_bill_settings (
+                store_id INTEGER PRIMARY KEY,
+                seal_sign_image TEXT,
+                updated_at TEXT,
+                FOREIGN KEY (store_id) REFERENCES stores (store_id)
+            )
+            """
+        )

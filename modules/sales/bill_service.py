@@ -51,18 +51,83 @@ def format_tablets(tablets: int, pack: int) -> str:
 
 
 def quantity_text(line: dict) -> str:
-    pack = line.get("pack") or line.get("pack_guess")
-    if pack and int(pack) >= 2:
-        return format_tablets(line["qty"], int(pack))
+    pack = line.get("pack")
+    if pack:
+        return format_tablets(line["qty"], pack)
     return str(line["qty"])
 
 
+def money(amount: float) -> str:
+    """₹1,234.5 - two decimals only where they are needed."""
+    text = f"{amount:,.2f}"
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return f"₹{text}"
+
+
+def get_lots(store_id: int, name: str) -> list:
+    """Every in-stock lot (batch) of a medicine, oldest arrival first - the
+    same FIFO order the sale itself uses."""
+    from modules.products.service import get_lots_by_name_sorted_by_expiry
+    return get_lots_by_name_sorted_by_expiry(store_id, name)
+
+
+def line_pieces(line: dict) -> list:
+    """FIFO split of a line: [(units, MRP of one strip), ...]. The sale takes
+    stock lot by lot, oldest first, so each lot is priced with its OWN MRP.
+    line["lots"] = [(units in the lot, its MRP)] in that order (units =
+    tablets if pack is known, else strips). A lot with no MRP, and anything
+    beyond the known lots (a medicine not in stock), uses the line's MRP -
+    the one the owner can set."""
+    fallback = to_number(line.get("mrp"))
+    remaining = line["qty"]
+    pieces = []
+    for units, lot_mrp in (line.get("lots") or []):
+        if remaining <= 0:
+            break
+        take = min(units, remaining)
+        if take <= 0:
+            continue
+        pieces.append((take, lot_mrp if lot_mrp > 0 else fallback))
+        remaining -= take
+    if remaining > 0:
+        pieces.append((remaining, fallback))
+    return pieces
+
+
 def line_amount(line: dict) -> float:
-    mrp = to_number(line.get("mrp"))
-    pack = line.get("pack") or line.get("pack_guess")
-    if pack and int(pack) >= 2:
-        return round(mrp * line["qty"] / int(pack), 2)
-    return round(mrp * line["qty"], 2)
+    """Every FIFO lot at its own MRP (loose tablets cost MRP / pack each)."""
+    pack = line.get("pack")
+    total = 0.0
+    for units, mrp in line_pieces(line):
+        total += mrp * units / pack if pack else mrp * units
+    return round(total, 2)
+
+
+def line_mrp_text(line: dict) -> str:
+    """The MRP(s) the line is priced with: "₹70" or "₹70 / ₹45"."""
+    seen = []
+    for _units, mrp in line_pieces(line):
+        if mrp > 0 and mrp not in seen:
+            seen.append(mrp)
+    return " / ".join(money(mrp) for mrp in seen)
+
+
+def apply_pack(line: dict, pack: int) -> None:
+    """The owner told how many tablets one strip holds (a medicine whose
+    pack the system does not know). From now the line counts in tablets. For
+    a medicine in stock the pack is saved on it when the bill is sold - tablet
+    selling needs it."""
+    first = not line.get("pack")
+    line["pack"] = pack
+    if line["kind"] == "stock":
+        line["lots"] = [(int(round(strips * pack)), mrp) for strips, mrp in line["raw_lots"]]
+        line["stock_units"] = sum(units for units, _mrp in line["lots"])
+        line["pack_new"] = True
+    if first:
+        line["qty"] = 1
+    if line.get("stock_units") is not None and line["stock_units"] >= 1:
+        line["qty"] = max(1, min(line["qty"], line["stock_units"]))
 
 
 def bill_total(lines: list) -> float:
@@ -77,18 +142,21 @@ def build_stock_line(store_id: int, line_id: int, product: dict, unit: str = "St
     """A bill line for a medicine that is in stock.
 
     Args:
-        product: A row from sales_service.search_store_products (the
-            oldest batch with stock) - its MRP and rate are used.
-        unit: "Strip" or "Tablet" - what the first + will add, so the
-            starting quantity is one strip or one tablet.
+        product: A row from sales_service.search_store_products (the oldest
+            batch with stock). It carries every lot under "lots"; if not,
+            they are read here (one lookup).
+        unit: "Strip" or "Tablet" - what the first + will add.
     """
-    info = sales_service.get_tablet_stock(store_id, product["name"])
-    if info is not None:
-        pack, units = info["pack"], info["tablets"]
+    lots = product.get("lots") or get_lots(store_id, product["name"])
+    pack = sales_service._common_pack(lots)
+    raw_lots = [(to_number(lot["quantity"]), to_number(lot.get("mrp"))) for lot in lots]
+    if pack:
+        lot_units = [(int(round(strips * pack)), mrp) for strips, mrp in raw_lots]
+        units = sum(count for count, _mrp in lot_units)
         qty = min(pack if unit == "Strip" else 1, units)
     else:
-        pack = None
-        units = int(math.floor(to_number(sales_service.get_sellable_stock(store_id, product["name"])) + 1e-9))
+        lot_units = [(int(math.floor(strips + 1e-9)), mrp) for strips, mrp in raw_lots]
+        units = int(math.floor(sum(strips for strips, _mrp in raw_lots) + 1e-9))
         qty = 1
     rate = to_number(product.get("rate"))
     return {
@@ -99,7 +167,10 @@ def build_stock_line(store_id: int, line_id: int, product: dict, unit: str = "St
         "mrp": to_number(product.get("mrp")),
         "rate": rate if rate > 0 else None,
         "pack": pack,
+        "pack_from_db": bool(pack),
         "stock_units": units,
+        "lots": lot_units,
+        "raw_lots": raw_lots,
         "qty": max(1, qty),
     }
 
@@ -151,6 +222,8 @@ def _sell_line(store_id: int, line: dict) -> None:
     qty = line["qty"]
     if line["kind"] == "stock":
         if line.get("pack"):
+            if line.get("pack_new"):
+                _save_pack_on_lots(store_id, line["name"], line["pack"])
             sales_service.sell_tablets(store_id, line["product_id"], qty)
         else:
             sales_service.sell_product(store_id, line["product_id"], qty)
@@ -158,36 +231,54 @@ def _sell_line(store_id: int, line: dict) -> None:
     _sell_unlisted_line(store_id, line)
 
 
+def _save_pack_on_lots(store_id: int, name: str, pack: int) -> None:
+    """Store the pack size (tablets per strip) the owner gave on every lot of
+    the medicine - tablet-wise stock needs it. Nothing else is changed."""
+    for lot in get_lots(store_id, name):
+        data = {
+            key: lot.get(key)
+            for key in (
+                "name", "batch_number", "expiry_date", "quantity", "rate", "gst_percent",
+                "purchase_date", "minimum_stock_threshold", "mrp",
+            )
+        }
+        data["pack_size"] = pack
+        products_repository.update_product(store_id, lot["product_id"], data)
+
+
 def _sell_unlisted_line(store_id: int, line: dict) -> None:
-    """Sell a medicine that was not in the store's stock when it was added
-    to the bill.
+    """Sell a medicine that was not in the store's stock when it was added.
 
     If it has been added to the stock since, it is sold from that stock like
     any other. Otherwise it is first put into the system - name, the MRP the
-    owner set, and exactly the quantity being sold - and then sold, so the
-    system ends up knowing the medicine with 0 in stock and the sale is in
-    the history. The real stock count is set later (an invoice scan or Quick
-    Setup); nothing here guesses it.
+    owner set, the pack size if it is sold by the tablet, and exactly the
+    quantity being sold - and then sold, so the system knows the medicine with
+    0 in stock and the sale is in the history.
     """
     from modules.products import service as products_service
     from modules.quick_setup import service as quick_setup_service
 
     name = name_matching.clean_spaces(line["name"])
     qty = line["qty"]
+    pack = line.get("pack")          # tablets per strip, when the owner gave it
 
     wanted = name_matching.normalized_name(name)
     for product in sales_service.search_store_products(store_id, name):
         if name_matching.normalized_name(product["name"]) == wanted:
-            sales_service.sell_product(store_id, product["product_id"], qty)
+            if pack:
+                sales_service.sell_tablets(store_id, product["product_id"], qty)
+            else:
+                sales_service.sell_product(store_id, product["product_id"], qty)
             return
 
-    quick_setup_service.save_quantities(store_id, {name: qty})
+    # Stock is kept in strips: tablets are a part of a strip.
+    quick_setup_service.save_quantities(store_id, {name: (qty / pack) if pack else qty})
     row = products_service.find_quick_setup_placeholder_by_name(store_id, name)
     if row is None:
         raise ValidationError("This medicine could not be added to the system.")
 
     mrp = to_number(line.get("mrp"))
-    if mrp > 0:
+    if mrp > 0 or pack:
         data = {
             key: row.get(key)
             for key in (
@@ -195,7 +286,12 @@ def _sell_unlisted_line(store_id: int, line: dict) -> None:
                 "gst_percent", "purchase_date", "minimum_stock_threshold",
             )
         }
-        data["mrp"] = mrp
+        data["mrp"] = mrp if mrp > 0 else row.get("mrp")
+        if pack:
+            data["pack_size"] = pack
         products_repository.update_product(store_id, row["product_id"], data)
 
-    sales_service.sell_product(store_id, row["product_id"], qty)
+    if pack:
+        sales_service.sell_tablets(store_id, row["product_id"], qty)
+    else:
+        sales_service.sell_product(store_id, row["product_id"], qty)
