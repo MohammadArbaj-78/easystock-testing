@@ -27,6 +27,20 @@ def get_seal_sign(store_id: int):
     return billing_repository.get_seal_sign(store_id)
 
 
+def get_bill_settings(store_id: int) -> dict:
+    """{"seal_sign_image": data-URI or None, "dl_number": text or None}."""
+    return billing_repository.get_bill_settings(store_id)
+
+
+def save_dl_number(store_id: int, dl_number: str) -> None:
+    """Save the store's Drug Licence (DL) number. It is the same on every bill,
+    so it is typed once and printed under the store name. Empty = not printed."""
+    cleaned = " ".join((dl_number or "").split())
+    if len(cleaned) > 80:
+        raise ValidationError("DL number bahut lamba hai.")
+    billing_repository.save_dl_number(store_id, cleaned)
+
+
 def save_seal_sign(store_id: int, file_bytes: bytes) -> None:
     """Validate, shrink and save an uploaded seal/sign image. It stays until
     the store uploads another one.
@@ -79,9 +93,30 @@ def _amount_cell(line: dict) -> str:
     return html.escape(bill_service.money(amount)) if amount > 0 else "—"
 
 
-def build_bill_body_html(store_name: str, lines: list, customer_name: str = "", seal_uri=None, when: str = None) -> str:
+def _clean_details(customer) -> dict:
+    """The optional customer fields as clean text. `customer` is a dict with
+    name / mobile / doctor / address (or just a name as text)."""
+    if isinstance(customer, str) or customer is None:
+        customer = {"name": customer or ""}
+    return {key: " ".join(str(customer.get(key) or "").split()) for key in ("name", "mobile", "doctor", "address")}
+
+
+def _details_html(customer) -> str:
+    """One line per filled field, in this order; an empty field is not printed
+    at all."""
+    details = _clean_details(customer)
+    labels = (("name", "Customer"), ("mobile", "Mobile"), ("doctor", "Doctor"), ("address", "Address"))
+    return "".join(
+        f"<div style='margin:2px 0;'>{label}: <b>{html.escape(details[key])}</b></div>"
+        for key, label in labels if details[key]
+    )
+
+
+def build_bill_body_html(store_name: str, lines: list, customer=None, seal_uri=None, when: str = None, dl_number: str = "") -> str:
     """The bill itself (no <html>/<body>), on ONE line of text with inline
-    styles only - safe to show in the page with st.markdown and to print."""
+    styles only - safe to show in the page with st.markdown and to print.
+    Every optional part (DL number, customer name / mobile / doctor /
+    address, seal and sign) is printed only when it is filled."""
     cell = "padding:6px 4px;border-bottom:1px solid #ccc;"
     rows = []
     for number, line in enumerate(lines, start=1):
@@ -95,10 +130,8 @@ def build_bill_body_html(store_name: str, lines: list, customer_name: str = "", 
             "</tr>"
         )
     total = bill_service.bill_total(lines)
-    customer = (customer_name or "").strip()
-    customer_html = (
-        f"<div style='margin:4px 0;'>Customer: <b>{html.escape(customer)}</b></div>" if customer else ""
-    )
+    dl = " ".join(str(dl_number or "").split())
+    dl_html = f"<div style='text-align:center;font-size:12px;'>DL No: {html.escape(dl)}</div>" if dl else ""
     seal_html = (
         f"<img src='{seal_uri}' style='max-width:220px;max-height:110px;' alt='seal and sign'>"
         if seal_uri else ""
@@ -108,8 +141,9 @@ def build_bill_body_html(store_name: str, lines: list, customer_name: str = "", 
         "<div style='background:#fff;color:#000;padding:14px;border:1px solid #bbb;"
         "font-family:Arial,Helvetica,sans-serif;font-size:14px;'>"
         f"<div style='text-align:center;font-size:20px;font-weight:700;'>{html.escape(store_name or '')}</div>"
+        f"{dl_html}"
         f"<div style='text-align:center;font-size:12px;margin-bottom:8px;'>{html.escape(when or _now_text())}</div>"
-        f"{customer_html}"
+        f"{_details_html(customer)}"
         "<table style='width:100%;border-collapse:collapse;margin-top:6px;'>"
         "<thead><tr>"
         f"<th style='{head}text-align:left;'>#</th>"
@@ -127,9 +161,9 @@ def build_bill_body_html(store_name: str, lines: list, customer_name: str = "", 
     )
 
 
-def build_print_document(store_name: str, lines: list, customer_name: str = "", seal_uri=None) -> str:
+def build_print_document(store_name: str, lines: list, customer=None, seal_uri=None, dl_number: str = "") -> str:
     """A complete page that opens the browser's print window by itself."""
-    body = build_bill_body_html(store_name, lines, customer_name, seal_uri)
+    body = build_bill_body_html(store_name, lines, customer, seal_uri, dl_number=dl_number)
     return (
         "<!DOCTYPE html><html><head><meta charset='utf-8'><title>Bill</title>"
         "<style>@page{margin:8mm;}body{margin:0;background:#fff;}</style></head><body>"

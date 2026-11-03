@@ -22,8 +22,10 @@ A bill line is a plain dict:
 """
 
 import math
+from concurrent.futures import ThreadPoolExecutor
 
 from core import name_matching
+from config.settings import ACTIVE_DB_BACKEND
 from core.exceptions import ValidationError
 from modules.products import repository as products_repository
 from modules.sales import service as sales_service
@@ -174,6 +176,44 @@ def build_stock_line(store_id: int, line_id: int, product: dict, unit: str = "St
         "qty": max(1, qty),
     }
 
+def zero_stock_matches(catalog: list, term: str, limit: int = 5) -> list:
+    """Medicines the store HAS in its system but with no stock left (every lot
+    at 0) whose name contains what was typed - e.g. one that was added by a
+    Bill sale. One row per medicine: the newest lot that has an MRP. The
+    medicines that are in stock are not in this list (they are offered as
+    usual)."""
+    words = (term or "").lower().split()
+    if not words:
+        return []
+    by_name = {}
+    for row in catalog:
+        name = str(row.get("name") or "")
+        if name and all(word in name.lower() for word in words):
+            by_name.setdefault(name_matching.normalized_name(name), []).append(row)
+    found = []
+    for rows in by_name.values():
+        if any(to_number(row.get("quantity")) > 0 for row in rows):
+            continue
+        found.append(max(rows, key=lambda row: (to_number(row.get("mrp")) > 0, row["product_id"])))
+    found.sort(key=lambda row: row["name"].lower())
+    return found[:limit]
+
+
+def build_zero_line(line_id: int, product: dict, unit: str = "Strip") -> dict:
+    """A bill line for a medicine that is in the system with 0 stock. It works
+    exactly like a medicine that is not in the system (no stock limit; selling
+    adds the quantity and sells it, so it stays at 0), but its MRP and pack
+    size are already filled from the system."""
+    line = build_unlisted_line(line_id, "zero", product["name"])
+    line["mrp"] = to_number(product.get("mrp"))
+    rate = to_number(product.get("rate"))
+    line["rate"] = rate if rate > 0 else None
+    pack = int(round(to_number(product.get("pack_size"))))
+    if pack >= 2:
+        line["pack"] = pack
+        line["pack_from_db"] = True
+        line["qty"] = pack if unit == "Strip" else 1
+    return line
 
 def build_unlisted_line(line_id: int, kind: str, name: str) -> dict:
     """A bill line for a medicine that is not in the store's stock yet
@@ -195,28 +235,61 @@ def build_unlisted_line(line_id: int, kind: str, name: str) -> dict:
 # Selling
 # ---------------------------------------------------------------------------
 
+# How many medicines of one bill are sold side by side (Supabase only: each sale
+# is several network calls, so a bill of 6 medicines would wait 6 times as long
+# one by one). 1 = one after the other, as before.
+_PARALLEL_SELL_WORKERS = 4
+
+
+def _attempt_sale(store_id: int, line: dict):
+    """Sell one line; None if it worked, else the message why it did not."""
+    try:
+        _sell_line(store_id, line)
+        return None
+    except ValidationError as error:
+        return str(error)
+    except Exception as error:
+        return f"Could not sell this: {error}"
+
+
 def sell_bill(store_id: int, lines: list) -> dict:
-    """Sell every line, one after the other.
+    """Sell every line.
 
     A line that cannot be sold (not enough stock, a database problem) does
     NOT stop the others: it is reported and stays on the bill, and the lines
     already sold stay sold. Nothing is sold twice because the caller removes
     exactly the lines reported as sold.
 
+    Lines of medicines that are in stock touch only their own medicine's
+    batches, so (on Supabase) several of them are sold side by side. Medicines
+    that are not in the system yet are added and sold one after the other.
+
     Returns:
         {"sold": [line ids], "failed": {line id: message}}
     """
+    outcome = {}
+    stock_lines = [line for line in lines if line["kind"] == "stock"]
+    names = {name_matching.normalized_name(line["name"]) for line in stock_lines}
+    if (
+        ACTIVE_DB_BACKEND == "supabase" and _PARALLEL_SELL_WORKERS > 1
+        and len(stock_lines) > 1 and len(names) == len(stock_lines)
+    ):
+        workers = min(_PARALLEL_SELL_WORKERS, len(stock_lines))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            for line, message in zip(stock_lines, pool.map(lambda line: _attempt_sale(store_id, line), stock_lines)):
+                outcome[line["id"]] = message
+    for line in lines:                       # everything not sold above, one after the other
+        if line["id"] not in outcome:
+            outcome[line["id"]] = _attempt_sale(store_id, line)
+
     sold, failed = [], {}
     for line in lines:
-        try:
-            _sell_line(store_id, line)
+        message = outcome[line["id"]]
+        if message is None:
             sold.append(line["id"])
-        except ValidationError as error:
-            failed[line["id"]] = str(error)
-        except Exception as error:
-            failed[line["id"]] = f"Could not sell this: {error}"
+        else:
+            failed[line["id"]] = message
     return {"sold": sold, "failed": failed}
-
 
 def _sell_line(store_id: int, line: dict) -> None:
     qty = line["qty"]

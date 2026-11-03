@@ -232,12 +232,33 @@ def _render_upload_tab(store_id: int, cart: dict) -> None:
     
 
 def _render_seal_sign_section(store_id: int) -> None:
-    """Bill seal / sign: saved for this store and printed at the bottom of
-    every bill, until a new one is uploaded here."""
+    """Bill settings: the store's DL (Drug Licence) number and seal / sign.
+    Both are saved for this store and printed on every bill - the DL number
+    under the store name, the seal / sign at the bottom - until changed here."""
     from core.exceptions import ValidationError
     from modules.billing import service as billing_service
 
-    with st.expander("🖋️ Bill seal / sign"):
+    with st.expander("🖋️ Bill: DL number, seal / sign"):
+        try:
+            settings = billing_service.get_bill_settings(store_id)
+        except Exception:
+            settings = {"seal_sign_image": billing_service.get_seal_sign(store_id), "dl_number": None}
+
+        dl_value = st.text_input(
+            "Medical ka DL number (Drug Licence) - optional",
+            value=settings.get("dl_number") or "", key=f"bill_dl_input_{store_id}", max_chars=80,
+        )
+        if st.button("💾 DL number save karo", key="bill_dl_save", use_container_width=True):
+            try:
+                billing_service.save_dl_number(store_id, dl_value)
+            except ValidationError as error:
+                st.error(str(error))
+            except Exception as error:
+                st.error(f"Save nahi ho saka (Supabase me store_bill_settings me dl_number column bana hai?): {error}")
+            else:
+                bump_cache_epoch(store_id)
+                st.success("DL number save ho gaya." if dl_value.strip() else "DL number hata diya.")
+
         image = st.file_uploader(
             "Seal ya sign ki image chuno", type=["png", "jpg", "jpeg"], key="bill_seal_uploader",
         )
@@ -265,7 +286,7 @@ def _render_seal_sign_section(store_id: int) -> None:
             )
         else:
             st.caption("Abhi koi seal / sign upload nahi hui.")
-
+            
 
 def _forget_uploaded_file(cart: dict) -> None:
     """Drop the uploaded list and the quantities it put in the cart."""

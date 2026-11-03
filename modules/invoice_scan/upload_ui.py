@@ -24,6 +24,7 @@ from modules.invoice_scan.upload_service import process_invoice_upload
 from modules.invoice_scan.ocr_service import extract_medicines_from_file
 from utils.file_utils import get_image_preview, get_pdf_preview, get_pdf_info
 from core.session import get_current_store_id
+from core.usage_log import log_api_request
 from core.exceptions import ValidationError, OCRError, GeminiAPIError
 from config.settings import UPLOADS_MAX_BYTES, ALLOWED_UPLOAD_EXTENSIONS
 
@@ -247,7 +248,16 @@ def _render_ocr_section(uploaded_file, file_hash: str = None) -> None:
     with st.spinner("Extracting medicines ......."):
         try:
             ocr_result = extract_medicines_from_file(uploaded_file)
+            log_api_request(
+                get_current_store_id(), 
+                "gemini_invoice_scan", 
+                "success",
+                model=ocr_result.get("model"),
+                duration_seconds=ocr_result.get("extraction_time_seconds")
+            )
         except GeminiAPIError as exc:
+            log_api_request(get_current_store_id(), "gemini_invoice_scan", "error", error_message=str(exc))
+            
             if "overloaded" in str(exc).lower():
                 st.info(
                     "⏳ **Sabhi servers abhi busy hain**\n\n"
@@ -261,6 +271,8 @@ def _render_ocr_section(uploaded_file, file_hash: str = None) -> None:
             st.button("🔄 Try Again", key="invoice_retry_after_gemini_error")
             return
         except OCRError as exc:
+            log_api_request(get_current_store_id(), "gemini_invoice_scan", "error", error_message=str(exc))
+            
             st.error(f"⚠️ Extraction Error: {exc}")
             st.button("🔄 Try Again", key="invoice_retry_after_ocr_error")
             return

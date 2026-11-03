@@ -21,8 +21,28 @@ from modules.sales import repository as sales_repository
 from core.exceptions import ValidationError
 from config.settings import SALES_SEARCH_SUGGESTION_LIMIT, SALES_FREQUENTLY_SOLD_LIMIT, SALES_FREQUENTLY_SOLD_CANDIDATE_LIMIT
 
+def get_store_catalog(store_id: int) -> list:
+    """Every product row of the store (all lots, in the database's order),
+    read in one go. Bill mode's live search keeps it and filters it in memory."""
+    return products_repository.get_all_products(store_id)
 
-def search_products(store_id: int, search_term: str) -> list:
+
+def _products_matching(store_id: int, search_term: str, catalog: list = None) -> list:
+    """The store's products whose name or batch number contains the term.
+    With `catalog` (all the store's rows, read once) nothing is read from the
+    database: the same "contains" test and the same order, done in memory."""
+    if catalog is None:
+        return products_repository.get_all_products(store_id, search_term)
+    needle = (search_term or "").strip().lower()
+    if not needle:
+        return list(catalog)
+    return [
+        product for product in catalog
+        if needle in str(product.get("name") or "").lower()
+        or needle in str(product.get("batch_number") or "").lower()
+    ]
+
+def search_products(store_id: int, search_term: str, catalog: list = None) -> list:
     """Search sellable products, by name or batch number.
 
     A thin wrapper around products_repository.get_all_products, which
@@ -68,7 +88,7 @@ def search_products(store_id: int, search_term: str) -> list:
     """
     from modules.products.service import get_lots_by_name_sorted_by_expiry
 
-    products = products_repository.get_all_products(store_id, search_term)
+    products = _products_matching(store_id, search_term, catalog)
     term = (search_term or "").strip().lower()
 
     # Speed: group the rows we ALREADY fetched by medicine name, so the
@@ -107,7 +127,7 @@ def search_products(store_id: int, search_term: str) -> list:
 
     return results
     
-def get_frequently_sold(store_id: int) -> list:
+def get_frequently_sold(store_id: int, catalog: list = None) -> list:
     """Get the top-selling, currently-in-stock products for this store.
 
     Combines sales_repository.get_top_sold_product_ids (a historical
@@ -136,7 +156,8 @@ def get_frequently_sold(store_id: int) -> list:
 
     # Speed: fetch this store's products ONCE and resolve every candidate
     # in memory, instead of two database calls per candidate.
-    all_products = products_repository.get_all_products(store_id)
+    # `catalog` = all the store's rows, if the caller already has them (saves a full read).
+    all_products = catalog if catalog is not None else products_repository.get_all_products(store_id)
     products_by_id = {row["product_id"]: row for row in all_products}
 
     # In-stock lots per medicine name, oldest arrival first (same FIFO
@@ -389,7 +410,7 @@ _MASTER_COMBINATION_FETCH_LIMIT = 40
 _MIN_COMBINATIONS_SHOWN = 2
 
 
-def search_store_products(store_id: int, search_term: str) -> list:
+def search_store_products(store_id: int, search_term: str, catalog: list = None) -> list:
     """Search this store's in-stock medicines.
 
     Exactly search_products() first. Only if that finds nothing, a second
@@ -404,7 +425,7 @@ def search_store_products(store_id: int, search_term: str) -> list:
     """
     from core import name_matching
 
-    results = search_products(store_id, search_term)
+    results = search_products(store_id, search_term, catalog)
     if results:
         return results
 
@@ -418,7 +439,7 @@ def search_store_products(store_id: int, search_term: str) -> list:
     narrowing_word = max((word.replace("%", "") for word in words), key=len)
     if not narrowing_word:
         return []
-    products = products_repository.get_all_products(store_id, narrowing_word)
+    products = _products_matching(store_id, narrowing_word, catalog)
 
     lots_by_name = {}
     for product in products:
@@ -470,20 +491,20 @@ def search_master_medicines(search_term: str) -> list:
         return []
 
     try:
-        rows = (
-            quick_setup_service.search_medicines_all_words(
-                words, True, _MASTER_PREFIX_FETCH_LIMIT
-            )
-            + quick_setup_service.search_medicines_all_words(
-                words, False, _MASTER_CONTAINS_FETCH_LIMIT
-            )
-            # Combination names start with a brand (StayHappi, Genericart,
-            # ...), so alphabetically they come late and could be cut off
-            # by the limit above; fetch them separately.
-            + quick_setup_service.search_medicines_all_words(
-                words + ["+"], False, _MASTER_COMBINATION_FETCH_LIMIT
-            )
-        )
+        # The three lookups do not depend on each other, so they run side by
+        # side (about 3x faster); the order of the rows stays the same.
+        from concurrent.futures import ThreadPoolExecutor
+        lookups = [
+            (words, True, _MASTER_PREFIX_FETCH_LIMIT),
+            (words, False, _MASTER_CONTAINS_FETCH_LIMIT),
+            # Combination names start with a brand, so alphabetically they
+            # come late; fetch them separately.
+            (words + ["+"], False, _MASTER_COMBINATION_FETCH_LIMIT),
+        ]
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            parts = list(pool.map(lambda args: quick_setup_service.search_medicines_all_words(*args), lookups))
+        rows = parts[0] + parts[1] + parts[2]
+
     except Exception:
         # Safety net: if the word-based lookup fails for any reason, fall
         # back to the plain one-piece-of-text search Quick Setup has always

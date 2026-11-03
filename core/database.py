@@ -362,8 +362,19 @@ def initialize_database() -> None:
             CREATE TABLE IF NOT EXISTS store_bill_settings (
                 store_id INTEGER PRIMARY KEY,
                 seal_sign_image TEXT,
+                dl_number TEXT,
                 updated_at TEXT,
                 FOREIGN KEY (store_id) REFERENCES stores (store_id)
             )
             """
         )
+        # dl_number was added later: an existing database upgrades in place.
+        bill_setting_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(store_bill_settings)").fetchall()
+        }
+        if "dl_number" not in bill_setting_columns:
+            try:
+                connection.execute("ALTER TABLE store_bill_settings ADD COLUMN dl_number TEXT")
+            except sqlite3.OperationalError as error:
+                if "duplicate column name" not in str(error).lower():
+                    raise
