@@ -184,6 +184,16 @@ def _inject_css() -> None:
         div[class*="st-key-bill_"] button {
             touch-action: manipulation;
         }
+        div[class*="st-key-bill_packrow_"] div[data-testid="stHorizontalBlock"] {
+            flex-direction: row !important;
+            flex-wrap: nowrap !important;
+            gap: 0.4rem !important;
+        }
+        div[class*="st-key-bill_packrow_"] div[data-testid="stColumn"] {
+            width: auto !important;
+            min-width: 0 !important;
+            flex: 1 1 0 !important;
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -606,6 +616,11 @@ def _change_quantity(line_id: int, direction: int) -> None:
 
 def _toggle_mrp_editor(line_id: int) -> None:
     key = f"bill_mrp_edit_{line_id}"
+    if st.session_state.get(key):                       # closing: keep the number that is in the box
+        line = _find_line(line_id)
+        typed = st.session_state.get(f"bill_mrp_val_{line_id}")
+        if line is not None and typed is not None:
+            line["mrp"] = float(typed)
     st.session_state[key] = not st.session_state.get(key, False)
 
 
@@ -676,20 +691,25 @@ def _render_unit_row(line: dict, mrp: float, editing: bool) -> None:
 
 def _render_pack_input(line: dict) -> None:
     """Tablet is chosen but the system does not know the pack: ask how many
-    tablets one strip holds. Until it is entered the line stays in strips;
-    after that it works like any medicine with a known pack."""
+    tablets one strip holds - type it (with - / +) or pick a usual pack from
+    the list, side by side in ONE row. Until it is entered the line stays in
+    strips; after that it works like any medicine with a known pack."""
     if line.get("pack_from_db") or not st.session_state.get(f"bill_pack_edit_{line['id']}"):
         return
-    value = st.number_input(
-        "Ek strip / pack mein kitni tablet?", min_value=2, step=1, value=line.get("pack"),
-        placeholder="jaise 10", key=f"bill_pack_{line['id']}",
-    )
-    # A short list of the usual pack sizes: one tap instead of typing.
-    st.selectbox(
-        "Common pack", _COMMON_PACKS, index=None, placeholder="Ya common pack chuno",
-        key=f"bill_packpick_{line['id']}", label_visibility="collapsed",
-        on_change=_pick_common_pack, args=(line["id"],),
-    )
+    line_id = line["id"]
+    with st.container(key=f"bill_packrow_{line_id}"):
+        type_col, pick_col = st.columns(2)
+        with type_col:
+            value = st.number_input(
+                "Tablet / strip", min_value=2, step=1, value=line.get("pack"),
+                placeholder="jaise 10", key=f"bill_pack_{line_id}",
+            )
+        with pick_col:
+            st.selectbox(
+                "Common pack", _COMMON_PACKS, index=None, placeholder="Chuno",
+                key=f"bill_packpick_{line_id}",
+                on_change=_pick_common_pack, args=(line_id,),
+            )
     if value and int(value) != line.get("pack"):
         bill_service.apply_pack(line, int(value))
 
@@ -725,8 +745,14 @@ def _render_line(line: dict) -> None:
     if cap is not None and cap >= 1:
         line["qty"] = max(1, min(line["qty"], cap))           # stock may have changed
 
-    mrp = bill_service.to_number(line.get("mrp"))
     editing = st.session_state.get(f"bill_mrp_edit_{line_id}", False)
+    if editing:
+        # The MRP box (drawn lower down) already holds the newest number when this
+        # run starts: use it for the block's top line and the total right now.
+        typed = st.session_state.get(f"bill_mrp_val_{line_id}")
+        if typed is not None:
+            line["mrp"] = float(typed)
+    mrp = bill_service.to_number(line.get("mrp"))
 
     with st.container(border=True, key=f"bill_card_{line_id}"):
         _render_unit_row(line, mrp, editing)
@@ -794,7 +820,7 @@ def _render_total_and_sell(store_id: int, lines: list) -> None:
 
     pending = [line for line in lines if not line.get("sold")]      # not sold yet
     total = bill_service.bill_total(lines)
-    without_mrp = sum(1 for line in pending if bill_service.to_number(line.get("mrp")) <= 0)
+    missing_mrp = [line["name"] for line in pending if bill_service.to_number(line.get("mrp")) <= 0]
     count = len(lines)
     st.markdown(
         "<div style='text-align:center; margin:0.5rem 0;'>"
@@ -803,8 +829,8 @@ def _render_total_and_sell(store_id: int, lines: list) -> None:
         "</div>",
         unsafe_allow_html=True,
     )
-    if without_mrp:
-        st.caption(f"⚠️ {without_mrp} dawai ka MRP 0 hai - woh total mein nahi judega.")
+    if missing_mrp:
+        st.error("⚠️ MRP daalo: " + ", ".join(missing_mrp) + " - bina MRP ke Sell all / Bill nahi hoga.")
 
     with st.container(key="bill_actions"):
         sell_col, bill_col = st.columns(2)
@@ -814,10 +840,14 @@ def _render_total_and_sell(store_id: int, lines: list) -> None:
                 type="primary", use_container_width=True, disabled=not pending,
             )
         with bill_col:
-            st.button(
-                "🧾 Bill", key="bill_open_form", use_container_width=True,
-                on_click=_toggle_bill_form, disabled=not pending,
+            bill_clicked = st.button(
+                "🧾 Bill", key="bill_open_form", use_container_width=True, disabled=not pending,
             )
+    if bill_clicked:
+        if missing_mrp:
+            st.toast("⚠️ MRP daalo: " + ", ".join(missing_mrp), icon="⚠️")    # the bill does not open
+        else:
+            _toggle_bill_form()
     if st.session_state.get(_LAST_BILL):
         with st.container(key="bill_actions_2"):
             clear_col, again_col = st.columns(2)
@@ -830,10 +860,12 @@ def _render_total_and_sell(store_id: int, lines: list) -> None:
     else:
         st.button("🗑️ Bill khali karo", key="bill_clear", use_container_width=True, on_click=_clear_bill)
 
-    if st.session_state.get(_FORM_OPEN) and pending:
+    if st.session_state.get(_FORM_OPEN) and pending and not missing_mrp:
         _render_bill_form(store_id, pending)
 
-    if sell_clicked:
+    if sell_clicked and missing_mrp:
+        st.toast("⚠️ MRP daalo: " + ", ".join(missing_mrp), icon="⚠️")        # nothing is sold
+    elif sell_clicked:
         names = {line["id"]: line["name"] for line in pending}
         result = bill_service.sell_bill(store_id, pending)
         sold_ids = set(result["sold"])
@@ -902,6 +934,10 @@ def _sell_and_print(store_id: int, lines: list, details: dict, seal_uri, store_n
     ONLY what was sold. The blocks STAY on the screen, marked Sold; only the
     bill form closes. A copy of the printed bill is kept, so Re-generate can
     print it again later WITHOUT selling (stock was already reduced)."""
+    missing = [line["name"] for line in lines if bill_service.to_number(line.get("mrp")) <= 0]
+    if missing:
+        st.toast("⚠️ MRP daalo: " + ", ".join(missing), icon="⚠️")             # nothing is sold or printed
+        return
     names = {line["id"]: line["name"] for line in lines}
     result = bill_service.sell_bill(store_id, lines)
     sold_ids = set(result["sold"])

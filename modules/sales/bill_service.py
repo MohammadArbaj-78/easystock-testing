@@ -243,6 +243,8 @@ _PARALLEL_SELL_WORKERS = 4
 
 def _attempt_sale(store_id: int, line: dict):
     """Sell one line; None if it worked, else the message why it did not."""
+    if to_number(line.get("mrp")) <= 0:
+        return "MRP daalo - bina MRP ke bech nahi sakte."
     try:
         _sell_line(store_id, line)
         return None
