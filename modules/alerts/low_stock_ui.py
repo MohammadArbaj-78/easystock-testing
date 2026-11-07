@@ -13,6 +13,8 @@ look wrong, the bug is in low_stock_service.py or the products
 repository, never here.
 """
 
+import html
+
 import streamlit as st
 
 from modules.alerts import low_stock_service
@@ -24,7 +26,7 @@ from core.session import (
 )
 from core.supabase_auth import update_store_low_stock_minimum
 from config.settings import DEFAULT_LOW_STOCK_THRESHOLD
-from core.cache_utils import get_cache_epoch
+from core.cache_utils import bump_cache_epoch, get_cache_epoch
 
 FILTER_OPTION_ALL = "All"
 GLOBAL_MINIMUM_OPTIONS = list(range(1, 11))  # Requirement 5: strictly 1-10
@@ -54,6 +56,16 @@ def render_low_stock_alerts_page() -> None:
     st.subheader("📦 Low Stock Alerts")
 
     store_id = get_current_store_id()
+
+    # "Set quantity" mode: the zero stock medicines as +/- blocks. The switch
+    # stays ON until it is switched off (also after visiting another page).
+    if "low_stock_zero_mode" not in st.session_state:
+        st.session_state["low_stock_zero_mode"] = st.session_state.get("low_stock_zero_mode_memory", False)
+    zero_mode = st.toggle("✏️ Zero stock medicines ki quantity set karo", key="low_stock_zero_mode")
+    st.session_state["low_stock_zero_mode_memory"] = zero_mode
+    if zero_mode:
+        _render_zero_stock_setter(store_id)
+        return
 
     # Requirement 5: session-only (not persisted to the database - see
     # the investigation's recommendation), defaulting to the existing
@@ -151,6 +163,144 @@ def render_low_stock_alerts_page() -> None:
             use_container_width=True,
             on_click=_load_more_low_stock,
         )
+
+_ZERO_KEY = "low_stock_zero_state"
+_ZERO_PAGE_SIZE = 20
+
+
+def _zero_state(store_id: int) -> dict:
+    """What this screen remembers: the zero stock list (read once), the
+    quantities set so far, how many are shown. Reset for another store."""
+    epoch = get_cache_epoch(store_id)
+    state = st.session_state.get(_ZERO_KEY)
+    if state is None or state["store_id"] != store_id or state["epoch"] != epoch:
+        kept = state["qty"] if state is not None and state["store_id"] == store_id else {}
+        state = {
+            "store_id": store_id, "epoch": epoch, "qty": kept, "limit": _ZERO_PAGE_SIZE,
+            "rows": low_stock_service.get_zero_stock_medicines(store_id),
+        }
+        st.session_state[_ZERO_KEY] = state
+    return state
+
+
+def _zero_adjust(product_id: int, delta: int) -> None:
+    quantities = st.session_state[_ZERO_KEY]["qty"]
+    quantities[product_id] = max(0, quantities.get(product_id, 0) + delta)
+
+
+def _zero_more() -> None:
+    st.session_state[_ZERO_KEY]["limit"] += _ZERO_PAGE_SIZE
+
+
+def _inject_zero_row_css() -> None:
+    """Each medicine block's - / name / + on ONE line (same look as Quick Setup)."""
+    st.markdown(
+        """
+        <style>
+        div[class*="st-key-lz_row_"] div[data-testid="stHorizontalBlock"] {
+            flex-direction: row !important;
+            flex-wrap: nowrap !important;
+            gap: 0.4rem !important;
+            align-items: center !important;
+        }
+        div[class*="st-key-lz_row_"] div[data-testid="stColumn"] {
+            width: auto !important;
+            min-width: 0 !important;
+        }
+        div[class*="st-key-lz_row_"] div[data-testid="stColumn"]:first-child,
+        div[class*="st-key-lz_row_"] div[data-testid="stColumn"]:last-child {
+            flex: 0 0 56px !important;
+        }
+        div[class*="st-key-lz_row_"] div[data-testid="stColumn"]:not(:first-child):not(:last-child) {
+            flex: 1 1 auto !important;
+        }
+        div[class*="st-key-lz_row_"] button[kind="secondary"] {
+            aspect-ratio: 1 / 1;
+            font-size: 1.4rem;
+        }
+        div[class*="st-key-lz_row_"] button { touch-action: manipulation; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+@st.fragment
+def _render_zero_stock_setter(store_id: int) -> None:
+    """The zero stock medicines as Quick Setup style blocks: set the real
+    quantity with - / + and press Save. A fragment, so - / + redraw only this
+    part (and read nothing from the database)."""
+    _inject_zero_row_css()
+    state = _zero_state(store_id)
+    rows, quantities = state["rows"], state["qty"]
+
+    flash = st.session_state.pop("low_stock_zero_flash", None)
+    if flash:
+        st.success(flash)
+
+    chosen = {product_id: qty for product_id, qty in quantities.items() if qty > 0}
+    save_col, count_col = st.columns([1, 2])
+    with save_col:
+        save_clicked = st.button(
+            "💾 Save", key="low_stock_zero_save", type="primary",
+            use_container_width=True, disabled=not chosen,
+        )
+    with count_col:
+        if chosen:
+            st.caption(f"✅ {len(chosen)} medicine(s) ki quantity set • Total qty: {sum(chosen.values()):g}")
+        else:
+            st.caption("➖ ➕ se sahi quantity set karo, phir Save dabao.")
+
+    if save_clicked and chosen:
+        try:
+            saved = low_stock_service.set_zero_stock_quantities(store_id, chosen)
+        except Exception as error:
+            st.error(f"Save nahi ho saka: {error}")
+        else:
+            bump_cache_epoch(store_id)
+            st.session_state[_ZERO_KEY]["qty"] = {}
+            st.session_state["low_stock_zero_flash"] = f"✅ {saved} medicine(s) ki quantity save ho gayi."
+            st.rerun(scope="fragment")
+
+    st.divider()
+    if not rows:
+        st.success("Koi bhi medicine 0 stock par nahi hai.")
+        return
+    for row in rows[: state["limit"]]:
+        product_id = row["product_id"]
+        mrp = low_stock_service._number(row.get("mrp"))
+        mrp_line = (
+            f"<div style='font-size:0.75rem; color:#888;'>MRP ₹{mrp:g}</div>" if mrp > 0 else ""
+        )
+        with st.container(border=True, key=f"lz_row_{product_id}"):
+            minus_col, name_col, plus_col = st.columns([1, 3, 1], vertical_alignment="center")
+            with minus_col:
+                st.button(
+                    "➖", key=f"lz_minus_{product_id}", use_container_width=True,
+                    on_click=_zero_adjust, args=(product_id, -1),
+                )
+            with name_col:
+                st.markdown(
+                    "<div style='text-align:center;'>"
+                    f"<div style='font-size:1.05rem; font-weight:600;'>{html.escape(str(row['name']))}</div>"
+                    f"{mrp_line}"
+                    "<div style='font-size:1.3rem; font-weight:700; margin-top:2px;'>"
+                    f"Qty: {quantities.get(product_id, 0):g}</div>"
+                    "</div>",
+                    unsafe_allow_html=True,
+                )
+            with plus_col:
+                st.button(
+                    "➕", key=f"lz_plus_{product_id}", use_container_width=True,
+                    on_click=_zero_adjust, args=(product_id, 1),
+                )
+    if len(rows) > state["limit"]:
+        st.caption(f"Showing {state['limit']} of {len(rows)}")
+        st.button(
+            f"⬇️ Load {min(_ZERO_PAGE_SIZE, len(rows) - state['limit'])} more",
+            key="low_stock_zero_more", use_container_width=True, on_click=_zero_more,
+        )
+
 
 def _render_global_minimum_dropdown() -> int:
     """Render the "Minimum Stock Limit" dropdown (Requirement 5) and

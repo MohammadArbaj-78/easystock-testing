@@ -13,6 +13,7 @@ already calls, so the Dashboard count and this page's list are always
 in agreement.
 """
 
+from core import name_matching
 from modules.products import repository as products_repository
 from config.settings import DEFAULT_LOW_STOCK_THRESHOLD
 
@@ -123,3 +124,64 @@ def get_low_stock_counts(store_id: int, global_minimum: int = None) -> dict:
     counts = {severity: len(products) for severity, products in buckets.items()}
     counts["total"] = sum(counts.values())
     return counts
+
+
+# ---------------------------------------------------------------------------
+# Zero stock medicines: set their real quantity (Low Stock page, "set" mode)
+# ---------------------------------------------------------------------------
+
+def _number(value) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def get_zero_stock_medicines(store_id: int) -> list:
+    """Medicines the store has in its system but with NO stock - every batch of
+    the name is at 0 (e.g. one that was sold from a Bill before any stock was
+    entered). One row per medicine: its newest row that has an MRP, so the
+    MRP and pack size are kept when the quantity is set. A name with any stock
+    left is not in this list. Sorted by name."""
+    by_name = {}
+    for row in products_repository.get_all_products(store_id):
+        name = str(row.get("name") or "")
+        if name:
+            by_name.setdefault(name_matching.normalized_name(name), []).append(row)
+    found = []
+    for rows in by_name.values():
+        if any(_number(row.get("quantity")) > 0 for row in rows):
+            continue
+        found.append(max(rows, key=lambda row: (_number(row.get("mrp")) > 0, row["product_id"])))
+    found.sort(key=lambda row: str(row["name"]).lower())
+    return found
+
+
+def set_zero_stock_quantities(store_id: int, quantities: dict) -> int:
+    """Set the quantity of zero-stock medicines: {product_id: quantity}.
+
+    SETS the quantity on that very row (batch, MRP, pack size, rate ... stay as
+    they are). Only a medicine that is STILL at zero stock is touched, so a
+    stale screen can never overwrite stock that was added in the meantime.
+    Zero or negative quantities are skipped.
+
+    Returns:
+        How many medicines were saved.
+    """
+    still_zero = {row["product_id"]: row for row in get_zero_stock_medicines(store_id)}
+    saved = 0
+    for product_id, quantity in quantities.items():
+        row = still_zero.get(product_id)
+        if row is None or not quantity or quantity <= 0:
+            continue
+        data = {
+            key: row.get(key)
+            for key in (
+                "name", "batch_number", "expiry_date", "rate", "gst_percent",
+                "purchase_date", "minimum_stock_threshold", "mrp", "pack_size",
+            )
+        }
+        data["quantity"] = quantity
+        products_repository.update_product(store_id, product_id, data)
+        saved += 1
+    return saved

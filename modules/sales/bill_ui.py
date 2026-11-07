@@ -79,6 +79,7 @@ def render_bill_mode(store_id: int) -> bool:
     _reset_if_other_store(store_id)
     _inject_css()
     _inject_swipe_script()
+    _inject_zero_select_script()
     lines = st.session_state.setdefault(_LINES, [])
     _show_flash()
     _show_print()
@@ -307,6 +308,45 @@ def _inject_swipe_script() -> None:
             bridge.textContent = "(" + run.toString() + ")();";
             window.parent.document.body.appendChild(bridge);
         } catch (e) { /* best effort - the bill works without swipe */ }
+        </script>
+        """,
+        height=0,
+    )
+
+def _inject_zero_select_script() -> None:
+    """Tap the MRP box or the pack box while it shows 0 (0.00): the 0 gets
+    selected, so the first digit typed REPLACES it (no more "0948"). Only the
+    value is highlighted - nothing is changed or sent until the owner types.
+    A box that shows any other number behaves as before. Streamlit has no
+    option for this, so a tiny browser script does it; it fails silently and
+    installs itself once per browser tab."""
+    components.html(
+        """
+        <script>
+        try {
+            var run = function () {
+                if (window.__easystockZeroSelect) { return; }
+                window.__easystockZeroSelect = true;
+                document.addEventListener("focusin", function (e) {
+                    var box = e.target;
+                    if (!box || box.tagName !== "INPUT") { return; }
+                    if (!box.closest('[class*="st-key-bill_mrp_val_"], [class*="st-key-bill_pack_"]')) { return; }
+                    var number = parseFloat(box.value);
+                    if (!isFinite(number) || number !== 0) { return; }
+                    // the phone places its cursor right after the tap, so select a moment later too
+                    [0, 60, 200].forEach(function (wait) {
+                        setTimeout(function () {
+                            if (document.activeElement === box && parseFloat(box.value) === 0) {
+                                try { box.select(); } catch (err) { /* not selectable: leave as is */ }
+                            }
+                        }, wait);
+                    });
+                }, true);
+            };
+            var bridge = window.parent.document.createElement("script");
+            bridge.textContent = "(" + run.toString() + ")();";
+            window.parent.document.body.appendChild(bridge);
+        } catch (e) { /* best effort - typing still works without it */ }
         </script>
         """,
         height=0,
@@ -700,9 +740,11 @@ def _render_pack_input(line: dict) -> None:
     with st.container(key=f"bill_packrow_{line_id}"):
         type_col, pick_col = st.columns(2)
         with type_col:
+            # Starts at 0 ("not set", like the MRP box) - a box that starts empty
+            # shows its - / + greyed out until something is typed.
             value = st.number_input(
-                "Tablet / strip", min_value=2, step=1, value=line.get("pack"),
-                placeholder="jaise 10", key=f"bill_pack_{line_id}",
+                "Tablet / strip", min_value=0, step=1, value=int(line.get("pack") or 0),
+                key=f"bill_pack_{line_id}",
             )
         with pick_col:
             st.selectbox(
@@ -710,7 +752,7 @@ def _render_pack_input(line: dict) -> None:
                 key=f"bill_packpick_{line_id}",
                 on_change=_pick_common_pack, args=(line_id,),
             )
-    if value and int(value) != line.get("pack"):
+    if value and int(value) >= 2 and int(value) != line.get("pack"):      # 0 / 1 = not set yet
         bill_service.apply_pack(line, int(value))
 
 def _render_sold_line(line: dict) -> None:
