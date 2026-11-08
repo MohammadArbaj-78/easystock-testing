@@ -103,6 +103,8 @@ def render_main_app() -> None:
 
         _render_mobile_sidebar_css()
         _render_mobile_sidebar_autoclose(selected_page)
+        _render_back_button_history(selected_page)
+    _render_no_pull_refresh_css()
 
     # Final stabilization fix: the v2.13.4 "isolation" guard that used to
     # sit here (clearing the review session on every navigation away from
@@ -140,6 +142,107 @@ def render_main_app() -> None:
         st.session_state.pop("quick_setup_browse_page", None)
             
     page_function()
+
+
+def _render_no_pull_refresh_css() -> None:
+    """Stop the phone's "pull down to refresh" (and the sideways over-scroll)
+    from reloading the whole app when the page is dragged past its top or
+    bottom edge. Only the page's own scrolling is kept; scrolling inside the
+    app is unchanged."""
+    st.markdown(
+        """
+        <style>
+        html, body,
+        [data-testid="stApp"], [data-testid="stAppViewContainer"],
+        [data-testid="stMain"], section.main, .main {
+            overscroll-behavior: none !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_back_button_history(current_page: str) -> None:
+    """Make the phone's Back button go to the page visited before, instead of
+    leaving the app.
+
+    Each time the selected page changes, the browser's history gets one more
+    entry (marked with the page's name). When Back brings one of those
+    entries up, the same sidebar item is pressed for the user, so the app
+    shows that page. On the very first page there is no earlier entry, so Back
+    leaves the app as usual.
+
+    It is a small best-effort script (like the sidebar auto-close above): if
+    the sidebar item cannot be found, nothing happens and normal navigation
+    is unchanged.
+    """
+    components.html(
+        f"""
+        <script>
+        (function() {{
+            try {{
+                var host = window.parent;
+                var page = {current_page!r};
+                if (!host.__easystockNav) {{
+                    var install = function () {{
+                        var nav = window.__easystockNav = {{ current: null, fromBack: false }};
+                        nav.sync = function (page) {{
+                            try {{
+                                var base = (history.state && typeof history.state === "object") ? history.state : {{}};
+                                if (nav.current === null) {{
+                                    history.replaceState(Object.assign({{}}, base, {{ es_page: page }}), "");
+                                }} else if (page !== nav.current && !nav.fromBack) {{
+                                    history.pushState({{ es_page: page }}, "");
+                                }}
+                            }} catch (err) {{ /* history not available: no Back support, nothing else changes */ }}
+                            nav.fromBack = false;
+                            nav.current = page;
+                        }};
+                        function findLabel(name) {{
+                            var labels = document.querySelectorAll('[data-testid="stSidebar"] [role="radiogroup"] label');
+                            for (var i = 0; i < labels.length; i++) {{
+                                var text = (labels[i].innerText || "").replace(/\\s+/g, " ").trim();
+                                if (text === name) {{ return labels[i]; }}
+                            }}
+                            return null;
+                        }}
+                        function goTo(name, retry) {{
+                            var label = findLabel(name);
+                            if (label) {{
+                                nav.fromBack = true;
+                                setTimeout(function () {{ nav.fromBack = false; }}, 1500);
+                                label.click();
+                                return;
+                            }}
+                            if (retry) {{
+                                // the sidebar is folded away on a phone: open it once, then try again
+                                var opener = document.querySelector(
+                                    '[data-testid="stExpandSidebarButton"], [data-testid="stSidebarCollapsedControl"] button, [data-testid="collapsedControl"] button'
+                                );
+                                if (opener) {{ opener.click(); }}
+                                setTimeout(function () {{ goTo(name, false); }}, 450);
+                            }}
+                        }}
+                        window.addEventListener("popstate", function (e) {{
+                            var s = e.state;
+                            if (!s || !s.es_page || s.es_page === nav.current) {{ return; }}
+                            goTo(s.es_page, true);
+                        }});
+                    }};
+                    var bridge = host.document.createElement("script");
+                    bridge.textContent = "(" + install.toString() + ")();";
+                    host.document.body.appendChild(bridge);
+                }}
+                if (host.__easystockNav) {{ host.__easystockNav.sync(page); }}
+            }} catch (e) {{
+                // best effort - the app works exactly as before without it
+            }}
+        }})();
+        </script>
+        """,
+        height=0,
+    )
 
 
 def _render_mobile_sidebar_css() -> None:
