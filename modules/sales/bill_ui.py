@@ -652,6 +652,8 @@ def _change_quantity(line_id: int, direction: int) -> None:
     if line.get("stock_units") is not None:
         new_quantity = min(new_quantity, line["stock_units"])
     if new_quantity >= 1:
+        if new_quantity != line["qty"] and not line.get("pack"):
+            line["qty_touched"] = True            # the owner set strips: keep them when a pack is given
         line["qty"] = new_quantity
 
 def _toggle_mrp_editor(line_id: int) -> None:

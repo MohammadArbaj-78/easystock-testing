@@ -127,7 +127,10 @@ def apply_pack(line: dict, pack: int) -> None:
         line["stock_units"] = sum(units for units, _mrp in line["lots"])
         line["pack_new"] = True
     if first:
-        line["qty"] = 1
+        # Strips the owner already set stay: 3 strips become 3 x pack tablets.
+        # If the quantity was never touched (still the default 1), start from
+        # one tablet.
+        line["qty"] = line["qty"] * pack if line.get("qty_touched") else 1
     if line.get("stock_units") is not None and line["stock_units"] >= 1:
         line["qty"] = max(1, min(line["qty"], line["stock_units"]))
 
