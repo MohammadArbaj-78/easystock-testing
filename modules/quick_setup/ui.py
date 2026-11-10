@@ -279,14 +279,32 @@ def _render_seal_sign_section(store_id: int) -> None:
         except Exception:
             current = None
         if current:
-            st.caption("Abhi ki seal / sign:")
+            st.caption("Abhi ki seal / sign (bill ke upar right me chhapegi):")
             st.markdown(
-                f"<img src='{current}' style='max-width:220px;max-height:110px;' alt='seal and sign'>",
+                f"<img src='{current}' style='max-width:220px;max-height:110px;object-fit:contain;' alt='seal and sign'>",
                 unsafe_allow_html=True,
             )
+            left_col, right_col = st.columns(2)
+            with left_col:
+                st.button("↺ Ghumao", key="bill_seal_turn_left", use_container_width=True,
+                          on_click=_turn_seal_sign, args=(store_id, False))
+            with right_col:
+                st.button("↻ Ghumao", key="bill_seal_turn_right", use_container_width=True,
+                          on_click=_turn_seal_sign, args=(store_id, True))
+            st.caption("Picture ulti ya khadi dikhe to ↺ ya ↻ dabao.")
         else:
             st.caption("Abhi koi seal / sign upload nahi hui.")
             
+def _turn_seal_sign(store_id: int, clockwise: bool) -> None:
+    """Quarter turn of the saved seal / sign (runs before the screen is drawn,
+    so the picture shown right after is already turned)."""
+    from modules.billing import service as billing_service
+
+    try:
+        billing_service.rotate_seal_sign(store_id, clockwise)
+        bump_cache_epoch(store_id)
+    except Exception:
+        pass                         # nothing saved / not readable: the picture simply stays as it was
 
 def _forget_uploaded_file(cart: dict) -> None:
     """Drop the uploaded list and the quantities it put in the cart."""

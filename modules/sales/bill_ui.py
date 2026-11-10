@@ -53,9 +53,10 @@ _CATALOG_MAX_AGE_SECONDS = 120
 _PRINT = "sales_bill_print_payload"
 _FORM_OPEN = "sales_bill_form_open"
 _LAST_BILL = "sales_bill_last"
-# Tablets per strip that are common in India (most are 10, 14 or 15). Kept to
-# 9 on purpose: Streamlit does not pop up the phone keyboard for a short list.
-_COMMON_PACKS = (4, 6, 8, 10, 12, 14, 15, 20, 30)
+# Tablets per strip, most used first. Shown as a 4 x 4 grid of buttons when a
+# medicine's pack is not known and the owner presses Tablet.
+_COMMON_PACKS = (10, 15, 14, 28, 3, 5, 6, 4, 21, 30, 50, 100, 8, 12, 20, 7)
+_PACK_FLASH_SECONDS = 1.0
 _DETAIL_KEYS = ("bill_customer_name", "bill_customer_mobile", "bill_customer_doctor", "bill_customer_address")
 
 
@@ -98,6 +99,7 @@ def _render_bill_body(store_id: int) -> None:
     lines = st.session_state.setdefault(_LINES, [])
     _render_bill_lines(lines)
     _render_total_and_sell(store_id, lines)
+    _finish_pack_flash(lines)
 
 
 def _reset_if_other_store(store_id: int) -> None:
@@ -314,7 +316,7 @@ def _inject_swipe_script() -> None:
     )
 
 def _inject_zero_select_script() -> None:
-    """Tap the MRP box or the pack box while it shows 0 (0.00): the 0 gets
+    """Tap the MRP box while it shows 0 (0.00): the 0 gets
     selected, so the first digit typed REPLACES it (no more "0948"). Only the
     value is highlighted - nothing is changed or sent until the owner types.
     A box that shows any other number behaves as before. Streamlit has no
@@ -330,7 +332,7 @@ def _inject_zero_select_script() -> None:
                 document.addEventListener("focusin", function (e) {
                     var box = e.target;
                     if (!box || box.tagName !== "INPUT") { return; }
-                    if (!box.closest('[class*="st-key-bill_mrp_val_"], [class*="st-key-bill_pack_"]')) { return; }
+                    if (!box.closest('[class*="st-key-bill_mrp_val_"]')) { return; }
                     var number = parseFloat(box.value);
                     if (!isFinite(number) || number !== 0) { return; }
                     // the phone places its cursor right after the tap, so select a moment later too
@@ -586,47 +588,58 @@ def _step(line: dict) -> int:
     return 1 if _unit_of(line) == "Tablet" else line["pack"]
 
 
-def _commit_pack(line: dict) -> None:
-    """Take the pack size typed in the open pack box (it is read from the box
-    itself, so it is kept even if the box is being closed right now)."""
-    value = st.session_state.get(f"bill_pack_{line['id']}")
-    if value and int(value) >= 2 and int(value) != line.get("pack"):
-        bill_service.apply_pack(line, int(value))
-
-
 def _close_pack_box(line: dict) -> None:
-    """Hide the pack box. If no pack was entered, Tablet makes no sense yet:
+    """Hide the pack grid. If no pack was chosen, Tablet makes no sense yet:
     the medicine goes back to Strip."""
     line_id = line["id"]
-    _commit_pack(line)
     st.session_state[f"bill_pack_edit_{line_id}"] = False
     if not line.get("pack") and not line.get("pack_from_db"):
         st.session_state[f"bill_unit_{line_id}"] = "Strip"
 
-def _pick_common_pack(line_id: int) -> None:
-    """A pack size was chosen from the list: use it (the typing box shows it
-    too) and get the list ready for the next pick."""
-    pick_key = f"bill_packpick_{line_id}"
-    chosen = st.session_state.get(pick_key)
-    st.session_state[pick_key] = None
+
+def _pick_pack(line_id: int, pack: int) -> None:
+    """A pack size was tapped in the grid: use it, close the grid, and show the
+    number on the Tablet button for a moment (see _finish_pack_flash)."""
     line = _find_line(line_id)
-    if line is None or not chosen:
+    if line is None:
         return
-    st.session_state[f"bill_pack_{line_id}"] = int(chosen)
-    bill_service.apply_pack(line, int(chosen))
+    bill_service.apply_pack(line, int(pack))
+    _set_unit(line_id, "Tablet")
+    st.session_state[f"bill_pack_edit_{line_id}"] = False
+    st.session_state[f"bill_pack_flash_{line_id}"] = True
+
+
+def _finish_pack_flash(lines: list) -> None:
+    """The chosen pack number is on the Tablet button (drawn above). Leave it
+    there for a second, then draw the button again as "Tablet". Runs after
+    everything else is drawn, so only this one second of waiting is added -
+    the screen itself is already complete."""
+    flashing = [
+        line for line in lines
+        if st.session_state.get(f"bill_pack_flash_{line['id']}")
+    ]
+    if not flashing:
+        return
+    time.sleep(_PACK_FLASH_SECONDS)
+    for line in flashing:
+        st.session_state.pop(f"bill_pack_flash_{line['id']}", None)
+    try:
+        st.rerun(scope="fragment")
+    except Exception:
+        st.rerun()
+
 
 def _on_strip_press(line_id: int) -> None:
-    line = _find_line(line_id)
-    if line is not None and st.session_state.get(f"bill_pack_edit_{line_id}"):
-        _commit_pack(line)
+    if st.session_state.get(f"bill_pack_edit_{line_id}"):
         st.session_state[f"bill_pack_edit_{line_id}"] = False
     _set_unit(line_id, "Strip")
 
 
 def _on_tablet_press(line_id: int) -> None:
-    """Tablet works like the MRP button. Pack known: just switch to tablets.
-    Pack not known: the first press opens the pack box (the button shows a
-    tick); the tick closes it again - and so does - / +."""
+    """Pack known: just switch to tablets. Pack not known: the first press
+    opens the pack grid (one tap on a number chooses it and closes the grid);
+    pressing Tablet again while the grid is open closes it. Once a pack was
+    chosen, pressing Tablet again opens the grid to change it."""
     line = _find_line(line_id)
     if line is None:
         return
@@ -636,7 +649,7 @@ def _on_tablet_press(line_id: int) -> None:
     elif st.session_state.get(box_key):
         _close_pack_box(line)
     elif st.session_state.get(f"bill_unit_{line_id}") == "Tablet":
-        st.session_state[box_key] = True                  # already tablets: open the box to change the pack
+        st.session_state[box_key] = True                  # already tablets: open the grid to change the pack
     else:
         _set_unit(line_id, "Tablet")
         st.session_state[box_key] = not line.get("pack")  # only ask while the pack is still unknown
@@ -673,7 +686,7 @@ def _remember_unit(line_id: int) -> None:
 def _drop_widget_keys(line_id: int) -> None:
     for key in (
         f"bill_unit_{line_id}", f"bill_mrp_edit_{line_id}", f"bill_mrp_val_{line_id}",
-        f"bill_pack_{line_id}", f"bill_pack_edit_{line_id}" ,f"bill_packpick_{line_id}",
+        f"bill_pack_edit_{line_id}", f"bill_pack_flash_{line_id}",
     ):
         st.session_state.pop(key, None)
 
@@ -705,7 +718,7 @@ def _render_unit_row(line: dict, mrp: float, editing: bool) -> None:
     """One slim row above the - / + row: Strip right above -, Tablet right
     above +, and the MRP button in the middle while the MRP is not known.
     Every medicine gets Strip / Tablet - when its pack size is not known the
-    owner is asked for it (see _render_pack_input)."""
+    owner is asked for it with a grid of pack sizes (see _render_pack_input)."""
     line_id = line["id"]
     unit = _unit_of(line)
     with st.container(key=f"bill_utog_{line_id}"):
@@ -724,7 +737,7 @@ def _render_unit_row(line: dict, mrp: float, editing: bool) -> None:
                 )
         with tablet_col:
             st.button(
-                "✔" if st.session_state.get(f"bill_pack_edit_{line_id}") else "Tablet",
+                str(int(line["pack"])) if st.session_state.get(f"bill_pack_flash_{line_id}") and line.get("pack") else "Tablet",
                 key=f"bill_utab_{line_id}", use_container_width=True,
                 type="primary" if unit == "Tablet" else "secondary",
                 on_click=_on_tablet_press, args=(line_id,),
@@ -733,29 +746,22 @@ def _render_unit_row(line: dict, mrp: float, editing: bool) -> None:
 
 def _render_pack_input(line: dict) -> None:
     """Tablet is chosen but the system does not know the pack: ask how many
-    tablets one strip holds - type it (with - / +) or pick a usual pack from
-    the list, side by side in ONE row. Until it is entered the line stays in
-    strips; after that it works like any medicine with a known pack."""
+    tablets one strip holds with a 4 x 4 grid of the usual pack sizes (most used
+    first). One tap chooses it - see _pick_pack. Until one is chosen the line
+    stays in strips; after that it works like any medicine with a known pack."""
     if line.get("pack_from_db") or not st.session_state.get(f"bill_pack_edit_{line['id']}"):
         return
     line_id = line["id"]
     with st.container(key=f"bill_packrow_{line_id}"):
-        type_col, pick_col = st.columns(2)
-        with type_col:
-            # Starts at 0 ("not set", like the MRP box) - a box that starts empty
-            # shows its - / + greyed out until something is typed.
-            value = st.number_input(
-                "Tablet / strip", min_value=0, step=1, value=int(line.get("pack") or 0),
-                key=f"bill_pack_{line_id}",
-            )
-        with pick_col:
-            st.selectbox(
-                "Common pack", _COMMON_PACKS, index=None, placeholder="Chuno",
-                key=f"bill_packpick_{line_id}",
-                on_change=_pick_common_pack, args=(line_id,),
-            )
-    if value and int(value) >= 2 and int(value) != line.get("pack"):      # 0 / 1 = not set yet
-        bill_service.apply_pack(line, int(value))
+        for row_start in range(0, len(_COMMON_PACKS), 4):
+            for column, pack in zip(st.columns(4), _COMMON_PACKS[row_start:row_start + 4]):
+                with column:
+                    st.button(
+                        str(pack), key=f"bill_packopt_{line_id}_{pack}",
+                        use_container_width=True,
+                        type="primary" if line.get("pack") == pack else "secondary",
+                        on_click=_pick_pack, args=(line_id, pack),
+                    )
 
 def _render_sold_line(line: dict) -> None:
     """A medicine that is already sold: same place on the screen, but only

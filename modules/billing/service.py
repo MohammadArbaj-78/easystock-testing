@@ -48,7 +48,7 @@ def save_seal_sign(store_id: int, file_bytes: bytes) -> None:
     Raises:
         ValidationError: Empty / too big file, or not a readable image.
     """
-    from PIL import Image
+    from PIL import Image, ImageOps
 
     if not file_bytes:
         raise ValidationError("Image file khaali hai.")
@@ -57,15 +57,41 @@ def save_seal_sign(store_id: int, file_bytes: bytes) -> None:
     try:
         image = Image.open(io.BytesIO(file_bytes))
         image.load()
+        try:
+            image = ImageOps.exif_transpose(image)         # a phone photo's own "this side up" note
+        except Exception:
+            pass
         image = image.convert("RGBA")
     except Exception:
         raise ValidationError("Ye image file padhi nahi ja saki. PNG ya JPG upload karo.")
 
+    if image.height > image.width:                         # standing picture -> lying (landscape)
+        image = image.rotate(-90, expand=True)
+    _store_seal_image(store_id, image)
+
+
+def _store_seal_image(store_id: int, image) -> None:
     image.thumbnail(_SEAL_MAX_SIZE)            # small enough to keep in the database
     buffer = io.BytesIO()
     image.save(buffer, format="PNG", optimize=True)
     encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
     billing_repository.save_seal_sign(store_id, f"data:image/png;base64,{encoded}")
+
+
+def rotate_seal_sign(store_id: int, clockwise: bool = True) -> None:
+    """Turn the saved seal / sign a quarter turn (for a picture that came out
+    the wrong way round).
+
+    Raises:
+        ValidationError: No seal / sign is saved yet.
+    """
+    from PIL import Image
+
+    uri = billing_repository.get_seal_sign(store_id)
+    if not uri or "," not in uri:
+        raise ValidationError("Seal / sign abhi upload nahi hui.")
+    image = Image.open(io.BytesIO(base64.b64decode(uri.split(",", 1)[1]))).convert("RGBA")
+    _store_seal_image(store_id, image.rotate(-90 if clockwise else 90, expand=True))
 
 
 # ---------------------------------------------------------------------------
@@ -133,8 +159,16 @@ def build_bill_body_html(store_name: str, lines: list, customer=None, seal_uri=N
     dl = " ".join(str(dl_number or "").split())
     dl_html = f"<div style='text-align:center;font-size:12px;'>DL No: {html.escape(dl)}</div>" if dl else ""
     seal_html = (
-        f"<img src='{seal_uri}' style='max-width:220px;max-height:110px;' alt='seal and sign'>"
+        f"<img src='{seal_uri}' style='max-width:150px;max-height:75px;object-fit:contain;' alt='seal and sign'>"
         if seal_uri else ""
+    )
+    details_html = _details_html(customer)
+    top_html = (
+        "<div style='display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:4px;'>"
+        f"<div style='flex:1;min-width:0;'>{details_html}</div>"
+        f"<div style='flex:0 0 auto;'>{seal_html}</div>"
+        "</div>"
+        if (details_html or seal_html) else ""
     )
     head = "padding:6px 4px;border-bottom:2px solid #000;"
     return (
@@ -143,7 +177,7 @@ def build_bill_body_html(store_name: str, lines: list, customer=None, seal_uri=N
         f"<div style='text-align:center;font-size:20px;font-weight:700;'>{html.escape(store_name or '')}</div>"
         f"{dl_html}"
         f"<div style='text-align:center;font-size:12px;margin-bottom:8px;'>{html.escape(when or _now_text())}</div>"
-        f"{_details_html(customer)}"
+        f"{top_html}"
         "<table style='width:100%;border-collapse:collapse;margin-top:6px;'>"
         "<thead><tr>"
         f"<th style='{head}text-align:left;'>#</th>"
@@ -156,7 +190,6 @@ def build_bill_body_html(store_name: str, lines: list, customer=None, seal_uri=N
         "</table>"
         f"<div style='text-align:right;font-size:18px;font-weight:700;margin-top:10px;'>"
         f"Total: {html.escape(bill_service.money(total))}</div>"
-        f"<div style='text-align:right;margin-top:24px;min-height:30px;'>{seal_html}</div>"
         "</div>"
     )
 
