@@ -25,6 +25,7 @@ All calculations and selling live in modules/sales/bill_service.py.
 
 import copy
 import html
+import json
 import time
 
 import streamlit as st
@@ -56,7 +57,7 @@ _LAST_BILL = "sales_bill_last"
 # Tablets per strip, most used first. Shown as a 4 x 4 grid of buttons when a
 # medicine's pack is not known and the owner presses Tablet.
 _COMMON_PACKS = (10, 15, 14, 28, 3, 5, 6, 4, 21, 30, 50, 100, 8, 12, 20, 7)
-_PACK_FLASH_SECONDS = 1.0
+_PACK_FLASH_MS = 1000
 _DETAIL_KEYS = ("bill_customer_name", "bill_customer_mobile", "bill_customer_doctor", "bill_customer_address")
 
 
@@ -610,23 +611,43 @@ def _pick_pack(line_id: int, pack: int) -> None:
 
 
 def _finish_pack_flash(lines: list) -> None:
-    """The chosen pack number is on the Tablet button (drawn above). Leave it
-    there for a second, then draw the button again as "Tablet". Runs after
-    everything else is drawn, so only this one second of waiting is added -
-    the screen itself is already complete."""
-    flashing = [
-        line for line in lines
-        if st.session_state.get(f"bill_pack_flash_{line['id']}")
-    ]
+    """The chosen pack number is on the Tablet button (drawn above). It must
+    go back to "Tablet" after a second - but the page must NOT wait for that
+    (a waiting run leaves the old pack grid half-drawn on the screen). So the
+    flag is cleared right now, and a tiny browser script puts the word
+    "Tablet" back after a second. Any redraw before that already shows
+    "Tablet" from Python. Best effort: if the script cannot run, the button
+    simply shows "Tablet" at the next redraw."""
+    flashing = []
+    for line in lines:
+        if st.session_state.pop(f"bill_pack_flash_{line['id']}", False) and line.get("pack"):
+            flashing.append([line["id"], str(int(line["pack"]))])
     if not flashing:
         return
-    time.sleep(_PACK_FLASH_SECONDS)
-    for line in flashing:
-        st.session_state.pop(f"bill_pack_flash_{line['id']}", None)
-    try:
-        st.rerun(scope="fragment")
-    except Exception:
-        st.rerun()
+    components.html(
+        f"""
+        <script>
+        try {{
+            var items = {json.dumps(flashing)};
+            setTimeout(function () {{
+                var doc = window.parent.document;
+                items.forEach(function (item) {{
+                    var button = doc.querySelector(".st-key-bill_utab_" + item[0] + " button");
+                    if (!button) {{ return; }}
+                    // change the text node itself (not the element), so the
+                    // page's own next update of the label still works
+                    var walker = doc.createTreeWalker(button, 4, null);
+                    var node;
+                    while ((node = walker.nextNode())) {{
+                        if (node.nodeValue.trim() === item[1]) {{ node.nodeValue = "Tablet"; break; }}
+                    }}
+                }});
+            }}, {_PACK_FLASH_MS});
+        }} catch (e) {{ /* best effort */ }}
+        </script>
+        """,
+        height=0,
+    )
 
 
 def _on_strip_press(line_id: int) -> None:
