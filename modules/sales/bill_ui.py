@@ -15,9 +15,10 @@ In Bill mode the owner:
      ONE button.
 
 A medicine that is not in the store's stock (taken from the medicine list,
-or typed in full) is added with MRP 0: an "MRP" button next to the Strip /
-Tablet choice opens a box where the owner sets the MRP (with - / + or by
-typing). When the bill is sold, such a medicine is put into the system
+or typed in full) is added with MRP 0: a box marked "MRP" sits between the
+Strip / Tablet buttons. The owner taps it (the phone's number keyboard opens),
+types the MRP and presses Enter or the tick next to the box. When the bill is
+sold, such a medicine is put into the system
 (with 0 stock left) and the sale is recorded - see bill_service.
 
 All calculations and selling live in modules/sales/bill_service.py.
@@ -81,7 +82,7 @@ def render_bill_mode(store_id: int) -> bool:
     _reset_if_other_store(store_id)
     _inject_css()
     _inject_swipe_script()
-    _inject_zero_select_script()
+    _inject_mrp_keypad_script()
     lines = st.session_state.setdefault(_LINES, [])
     _show_flash()
     _show_print()
@@ -170,6 +171,19 @@ def _inject_css() -> None:
         }
         div[class*="st-key-bill_actions"] div[data-testid="stColumn"] {
             flex: 1 1 0 !important;
+        }
+        div[class*="st-key-bill_utog_"] div[data-testid="stColumn"]:nth-child(3):not(:last-child) {
+            flex: 0 0 44px !important;
+        }
+        div[class*="st-key-bill_mrp_val_"] [data-baseweb="input"],
+        div[class*="st-key-bill_mrp_val_"] [data-baseweb="base-input"] {
+            min-height: 1.9rem !important;
+        }
+        div[class*="st-key-bill_mrp_val_"] input {
+            height: 1.9rem !important;
+            padding: 0.1rem 0.4rem !important;
+            font-size: 0.85rem !important;
+            text-align: center !important;
         }
         div[class*="st-key-bill_utog_"] button {
             min-height: 1.9rem !important;
@@ -316,44 +330,36 @@ def _inject_swipe_script() -> None:
         height=0,
     )
 
-def _inject_zero_select_script() -> None:
-    """Tap the MRP box while it shows 0 (0.00): the 0 gets
-    selected, so the first digit typed REPLACES it (no more "0948"). Only the
-    value is highlighted - nothing is changed or sent until the owner types.
-    A box that shows any other number behaves as before. Streamlit has no
-    option for this, so a tiny browser script does it; it fails silently and
-    installs itself once per browser tab."""
+def _inject_mrp_keypad_script() -> None:
+    """Make the phone open its NUMBER keyboard (with a decimal point) when the
+    MRP box is tapped. Streamlit's text box has no option for this, so a tiny
+    browser script marks every MRP box as numeric (inputmode="decimal"), also
+    the ones drawn later. It fails silently - without it the normal keyboard
+    opens and typing still works - and installs itself once per browser tab."""
     components.html(
         """
         <script>
         try {
             var run = function () {
-                if (window.__easystockZeroSelect) { return; }
-                window.__easystockZeroSelect = true;
-                document.addEventListener("focusin", function (e) {
-                    var box = e.target;
-                    if (!box || box.tagName !== "INPUT") { return; }
-                    if (!box.closest('[class*="st-key-bill_mrp_val_"]')) { return; }
-                    var number = parseFloat(box.value);
-                    if (!isFinite(number) || number !== 0) { return; }
-                    // the phone places its cursor right after the tap, so select a moment later too
-                    [0, 60, 200].forEach(function (wait) {
-                        setTimeout(function () {
-                            if (document.activeElement === box && parseFloat(box.value) === 0) {
-                                try { box.select(); } catch (err) { /* not selectable: leave as is */ }
-                            }
-                        }, wait);
+                if (window.__easystockMrpKeypad) { return; }
+                window.__easystockMrpKeypad = true;
+                var mark = function () {
+                    document.querySelectorAll('[class*="st-key-bill_mrp_val_"] input').forEach(function (box) {
+                        if (box.getAttribute("inputmode") !== "decimal") { box.setAttribute("inputmode", "decimal"); }
                     });
-                }, true);
+                };
+                mark();
+                new MutationObserver(mark).observe(document.body, { childList: true, subtree: true });
             };
             var bridge = window.parent.document.createElement("script");
             bridge.textContent = "(" + run.toString() + ")();";
             window.parent.document.body.appendChild(bridge);
-        } catch (e) { /* best effort - typing still works without it */ }
+        } catch (e) { /* best effort - the normal keyboard still works */ }
         </script>
         """,
         height=0,
     )
+
 
 # ---------------------------------------------------------------------------
 # Search and suggestions
@@ -690,14 +696,17 @@ def _change_quantity(line_id: int, direction: int) -> None:
             line["qty_touched"] = True            # the owner set strips: keep them when a pack is given
         line["qty"] = new_quantity
 
-def _toggle_mrp_editor(line_id: int) -> None:
-    key = f"bill_mrp_edit_{line_id}"
-    if st.session_state.get(key):                       # closing: keep the number that is in the box
-        line = _find_line(line_id)
-        typed = st.session_state.get(f"bill_mrp_val_{line_id}")
-        if line is not None and typed is not None:
-            line["mrp"] = float(typed)
-    st.session_state[key] = not st.session_state.get(key, False)
+def _set_mrp(line_id: int) -> None:
+    """Take the MRP typed in the box (Enter, leaving the box, or the tick).
+    A number above 0 sets the MRP and the box goes away; anything else is
+    ignored and the box stays, so the owner can type again."""
+    line = _find_line(line_id)
+    if line is None:
+        return
+    typed = str(st.session_state.get(f"bill_mrp_val_{line_id}") or "")
+    value = bill_service.to_number(typed.replace("₹", "").replace(",", "").strip())
+    if value > 0:
+        line["mrp"] = round(value, 2)
 
 
 def _remember_unit(line_id: int) -> None:
@@ -706,7 +715,7 @@ def _remember_unit(line_id: int) -> None:
 
 def _drop_widget_keys(line_id: int) -> None:
     for key in (
-        f"bill_unit_{line_id}", f"bill_mrp_edit_{line_id}", f"bill_mrp_val_{line_id}",
+        f"bill_unit_{line_id}", f"bill_mrp_val_{line_id}",
         f"bill_pack_edit_{line_id}", f"bill_pack_flash_{line_id}",
     ):
         st.session_state.pop(key, None)
@@ -735,15 +744,19 @@ def _render_bill_lines(lines: list) -> None:
         _render_line(line)
 
 
-def _render_unit_row(line: dict, mrp: float, editing: bool) -> None:
+def _render_unit_row(line: dict, mrp: float) -> None:
     """One slim row above the - / + row: Strip right above -, Tablet right
-    above +, and the MRP button in the middle while the MRP is not known.
+    above +, and the MRP box in the middle while the MRP is not known.
     Every medicine gets Strip / Tablet - when its pack size is not known the
     owner is asked for it with a grid of pack sizes (see _render_pack_input)."""
     line_id = line["id"]
     unit = _unit_of(line)
     with st.container(key=f"bill_utog_{line_id}"):
-        strip_col, mrp_col, tablet_col = st.columns([1, 3, 1], vertical_alignment="center")
+        if mrp <= 0:
+            strip_col, mrp_col, ok_col, tablet_col = st.columns([1, 3, 1, 1], vertical_alignment="center")
+        else:
+            strip_col, mrp_col, tablet_col = st.columns([1, 3, 1], vertical_alignment="center")
+            ok_col = None
         with strip_col:
             st.button(
                 "Strip", key=f"bill_ustrip_{line_id}", use_container_width=True,
@@ -751,10 +764,16 @@ def _render_unit_row(line: dict, mrp: float, editing: bool) -> None:
                 on_click=_on_strip_press, args=(line_id,),
             )
         with mrp_col:
-            if mrp <= 0 or editing:
+            if mrp <= 0:
+                st.text_input(
+                    "MRP", key=f"bill_mrp_val_{line_id}", placeholder="MRP ₹",
+                    label_visibility="collapsed", on_change=_set_mrp, args=(line_id,),
+                )
+        if ok_col is not None:
+            with ok_col:
                 st.button(
-                    "✔" if editing else "MRP", key=f"bill_mrp_button_{line_id}",
-                    use_container_width=True, on_click=_toggle_mrp_editor, args=(line_id,),
+                    "✔", key=f"bill_mrp_ok_{line_id}", use_container_width=True,
+                    on_click=_set_mrp, args=(line_id,),
                 )
         with tablet_col:
             st.button(
@@ -816,17 +835,10 @@ def _render_line(line: dict) -> None:
     if cap is not None and cap >= 1:
         line["qty"] = max(1, min(line["qty"], cap))           # stock may have changed
 
-    editing = st.session_state.get(f"bill_mrp_edit_{line_id}", False)
-    if editing:
-        # The MRP box (drawn lower down) already holds the newest number when this
-        # run starts: use it for the block's top line and the total right now.
-        typed = st.session_state.get(f"bill_mrp_val_{line_id}")
-        if typed is not None:
-            line["mrp"] = float(typed)
     mrp = bill_service.to_number(line.get("mrp"))
 
     with st.container(border=True, key=f"bill_card_{line_id}"):
-        _render_unit_row(line, mrp, editing)
+        _render_unit_row(line, mrp)
         _render_pack_input(line)
 
         step = _step(line)
@@ -860,13 +872,6 @@ def _render_line(line: dict) -> None:
                     disabled=(cap is not None and line["qty"] >= cap),
                     on_click=_change_quantity, args=(line_id, 1),
                 )
-
-        if editing:
-            value = st.number_input(
-                "MRP (₹ per strip / pack)", min_value=0.0, step=1.0, format="%.2f",
-                value=float(line["mrp"]), key=f"bill_mrp_val_{line_id}",
-            )
-            line["mrp"] = float(value)
 
         if line["kind"] == "master":
             st.error("⚠️ System mein nahi hai. Bechte waqt 0 stock pe add hoga.")
