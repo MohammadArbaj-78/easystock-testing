@@ -361,6 +361,7 @@ def save_invoice_medicines(store_id: int) -> dict:
     saved = 0
     skipped = []
     pending_matches = []
+    saved_product_ids = {}      # row index -> product_id of the lot it went into
 
     for idx, row in enumerate(medicines):
         lot_data = {
@@ -385,6 +386,8 @@ def save_invoice_medicines(store_id: int) -> dict:
                 })
             else:
                 saved += 1
+                if outcome.get("product_id") is not None:
+                    saved_product_ids[idx] = outcome["product_id"]
         except ValidationError as exc:
             skipped.append({
                 "row":   idx + 1,
@@ -425,7 +428,10 @@ def save_invoice_medicines(store_id: int) -> dict:
         agency_medicines = record_invoice_medicines(
             store_id,
             get_invoice_header(),
-            medicines,
+            [
+                {**row, "product_id": saved_product_ids.get(idx)}
+                for idx, row in enumerate(medicines)
+            ],
             agency_id=ledger.get("agency_id"),
             bill_id=ledger.get("bill_id"),
         )

@@ -17,6 +17,40 @@ from modules.agencies import service as agencies_service
 from core.session import get_current_store_id
 from core.cache_utils import get_cache_epoch, bump_cache_epoch
 from core.supabase_storage import get_invoice_image_url
+# The medicine rows inside an agency are the Products screen's own rows
+# (same summary line, same Edit / Delete) - reused, not copied.
+from modules.products.ui import _render_product_row
+
+try:
+    from st_keyup import st_keyup
+except ImportError:          # package not installed: a normal text box is used instead
+    st_keyup = None
+
+MEDICINES_PAGE_SIZE = 10
+_KEYUP_DEBOUNCE_MS = 150
+
+_CARD_CSS = """
+<style>
+/* Each agency is its own clearly outlined card. */
+[class*="st-key-agency_card_"] {
+    border: 2px solid var(--primary-color, #1f6f5b);
+    border-radius: 0.75rem;
+    padding: 0.35rem;
+    margin-bottom: 0.9rem;
+}
+</style>
+"""
+
+
+@st.cache_data(show_spinner=False)
+def _get_all_agency_details_cached(store_id: int, _epoch: int) -> dict:
+    return agencies_service.get_all_agency_details(store_id)
+
+
+@st.cache_data(show_spinner=False)
+def _get_agency_medicines_cached(store_id: int, _epoch: int) -> dict:
+    return agencies_service.get_agency_medicines_by_agency(store_id)
+
 
 @st.cache_data(show_spinner=False)
 def _get_agency_ledger_cached(store_id: int, _epoch: int) -> list:
@@ -42,6 +76,9 @@ def render_agencies_page() -> None:
         )
         return
 
+    st.markdown(_CARD_CSS, unsafe_allow_html=True)
+    all_details = _get_all_agency_details_cached(store_id, get_cache_epoch(store_id))
+
     total_balance = sum(agency["balance"] for agency in agencies)
     st.caption(f"Total outstanding across all agencies: ₹{total_balance:,.2f}")
 
@@ -54,14 +91,17 @@ def render_agencies_page() -> None:
         else:
             balance_label = "Fully paid"
 
-        with st.expander(f"{agency['agency_name']} — {balance_label}"):
-            _render_agency_detail(store_id, agency)
+        with st.container(key=f"agency_card_{agency['agency_id']}"):
+            with st.expander(f"{agency['agency_name']} — {balance_label}"):
+                _render_agency_detail(store_id, agency, all_details.get(agency["agency_id"]))
 
 
-def _render_agency_detail(store_id: int, agency: dict) -> None:
-    """Render one agency's dropdown: summary, Pay form, then its bills."""
+def _render_agency_detail(store_id: int, agency: dict, detail: dict = None) -> None:
+    """Render one agency's dropdown: summary, Pay form, its medicines,
+    then its bills. `detail` comes from ONE query for all agencies."""
     agency_id = agency["agency_id"]
-    detail = _get_agency_detail_cached(store_id, agency_id, get_cache_epoch(store_id))
+    if detail is None:
+        detail = {"bills": [], "payments": [], "total_billed": 0, "total_paid": 0, "balance": 0}
 
     summary_columns = st.columns(3)
     summary_columns[0].metric("Total billed", f"₹{detail['total_billed']:,.2f}")
@@ -70,6 +110,8 @@ def _render_agency_detail(store_id: int, agency: dict) -> None:
 
     _render_pay_form(store_id, agency_id)
 
+    _render_medicines_section(store_id, agency_id)
+
     st.markdown("**Bills**")
     if not detail["bills"]:
         st.caption("No bills recorded yet.")
@@ -77,6 +119,68 @@ def _render_agency_detail(store_id: int, agency: dict) -> None:
 
     for bill in detail["bills"]:
         _render_bill_row(bill)
+
+
+def _render_medicines_section(store_id: int, agency_id: int) -> None:
+    """The agency's medicines. Nothing is read or drawn until the switch
+    is turned on, so opening the Agencies screen stays fast."""
+    if not st.toggle("💊 Medicines", key=f"agency_meds_open_{agency_id}"):
+        return
+    _render_agency_medicines(store_id, agency_id)
+
+
+def _load_more_medicines(limit_key: str) -> None:
+    st.session_state[limit_key] = st.session_state.get(limit_key, MEDICINES_PAGE_SIZE) + MEDICINES_PAGE_SIZE
+
+
+@st.fragment
+def _render_agency_medicines(store_id: int, agency_id: int) -> None:
+    """Live-search box + the agency's medicines, 10 at a time. A fragment,
+    so typing in the search box redraws only this list."""
+    search_key = f"agency_meds_search_{agency_id}"
+    limit_key = f"agency_meds_limit_{agency_id}"
+    last_key = f"agency_meds_last_{agency_id}"
+
+    hint = "Dawai ka naam ya batch likho"
+    if st_keyup is not None:
+        try:
+            term = st_keyup("Search medicine", placeholder=hint, debounce=_KEYUP_DEBOUNCE_MS,
+                            key=search_key, label_visibility="collapsed")
+        except TypeError:        # an older version without placeholder / label options
+            term = st_keyup("Search medicine", debounce=_KEYUP_DEBOUNCE_MS, key=search_key)
+    else:
+        term = st.text_input("Search medicine", placeholder=hint, key=search_key,
+                             label_visibility="collapsed")
+    term = term or ""
+
+    # A new search starts again from the first page.
+    if st.session_state.get(last_key) != term:
+        st.session_state[last_key] = term
+        st.session_state[limit_key] = MEDICINES_PAGE_SIZE
+
+    products = _get_agency_medicines_cached(store_id, get_cache_epoch(store_id)).get(agency_id, [])
+    if not products:
+        st.caption("Is agency ki koi medicine abhi stock me nahi hai.")
+        return
+
+    limit = st.session_state.get(limit_key, MEDICINES_PAGE_SIZE)
+    page = agencies_service.search_agency_medicines(products, term, limit)
+    if not page["items"]:
+        st.info("No medicines match your search.")
+        return
+
+    st.caption(f"Showing {len(page['items'])} of {page['total']} medicine(s)")
+    for product in page["items"]:
+        _render_product_row(store_id, product)
+
+    if page["total"] > len(page["items"]):
+        st.button(
+            f"⬇️ Load {min(MEDICINES_PAGE_SIZE, page['total'] - len(page['items']))} more",
+            key=f"agency_meds_more_{agency_id}",
+            use_container_width=True,
+            on_click=_load_more_medicines,
+            args=(limit_key,),
+        )
 
 
 def _render_bill_row(bill: dict) -> None:
@@ -92,6 +196,12 @@ def _render_bill_row(bill: dict) -> None:
         image_path = bill.get("image_path")
         if not image_path:
             st.caption("No photo saved for this bill.")
+            return
+
+        # The photo link is fetched from storage only when asked for:
+        # every bill of every agency used to fetch one on every screen
+        # load, which is what made this screen slow.
+        if not st.toggle("📷 Photo dikhao", key=f"agency_bill_photo_{bill.get('bill_id')}"):
             return
 
         image_url = get_invoice_image_url(image_path)

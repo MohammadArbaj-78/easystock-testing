@@ -336,6 +336,7 @@ def initialize_database() -> None:
                 store_id INTEGER NOT NULL,
                 agency_id INTEGER NOT NULL,
                 bill_id INTEGER,
+                product_id INTEGER,
                 name TEXT NOT NULL,
                 batch_number TEXT,
                 quantity REAL,
@@ -354,6 +355,12 @@ def initialize_database() -> None:
             ON agency_medicines (store_id, agency_id)
             """
         )
+        # Databases created before the product link existed.
+        existing_columns = [
+            row[1] for row in connection.execute("PRAGMA table_info(agency_medicines)").fetchall()
+        ]
+        if "product_id" not in existing_columns:
+            connection.execute("ALTER TABLE agency_medicines ADD COLUMN product_id INTEGER")
 
         connection.execute(
             """

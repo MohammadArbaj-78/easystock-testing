@@ -110,6 +110,31 @@ def add_invoice_medicines(store_id: int, agency_id: int, bill_id, medicines: lis
     return _add_invoice_medicines_sqlite(store_id, agency_id, bill_id, medicines)
 
 
+def get_bills_for_store(store_id: int) -> list:
+    """Every bill of every agency of this store, newest first (each row
+    also has agency_id). One query instead of one per agency."""
+    if ACTIVE_DB_BACKEND == "supabase":
+        return _get_bills_for_store_supabase(store_id)
+    return _get_bills_for_store_sqlite(store_id)
+
+
+def get_payments_for_store(store_id: int) -> list:
+    """Every payment of every agency of this store, newest first (each
+    row also has agency_id)."""
+    if ACTIVE_DB_BACKEND == "supabase":
+        return _get_payments_for_store_supabase(store_id)
+    return _get_payments_for_store_sqlite(store_id)
+
+
+def get_medicine_rows_for_store(store_id: int) -> list:
+    """Every kept invoice-medicine row of this store, newest first:
+    id, agency_id, product_id (may be None), name, batch_number,
+    expiry_date."""
+    if ACTIVE_DB_BACKEND == "supabase":
+        return _get_medicine_rows_for_store_supabase(store_id)
+    return _get_medicine_rows_for_store_sqlite(store_id)
+
+
 def add_payment(store_id: int, agency_id: int, amount: float, paid_on: str = None) -> int:
     """Insert one payment row against an agency. The only write this
     file performs to agency_payments.
@@ -208,7 +233,7 @@ def _add_bill_sqlite(
         )
         return cursor.lastrowid
 
-_MEDICINE_COLUMNS = ("name", "batch_number", "quantity", "expiry_date", "mrp", "rate")
+_MEDICINE_COLUMNS = ("name", "batch_number", "quantity", "expiry_date", "mrp", "rate", "product_id")
 
 
 def _medicine_payload(store_id: int, agency_id: int, bill_id, medicine: dict) -> dict:
@@ -224,6 +249,7 @@ def _add_invoice_medicines_sqlite(store_id: int, agency_id: int, bill_id, medici
             store_id, agency_id, bill_id,
             medicine.get("name"), medicine.get("batch_number"), medicine.get("quantity"),
             medicine.get("expiry_date"), medicine.get("mrp"), medicine.get("rate"),
+            medicine.get("product_id"),
         )
         for medicine in medicines
     ]
@@ -231,8 +257,8 @@ def _add_invoice_medicines_sqlite(store_id: int, agency_id: int, bill_id, medici
         connection.executemany(
             """
             INSERT INTO agency_medicines
-                (store_id, agency_id, bill_id, name, batch_number, quantity, expiry_date, mrp, rate)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (store_id, agency_id, bill_id, name, batch_number, quantity, expiry_date, mrp, rate, product_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             rows,
         )
@@ -282,6 +308,42 @@ def _get_agencies_with_balance_sqlite(store_id: int) -> list:
         }
         for row in rows
     ]
+
+
+def _get_bills_for_store_sqlite(store_id: int) -> list:
+    with get_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT bill_id, agency_id, invoice_date, grand_total, image_path, image_content_type, created_at
+            FROM agency_bills WHERE store_id = ? ORDER BY bill_id DESC
+            """,
+            (store_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def _get_payments_for_store_sqlite(store_id: int) -> list:
+    with get_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT payment_id, agency_id, amount, paid_on, created_at
+            FROM agency_payments WHERE store_id = ? ORDER BY payment_id DESC
+            """,
+            (store_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def _get_medicine_rows_for_store_sqlite(store_id: int) -> list:
+    with get_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT id, agency_id, product_id, name, batch_number, expiry_date
+            FROM agency_medicines WHERE store_id = ? ORDER BY id DESC
+            """,
+            (store_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def _get_bills_for_agency_sqlite(store_id: int, agency_id: int) -> list:
@@ -386,7 +448,13 @@ def _medicines_table():
 
 def _add_invoice_medicines_supabase(store_id: int, agency_id: int, bill_id, medicines: list) -> int:
     payload = [_medicine_payload(store_id, agency_id, bill_id, medicine) for medicine in medicines]
-    _medicines_table().insert(payload).execute()
+    try:
+        _medicines_table().insert(payload).execute()
+    except Exception:
+        # The product_id column may not have been added to the table yet
+        # (see database/agency_medicines.sql): keep the rows without it.
+        without_link = [{k: v for k, v in row.items() if k != "product_id"} for row in payload]
+        _medicines_table().insert(without_link).execute()
     return len(payload)
 
 
@@ -432,6 +500,55 @@ def _get_agencies_with_balance_supabase(store_id: int) -> list:
             "balance": total_billed - total_paid,
         })
     return result
+
+
+_SUPABASE_PAGE = 1000
+
+
+def _fetch_all(build_query) -> list:
+    """All rows of a query, paged (Supabase returns at most 1000 per
+    call). build_query() must return a fresh, ordered query each time."""
+    rows, start = [], 0
+    while True:
+        batch = build_query().range(start, start + _SUPABASE_PAGE - 1).execute().data or []
+        rows.extend(batch)
+        if len(batch) < _SUPABASE_PAGE:
+            return rows
+        start += _SUPABASE_PAGE
+
+
+def _get_bills_for_store_supabase(store_id: int) -> list:
+    return _fetch_all(lambda: (
+        _bills_table()
+        .select("bill_id, agency_id, invoice_date, grand_total, image_path, image_content_type, created_at")
+        .eq("store_id", store_id).order("bill_id", desc=True)
+    ))
+
+
+def _get_payments_for_store_supabase(store_id: int) -> list:
+    return _fetch_all(lambda: (
+        _payments_table()
+        .select("payment_id, agency_id, amount, paid_on, created_at")
+        .eq("store_id", store_id).order("payment_id", desc=True)
+    ))
+
+
+def _get_medicine_rows_for_store_supabase(store_id: int) -> list:
+    columns = "id, agency_id, product_id, name, batch_number, expiry_date"
+    try:
+        return _fetch_all(lambda: (
+            _medicines_table().select(columns).eq("store_id", store_id).order("id", desc=True)
+        ))
+    except Exception:
+        # product_id column not added yet - fall back to name matching only.
+        rows = _fetch_all(lambda: (
+            _medicines_table()
+            .select("id, agency_id, name, batch_number, expiry_date")
+            .eq("store_id", store_id).order("id", desc=True)
+        ))
+        for row in rows:
+            row["product_id"] = None
+        return rows
 
 
 def _get_bills_for_agency_supabase(store_id: int, agency_id: int) -> list:

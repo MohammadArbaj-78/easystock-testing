@@ -124,6 +124,7 @@ def _clean_medicine_row(medicine: dict):
         "expiry_date": text("expiry_date"),
         "mrp": _number_or_none(medicine.get("mrp")),
         "rate": _number_or_none(medicine.get("rate")),
+        "product_id": medicine.get("product_id"),
     }
 
 
@@ -171,6 +172,96 @@ def get_agency_detail(store_id: int, agency_id: int) -> dict:
         "total_paid": total_paid,
         "balance": total_billed - total_paid,
     }
+
+
+def get_all_agency_details(store_id: int) -> dict:
+    """The same information as get_agency_detail() for EVERY agency, from
+    two queries in total (the Agencies screen used to run two per
+    agency). Newest first.
+
+    Returns:
+        {agency_id: {"bills", "payments", "total_billed", "total_paid",
+        "balance"}} - only for agencies that have a bill or payment.
+    """
+    details = {}
+
+    def entry(agency_id):
+        return details.setdefault(agency_id, {"bills": [], "payments": []})
+
+    for bill in agencies_repository.get_bills_for_store(store_id):
+        entry(bill["agency_id"])["bills"].append(bill)
+    for payment in agencies_repository.get_payments_for_store(store_id):
+        entry(payment["agency_id"])["payments"].append(payment)
+    for detail in details.values():
+        detail["total_billed"] = sum(b["grand_total"] for b in detail["bills"])
+        detail["total_paid"] = sum(p["amount"] for p in detail["payments"])
+        detail["balance"] = detail["total_billed"] - detail["total_paid"]
+    return details
+
+
+def get_agency_medicines_by_agency(store_id: int) -> dict:
+    """The medicines of every agency, as the store's LIVE product rows.
+
+    The agency_medicines rows only say which medicine came with which
+    agency's bill; what is shown (qty, MRP, expiry ...) is always the
+    current product row, so editing or deleting a product on the
+    Products screen shows here too. A kept row is linked to its product
+    by product_id, or - for rows kept without one - by name + batch +
+    expiry. A row whose product no longer exists is not shown. A product
+    bought from several agencies is shown under the one it was bought
+    from most recently.
+
+    Returns:
+        {agency_id: [product dict, ...]}, each list sorted by name.
+    """
+    from modules.products import service as products_service
+
+    rows = agencies_repository.get_medicine_rows_for_store(store_id)
+    if not rows:
+        return {}
+
+    products = products_service.search_products(store_id)
+    by_id = {product["product_id"]: product for product in products}
+    by_lot = {}
+    for product in sorted(products, key=lambda item: item["product_id"], reverse=True):
+        by_lot[_lot_key(product.get("name"), product.get("batch_number"), product.get("expiry_date"))] = product
+
+    result, seen = {}, set()
+    for row in rows:                      # newest first
+        product_id = row.get("product_id")
+        if product_id is not None:
+            product = by_id.get(product_id)
+        else:
+            product = by_lot.get(_lot_key(row.get("name"), row.get("batch_number"), row.get("expiry_date")))
+        if product is None or product["product_id"] in seen:
+            continue
+        seen.add(product["product_id"])
+        result.setdefault(row["agency_id"], []).append(product)
+
+    for items in result.values():
+        items.sort(key=lambda item: str(item.get("name") or "").lower())
+    return result
+
+
+def search_agency_medicines(products: list, search_term: str = None, limit: int = 10) -> dict:
+    """First `limit` of an agency's medicines (name or batch contains the
+    search text, any case) plus how many matched."""
+    term = str(search_term or "").strip().lower()
+    if term:
+        products = [
+            item for item in products
+            if term in str(item.get("name") or "").lower()
+            or term in str(item.get("batch_number") or "").lower()
+        ]
+    return {"items": products[:limit], "total": len(products)}
+
+
+def _lot_key(name, batch, expiry) -> tuple:
+    return (
+        str(name or "").strip().lower(),
+        str(batch or "").strip().lower(),
+        str(expiry or "").strip(),
+    )
 
 
 def record_payment(store_id: int, agency_id: int, amount, paid_on: str = None) -> dict:

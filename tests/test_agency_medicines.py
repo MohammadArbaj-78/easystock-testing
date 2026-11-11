@@ -23,7 +23,7 @@ def test_clean_row_blank_and_invalid_become_none():
          "expiry_date": "", "mrp": "₹1,250.50", "rate": "abc"}
     )
     assert row == {"name": "Paracetamol", "batch_number": None, "quantity": 10,
-                   "expiry_date": None, "mrp": 1250.5, "rate": None}
+                   "expiry_date": None, "mrp": 1250.5, "rate": None, "product_id": None}
 
 
 def test_clean_row_without_name_is_dropped():
@@ -90,7 +90,7 @@ def test_supabase_payload():
     sent = table.insert.call_args[0][0]
     assert sent == [{"store_id": 3, "agency_id": 9, "bill_id": 4, "name": "A",
                      "batch_number": "X", "quantity": 1, "expiry_date": None,
-                     "mrp": 2, "rate": None}]
+                     "mrp": 2, "rate": None, "product_id": None}]
 
 
 def test_record_never_raises_and_looks_up_agency():
