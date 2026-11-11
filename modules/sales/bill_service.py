@@ -115,6 +115,16 @@ def line_mrp_text(line: dict) -> str:
     return " / ".join(money(mrp) for mrp in seen)
 
 
+def mrp_editable(line: dict) -> bool:
+    """Whether the line's own MRP is what the bill is priced with, so changing
+    it changes the amount. A medicine that is not in stock (or has 0 stock) is
+    priced with it. A medicine in stock is priced lot by lot with each lot's
+    own MRP (FIFO), so its line MRP only matters when some lot has no MRP."""
+    if line["kind"] != "stock":
+        return True
+    return any(mrp <= 0 for _units, mrp in (line.get("lots") or []))
+
+
 def apply_pack(line: dict, pack: int) -> None:
     """The owner told how many tablets one strip holds (a medicine whose
     pack the system does not know). From now the line counts in tablets. For

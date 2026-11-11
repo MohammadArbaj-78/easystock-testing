@@ -17,8 +17,9 @@ In Bill mode the owner:
 A medicine that is not in the store's stock (taken from the medicine list,
 or typed in full) is added with MRP 0: a box marked "MRP" sits between the
 Strip / Tablet buttons. The owner taps it (the phone's number keyboard opens),
-types the MRP and presses Enter or the tick next to the box. When the bill is
-sold, such a medicine is put into the system
+types the MRP and presses Enter or the tick next to the box. After that a
+small "MRP" button stays in the same place, to change the MRP later. When the
+bill is sold, such a medicine is put into the system
 (with 0 stock left) and the sale is recorded - see bill_service.
 
 All calculations and selling live in modules/sales/bill_service.py.
@@ -173,7 +174,7 @@ def _inject_css() -> None:
             flex: 1 1 0 !important;
         }
         div[class*="st-key-bill_utog_"] div[data-testid="stColumn"]:nth-child(3):not(:last-child) {
-            flex: 0 0 44px !important;
+            flex: 0 0 52px !important;
         }
         div[class*="st-key-bill_mrp_val_"] [data-baseweb="input"],
         div[class*="st-key-bill_mrp_val_"] [data-baseweb="base-input"] {
@@ -332,9 +333,9 @@ def _inject_swipe_script() -> None:
 
 def _inject_mrp_keypad_script() -> None:
     """Make the phone open its NUMBER keyboard (with a decimal point) when the
-    MRP box is tapped. Streamlit's text box has no option for this, so a tiny
-    browser script marks every MRP box as numeric (inputmode="decimal"), also
-    the ones drawn later. It fails silently - without it the normal keyboard
+    MRP box is tapped, and select the number already in it. Streamlit's text
+    box has no option for this, so a tiny browser script marks every MRP box as
+    numeric (inputmode="decimal"), also the ones drawn later. It fails silently - without it the normal keyboard
     opens and typing still works - and installs itself once per browser tab."""
     components.html(
         """
@@ -350,6 +351,18 @@ def _inject_mrp_keypad_script() -> None:
                 };
                 mark();
                 new MutationObserver(mark).observe(document.body, { childList: true, subtree: true });
+                // an MRP being changed: tapping the box selects the old number, so typing replaces it
+                document.addEventListener("focusin", function (e) {
+                    var box = e.target;
+                    if (!box || box.tagName !== "INPUT" || !box.closest('[class*="st-key-bill_mrp_val_"]')) { return; }
+                    [0, 60, 200].forEach(function (wait) {
+                        setTimeout(function () {
+                            if (document.activeElement === box) {
+                                try { box.select(); } catch (err) { /* not selectable: leave as is */ }
+                            }
+                        }, wait);
+                    });
+                }, true);
             };
             var bridge = window.parent.document.createElement("script");
             bridge.textContent = "(" + run.toString() + ")();";
@@ -697,9 +710,9 @@ def _change_quantity(line_id: int, direction: int) -> None:
         line["qty"] = new_quantity
 
 def _set_mrp(line_id: int) -> None:
-    """Take the MRP typed in the box (Enter, leaving the box, or the tick).
-    A number above 0 sets the MRP and the box goes away; anything else is
-    ignored and the box stays, so the owner can type again."""
+    """Take the MRP typed in the box (Enter or leaving the box). A number above
+    0 sets the MRP and closes the box; anything else is ignored and the box
+    stays, so the owner can type again."""
     line = _find_line(line_id)
     if line is None:
         return
@@ -707,6 +720,25 @@ def _set_mrp(line_id: int) -> None:
     value = bill_service.to_number(typed.replace("₹", "").replace(",", "").strip())
     if value > 0:
         line["mrp"] = round(value, 2)
+        st.session_state[f"bill_mrp_edit_{line_id}"] = False
+
+
+def _confirm_mrp(line_id: int) -> None:
+    """The tick: take what is typed (as _set_mrp) and close the box. With
+    nothing valid typed the MRP stays as it was - unless there is none yet, in
+    which case the box simply stays (see _render_unit_row)."""
+    _set_mrp(line_id)
+    st.session_state[f"bill_mrp_edit_{line_id}"] = False
+
+
+def _open_mrp_editor(line_id: int) -> None:
+    """The small MRP button: open the box with the current MRP in it."""
+    line = _find_line(line_id)
+    if line is None:
+        return
+    mrp = bill_service.to_number(line.get("mrp"))
+    st.session_state[f"bill_mrp_val_{line_id}"] = f"{mrp:.2f}".rstrip("0").rstrip(".") if mrp > 0 else ""
+    st.session_state[f"bill_mrp_edit_{line_id}"] = True
 
 
 def _remember_unit(line_id: int) -> None:
@@ -715,7 +747,7 @@ def _remember_unit(line_id: int) -> None:
 
 def _drop_widget_keys(line_id: int) -> None:
     for key in (
-        f"bill_unit_{line_id}", f"bill_mrp_val_{line_id}",
+        f"bill_unit_{line_id}", f"bill_mrp_val_{line_id}", f"bill_mrp_edit_{line_id}",
         f"bill_pack_edit_{line_id}", f"bill_pack_flash_{line_id}",
     ):
         st.session_state.pop(key, None)
@@ -746,34 +778,45 @@ def _render_bill_lines(lines: list) -> None:
 
 def _render_unit_row(line: dict, mrp: float) -> None:
     """One slim row above the - / + row: Strip right above -, Tablet right
-    above +, and the MRP box in the middle while the MRP is not known.
+    above +, and in the middle the MRP: a box (with a tick) while the MRP is
+    not known or is being changed, else a small MRP button to change it.
     Every medicine gets Strip / Tablet - when its pack size is not known the
     owner is asked for it with a grid of pack sizes (see _render_pack_input)."""
     line_id = line["id"]
     unit = _unit_of(line)
+    show_box = mrp <= 0 or st.session_state.get(f"bill_mrp_edit_{line_id}", False)
+    show_button = not show_box and bill_service.mrp_editable(line)
     with st.container(key=f"bill_utog_{line_id}"):
-        if mrp <= 0:
+        ok_col = edit_col = None
+        if show_box:
             strip_col, mrp_col, ok_col, tablet_col = st.columns([1, 3, 1, 1], vertical_alignment="center")
+        elif show_button:
+            strip_col, _left, edit_col, _right, tablet_col = st.columns([1, 1, 1, 1, 1], vertical_alignment="center")
+            mrp_col = None
         else:
             strip_col, mrp_col, tablet_col = st.columns([1, 3, 1], vertical_alignment="center")
-            ok_col = None
         with strip_col:
             st.button(
                 "Strip", key=f"bill_ustrip_{line_id}", use_container_width=True,
                 type="primary" if unit == "Strip" else "secondary",
                 on_click=_on_strip_press, args=(line_id,),
             )
-        with mrp_col:
-            if mrp <= 0:
+        if show_box:
+            with mrp_col:
                 st.text_input(
                     "MRP", key=f"bill_mrp_val_{line_id}", placeholder="MRP ₹",
                     label_visibility="collapsed", on_change=_set_mrp, args=(line_id,),
                 )
-        if ok_col is not None:
             with ok_col:
                 st.button(
                     "✔", key=f"bill_mrp_ok_{line_id}", use_container_width=True,
-                    on_click=_set_mrp, args=(line_id,),
+                    on_click=_confirm_mrp, args=(line_id,),
+                )
+        elif edit_col is not None:
+            with edit_col:
+                st.button(
+                    "MRP ✎", key=f"bill_mrp_btn_{line_id}", use_container_width=True,
+                    on_click=_open_mrp_editor, args=(line_id,),
                 )
         with tablet_col:
             st.button(
