@@ -7,7 +7,12 @@ live in the UI or the repository: deciding whether an invoice header is
 complete enough to record as a bill, and validating a payment amount.
 """
 
+import logging
+import math
+
 from modules.agencies import repository as agencies_repository
+
+logger = logging.getLogger(__name__)
 
 
 def record_bill_from_invoice_header(
@@ -40,7 +45,7 @@ def record_bill_from_invoice_header(
         image_path = upload_invoice_image(store_id, image_bytes, image_content_type)
 
     agency_id = agencies_repository.find_or_create_agency(store_id, agency_name)
-    agencies_repository.add_bill(
+    bill_id = agencies_repository.add_bill(
         store_id, agency_id, invoice_date, grand_total,
         image_path=image_path,
         image_content_type=image_content_type if image_path else None,
@@ -49,9 +54,93 @@ def record_bill_from_invoice_header(
     return {
         "recorded": True,
         "agency_id": agency_id,
+        "bill_id": bill_id,
         "agency_name": agency_name,
         "grand_total": grand_total,
     }
+
+def record_invoice_medicines(
+    store_id: int,
+    invoice_header: dict,
+    medicines: list,
+    agency_id: int = None,
+    bill_id: int = None,
+) -> dict:
+    """Keep the medicines of a saved invoice under the agency they were
+    bought from (table agency_medicines), exactly as scanned/reviewed:
+    name, batch number, quantity, expiry date, MRP, rate. Anything blank
+    or not a number is stored as empty (NULL).
+
+    Every row that has a name is kept - it is a record of what the bill
+    contained, independent of what happened to the stock. Nothing reads
+    this table yet (a screen for it can be added later).
+
+    Never raises: a failure here (for example the table is missing in the
+    database) must never stop the medicines from being saved to stock.
+
+    Args:
+        agency_id / bill_id: From the ledger entry of the same save, if
+            one was recorded. Without agency_id the agency is looked up
+            (or created) from the invoice header's agency name.
+
+    Returns:
+        {"recorded": <rows kept>} or {"recorded": 0, "reason"/"error": ...}
+    """
+    try:
+        rows = [
+            cleaned for cleaned in (_clean_medicine_row(m) for m in (medicines or []))
+            if cleaned is not None
+        ]
+        if not rows:
+            return {"recorded": 0, "reason": "No medicines."}
+
+        if agency_id is None:
+            agency_name = str((invoice_header or {}).get("agency_name") or "").strip()
+            if not agency_name:
+                return {"recorded": 0, "reason": "No agency name."}
+            agency_id = agencies_repository.find_or_create_agency(store_id, agency_name)
+
+        count = agencies_repository.add_invoice_medicines(store_id, agency_id, bill_id, rows)
+        return {"recorded": count}
+    except Exception as exc:  # best effort by design - see docstring
+        logger.warning("Could not keep the invoice medicines under the agency: %s", exc)
+        return {"recorded": 0, "error": str(exc)}
+
+
+def _clean_medicine_row(medicine: dict):
+    """One reviewed medicine row -> the row to keep, or None if it has no name."""
+    name = str((medicine or {}).get("name") or "").strip()
+    if not name:
+        return None
+
+    def text(key):
+        value = str(medicine.get(key) or "").strip()
+        return value or None
+
+    return {
+        "name": name,
+        "batch_number": text("batch_number"),
+        "quantity": _number_or_none(medicine.get("quantity")),
+        "expiry_date": text("expiry_date"),
+        "mrp": _number_or_none(medicine.get("mrp")),
+        "rate": _number_or_none(medicine.get("rate")),
+    }
+
+
+def _number_or_none(value):
+    """A typed/scanned number as a float (a whole number as an int), or None
+    when it is blank, not a number, or negative."""
+    text = str(value if value is not None else "").replace("₹", "").replace(",", "").strip()
+    if not text:
+        return None
+    try:
+        number = float(text)
+    except ValueError:
+        return None
+    if math.isnan(number) or math.isinf(number) or number < 0:
+        return None
+    return int(number) if number == int(number) else number
+
 
 def get_agency_ledger(store_id: int) -> list:
     """Return every agency for this store with its running balance.

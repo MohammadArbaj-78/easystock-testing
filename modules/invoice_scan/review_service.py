@@ -413,11 +413,31 @@ def save_invoice_medicines(store_id: int) -> dict:
         image_bytes=session.get("image_bytes"),
         image_content_type=session.get("image_content_type"),
     )
+
+    # Keep this bill's medicines under the agency, exactly as reviewed
+    # (name, batch, qty, expiry, MRP, rate). Once per review session, so
+    # pressing Save again (e.g. after filling in a missing agency name)
+    # never keeps the same bill's medicines twice. Never blocks or fails
+    # the save above - see record_invoice_medicines.
+    agency_medicines = {"recorded": 0}
+    if not session.get("agency_medicines_kept"):
+        from modules.agencies.service import record_invoice_medicines
+        agency_medicines = record_invoice_medicines(
+            store_id,
+            get_invoice_header(),
+            medicines,
+            agency_id=ledger.get("agency_id"),
+            bill_id=ledger.get("bill_id"),
+        )
+        if agency_medicines.get("recorded") and _SESSION_KEY in st.session_state:
+            st.session_state[_SESSION_KEY]["agency_medicines_kept"] = True
+
     result = {
         "saved": saved,
         "skipped": skipped,
         "pending": len(pending_matches),
         "ledger": ledger,
+        "agency_medicines": agency_medicines,
     }
     if _SESSION_KEY in st.session_state:
         st.session_state[_SESSION_KEY]["save_result"] = result

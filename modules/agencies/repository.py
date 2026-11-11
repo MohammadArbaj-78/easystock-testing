@@ -88,6 +88,28 @@ def add_bill(store_id: int, agency_id: int, invoice_date: str, grand_total: floa
         return _add_bill_supabase(store_id, agency_id, invoice_date, grand_total, image_path, image_content_type)
     return _add_bill_sqlite(store_id, agency_id, invoice_date, grand_total, image_path, image_content_type)
 
+def add_invoice_medicines(store_id: int, agency_id: int, bill_id, medicines: list) -> int:
+    """Insert the medicines of one scanned bill against an agency (table
+    agency_medicines). Append-only, like bills and payments.
+
+    Args:
+        store_id: The current store.
+        agency_id: From find_or_create_agency().
+        bill_id: The bill these medicines came with, or None if no bill
+            was recorded for the invoice.
+        medicines: Already cleaned rows - dicts with name, batch_number,
+            quantity, expiry_date, mrp, rate (blank values are None).
+
+    Returns:
+        How many rows were inserted.
+    """
+    if not medicines:
+        return 0
+    if ACTIVE_DB_BACKEND == "supabase":
+        return _add_invoice_medicines_supabase(store_id, agency_id, bill_id, medicines)
+    return _add_invoice_medicines_sqlite(store_id, agency_id, bill_id, medicines)
+
+
 def add_payment(store_id: int, agency_id: int, amount: float, paid_on: str = None) -> int:
     """Insert one payment row against an agency. The only write this
     file performs to agency_payments.
@@ -185,6 +207,37 @@ def _add_bill_sqlite(
             (store_id, agency_id, invoice_date or "", grand_total, image_path, image_content_type),
         )
         return cursor.lastrowid
+
+_MEDICINE_COLUMNS = ("name", "batch_number", "quantity", "expiry_date", "mrp", "rate")
+
+
+def _medicine_payload(store_id: int, agency_id: int, bill_id, medicine: dict) -> dict:
+    payload = {"store_id": store_id, "agency_id": agency_id, "bill_id": bill_id}
+    for column in _MEDICINE_COLUMNS:
+        payload[column] = medicine.get(column)
+    return payload
+
+
+def _add_invoice_medicines_sqlite(store_id: int, agency_id: int, bill_id, medicines: list) -> int:
+    rows = [
+        (
+            store_id, agency_id, bill_id,
+            medicine.get("name"), medicine.get("batch_number"), medicine.get("quantity"),
+            medicine.get("expiry_date"), medicine.get("mrp"), medicine.get("rate"),
+        )
+        for medicine in medicines
+    ]
+    with get_connection() as connection:
+        connection.executemany(
+            """
+            INSERT INTO agency_medicines
+                (store_id, agency_id, bill_id, name, batch_number, quantity, expiry_date, mrp, rate)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+    return len(rows)
+
 
 def _add_payment_sqlite(store_id: int, agency_id: int, amount: float, paid_on: str = None) -> int:
     with get_connection() as connection:
@@ -325,6 +378,17 @@ def _add_bill_supabase(
         payload["image_content_type"] = image_content_type
     response = _bills_table().insert(payload).execute()
     return response.data[0]["bill_id"]
+
+def _medicines_table():
+    from core.supabase_client import get_supabase_client
+    return get_supabase_client().table("agency_medicines")
+
+
+def _add_invoice_medicines_supabase(store_id: int, agency_id: int, bill_id, medicines: list) -> int:
+    payload = [_medicine_payload(store_id, agency_id, bill_id, medicine) for medicine in medicines]
+    _medicines_table().insert(payload).execute()
+    return len(payload)
+
 
 def _add_payment_supabase(store_id: int, agency_id: int, amount: float, paid_on: str = None) -> int:
     payload = {"store_id": store_id, "agency_id": agency_id, "amount": amount}

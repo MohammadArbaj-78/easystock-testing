@@ -326,6 +326,35 @@ def initialize_database() -> None:
                     if "duplicate column name" not in str(error).lower():
                         raise
 
+        # The medicines of every scanned bill, kept per agency, exactly as
+        # they were saved from the invoice (nothing here is ever updated by
+        # sales or stock changes). Missing values stay NULL. Append-only.
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS agency_medicines (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                store_id INTEGER NOT NULL,
+                agency_id INTEGER NOT NULL,
+                bill_id INTEGER,
+                name TEXT NOT NULL,
+                batch_number TEXT,
+                quantity REAL,
+                expiry_date TEXT,
+                mrp REAL,
+                rate REAL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (store_id) REFERENCES stores (store_id),
+                FOREIGN KEY (agency_id) REFERENCES agencies (agency_id)
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_agency_medicines_store_agency
+            ON agency_medicines (store_id, agency_id)
+            """
+        )
+
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS agency_payments (
