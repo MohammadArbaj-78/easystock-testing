@@ -534,21 +534,26 @@ def _get_payments_for_store_supabase(store_id: int) -> list:
 
 
 def _get_medicine_rows_for_store_supabase(store_id: int) -> list:
-    columns = "id, agency_id, product_id, name, batch_number, expiry_date"
-    try:
-        return _fetch_all(lambda: (
-            _medicines_table().select(columns).eq("store_id", store_id).order("id", desc=True)
-        ))
-    except Exception:
-        # product_id column not added yet - fall back to name matching only.
-        rows = _fetch_all(lambda: (
-            _medicines_table()
-            .select("id, agency_id, name, batch_number, expiry_date")
-            .eq("store_id", store_id).order("id", desc=True)
-        ))
-        for row in rows:
-            row["product_id"] = None
-        return rows
+    """All kept medicine rows, newest first. Reads every column (select *)
+    and orders in Python, so it works whatever the table's id /
+    timestamp / product_id columns are called or whether they exist."""
+    rows = _fetch_all(lambda: _medicines_table().select("*").eq("store_id", store_id))
+    if rows and all(row.get("id") is not None for row in rows):
+        rows.sort(key=lambda row: row["id"], reverse=True)
+    elif rows and all(row.get("created_at") for row in rows):
+        rows.sort(key=lambda row: str(row["created_at"]), reverse=True)
+    else:
+        rows.reverse()                    # insertion order -> newest first
+    return [
+        {
+            "agency_id": row.get("agency_id"),
+            "product_id": row.get("product_id"),
+            "name": row.get("name"),
+            "batch_number": row.get("batch_number"),
+            "expiry_date": row.get("expiry_date"),
+        }
+        for row in rows
+    ]
 
 
 def _get_bills_for_agency_supabase(store_id: int, agency_id: int) -> list:

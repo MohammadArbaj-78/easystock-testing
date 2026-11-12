@@ -135,8 +135,40 @@ def test_ui_page_renders_lazily():
              "bills": [{"bill_id": 5, "invoice_date": "d", "grand_total": 1.0, "image_path": "p"}],
              "payments": [], "total_billed": 1, "total_paid": 0, "balance": 1}}), \
          patch.object(ui, "_get_agency_medicines_cached") as meds, \
-         patch.object(ui, "get_invoice_image_url") as url:
+         patch.object(ui, "_get_bill_image_urls_cached", return_value={"p": "https://x/y?a=1&b=2"}) as urls:
         ui.render_agencies_page()
     meds.assert_not_called()          # medicines untouched until the switch is on
-    url.assert_not_called()           # no photo link fetched until asked for
+    urls.assert_called_once_with(("p",))      # ONE call for all photos
+    shown = [c.args[0] for c in st.markdown.call_args_list if "<img" in str(c.args[0])]
+    assert shown and 'loading="lazy"' in shown[0] and "a=1&amp;b=2" in shown[0]
     st.container.assert_called_with(key="agency_card_1")
+
+
+def test_medicine_rows_work_without_id_column():
+    table = MagicMock()
+    q = table.select.return_value.eq.return_value
+    q.range.return_value.execute.return_value.data = [
+        {"agency_id": 1, "name": "Old", "batch_number": "a", "expiry_date": "x"},
+        {"agency_id": 2, "name": "New", "batch_number": "b", "expiry_date": "y"},
+    ]
+    client = MagicMock(); client.table.return_value = table
+    fake = MagicMock(); fake.get_supabase_client.return_value = client
+    with patch.object(repository, "ACTIVE_DB_BACKEND", "supabase"), \
+         patch.dict(sys.modules, {"core.supabase_client": fake}):
+        rows = repository.get_medicine_rows_for_store(1)
+    assert [r["name"] for r in rows] == ["New", "Old"] and rows[0]["product_id"] is None
+    table.select.assert_called_with("*")
+
+
+def test_bulk_signed_urls():
+    from core import supabase_storage as s
+    client = MagicMock()
+    client.storage.from_.return_value.create_signed_urls.return_value = [
+        {"path": "a", "signedURL": "u1", "error": None}, {"path": "b", "signedURL": None, "error": "x"}]
+    fake = MagicMock(); fake.get_supabase_client.return_value = client
+    with patch.dict(sys.modules, {"core.supabase_client": fake}):
+        assert s.get_invoice_image_urls(["a", "b", "a", None]) == {"a": "u1"}
+        client.storage.from_.return_value.create_signed_urls.assert_called_once_with(["a", "b"], 900)
+        client.storage.from_.return_value.create_signed_urls.side_effect = RuntimeError
+        assert s.get_invoice_image_urls(["a"]) == {}
+    assert s.get_invoice_image_urls([]) == {}

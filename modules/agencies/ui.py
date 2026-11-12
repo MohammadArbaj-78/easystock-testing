@@ -16,7 +16,9 @@ import streamlit as st
 from modules.agencies import service as agencies_service
 from core.session import get_current_store_id
 from core.cache_utils import get_cache_epoch, bump_cache_epoch
-from core.supabase_storage import get_invoice_image_url
+import html
+
+from core.supabase_storage import get_invoice_image_urls
 # The medicine rows inside an agency are the Products screen's own rows
 # (same summary line, same Edit / Delete) - reused, not copied.
 from modules.products.ui import _render_product_row
@@ -40,6 +42,13 @@ _CARD_CSS = """
 }
 </style>
 """
+
+
+@st.cache_data(ttl=840, show_spinner=False)
+def _get_bill_image_urls_cached(image_paths: tuple) -> dict:
+    """Signed urls (valid 15 min) for every bill photo, from one storage
+    call - so opening a bill needs no further wait."""
+    return get_invoice_image_urls(list(image_paths))
 
 
 @st.cache_data(show_spinner=False)
@@ -78,6 +87,13 @@ def render_agencies_page() -> None:
 
     st.markdown(_CARD_CSS, unsafe_allow_html=True)
     all_details = _get_all_agency_details_cached(store_id, get_cache_epoch(store_id))
+    photo_paths = tuple(sorted({
+        bill["image_path"]
+        for detail in all_details.values()
+        for bill in detail["bills"]
+        if bill.get("image_path")
+    }))
+    image_urls = _get_bill_image_urls_cached(photo_paths) if photo_paths else {}
 
     total_balance = sum(agency["balance"] for agency in agencies)
     st.caption(f"Total outstanding across all agencies: ₹{total_balance:,.2f}")
@@ -93,10 +109,10 @@ def render_agencies_page() -> None:
 
         with st.container(key=f"agency_card_{agency['agency_id']}"):
             with st.expander(f"{agency['agency_name']} — {balance_label}"):
-                _render_agency_detail(store_id, agency, all_details.get(agency["agency_id"]))
+                _render_agency_detail(store_id, agency, all_details.get(agency["agency_id"]), image_urls)
 
 
-def _render_agency_detail(store_id: int, agency: dict, detail: dict = None) -> None:
+def _render_agency_detail(store_id: int, agency: dict, detail: dict = None, image_urls: dict = None) -> None:
     """Render one agency's dropdown: summary, Pay form, its medicines,
     then its bills. `detail` comes from ONE query for all agencies."""
     agency_id = agency["agency_id"]
@@ -118,7 +134,7 @@ def _render_agency_detail(store_id: int, agency: dict, detail: dict = None) -> N
         return
 
     for bill in detail["bills"]:
-        _render_bill_row(bill)
+        _render_bill_row(bill, image_urls or {})
 
 
 def _render_medicines_section(store_id: int, agency_id: int) -> None:
@@ -183,7 +199,7 @@ def _render_agency_medicines(store_id: int, agency_id: int) -> None:
         )
 
 
-def _render_bill_row(bill: dict) -> None:
+def _render_bill_row(bill: dict, image_urls: dict = None) -> None:
     """Render one bill as a single expandable row - the date + total is
     the collapsed summary (same per-row-expander pattern as Products),
     and opening it reveals the photo, if this bill has one stored.
@@ -198,13 +214,7 @@ def _render_bill_row(bill: dict) -> None:
             st.caption("No photo saved for this bill.")
             return
 
-        # The photo link is fetched from storage only when asked for:
-        # every bill of every agency used to fetch one on every screen
-        # load, which is what made this screen slow.
-        if not st.toggle("📷 Photo dikhao", key=f"agency_bill_photo_{bill.get('bill_id')}"):
-            return
-
-        image_url = get_invoice_image_url(image_path)
+        image_url = (image_urls or {}).get(image_path)
         if not image_url:
             st.caption("Could not load the photo right now. Please try again later.")
             return
@@ -217,7 +227,13 @@ def _render_bill_row(bill: dict) -> None:
             # pinch-zoom inside this app's embedded iframe on mobile -
             # a plain link opens the photo in the browser's OWN image
             # viewer (a new tab), where native pinch-zoom works fully.
-            st.image(image_url)
+            # loading="lazy": the browser downloads the photo only when this
+            # bill is opened, not for every bill of every agency on load.
+            st.markdown(
+                f'<img src="{html.escape(image_url, quote=True)}" loading="lazy" '
+                f'style="width:100%;border-radius:6px">',
+                unsafe_allow_html=True,
+            )
             st.markdown(f"[🔍 Open full-size photo (pinch-to-zoom)]({image_url})")
 
 def _render_pay_form(store_id: int, agency_id: int) -> None:

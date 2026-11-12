@@ -82,6 +82,32 @@ def get_invoice_image_url(image_path: str) -> str:
         return None
 
 
+def get_invoice_image_urls(image_paths: list, expiry_seconds: int = 900) -> dict:
+    """Signed urls for MANY bill photos in ONE storage call.
+
+    Returns {image_path: signed_url}; a photo whose url could not be made
+    is simply missing from the result. Never raises (returns {} on failure).
+    """
+    paths = [path for path in dict.fromkeys(image_paths or []) if path]
+    if not paths:
+        return {}
+    try:
+        from core.supabase_client import get_supabase_client
+
+        response = get_supabase_client().storage.from_(BUCKET_NAME).create_signed_urls(
+            paths, expiry_seconds
+        )
+        urls = {}
+        for item in response or []:
+            item = item if isinstance(item, dict) else dict(item)
+            url = item.get("signedURL") or item.get("signedUrl")
+            if item.get("path") and url and not item.get("error"):
+                urls[item["path"]] = url
+        return urls
+    except Exception:
+        return {}
+
+
 def _extension_for_content_type(content_type: str) -> str:
     return {
         "image/jpeg": ".jpg",
