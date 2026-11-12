@@ -130,6 +130,9 @@ def _save_real_qty_switch(store_id: int, key: str) -> None:
         store_settings_service.set_invoice_saves_real_quantity(store_id, st.session_state[key])
         st.session_state.pop(error_key, None)
     except Exception as exc:
+        # Not saved: put the switch back so it never shows a value the
+        # database does not have.
+        st.session_state[key] = not st.session_state[key]
         st.session_state[error_key] = str(exc)
 
 
@@ -148,7 +151,7 @@ def _render_real_qty_switch(store_id: int) -> None:
         args=(store_id, key),
     )
     if st.session_state.get(f"{key}_error"):
-        st.error("Ye setting save nahi ho payi. Dobara try karo.")
+        st.error("Ye setting save nahi ho payi. Supabase me store_app_settings table aur uski policy check karo.")
     elif st.session_state[key]:
         st.caption("ON: invoice scan ki medicine asli qty par save hogi.")
     else:
