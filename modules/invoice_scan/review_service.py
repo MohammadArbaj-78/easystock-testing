@@ -363,12 +363,18 @@ def save_invoice_medicines(store_id: int) -> dict:
     pending_matches = []
     saved_product_ids = {}      # row index -> product_id of the lot it went into
 
+    # Store setting "Asli qty save karo" (Quick Setup): when it is OFF the
+    # store only scans invoices for now, so every medicine is saved with
+    # quantity 0 (everything else is saved exactly as usual).
+    from modules.store_settings.service import invoice_saves_real_quantity
+    save_real_qty = invoice_saves_real_quantity(store_id)
+
     for idx, row in enumerate(medicines):
         lot_data = {
             "name":         row.get("name", ""),
             "batch_number": row.get("batch_number", ""),
             "expiry_date":  row.get("expiry_date", ""),
-            "quantity":     row.get("quantity", ""),
+            "quantity":     row.get("quantity", "") if save_real_qty else 0,
             "mrp":          row.get("mrp", ""),
             "rate":         row.get("rate", ""),
             "gst_percent":  row.get("gst_percent", ""),

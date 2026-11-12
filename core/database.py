@@ -395,6 +395,17 @@ def initialize_database() -> None:
 
         connection.execute(
             """
+            CREATE TABLE IF NOT EXISTS store_app_settings (
+                store_id INTEGER PRIMARY KEY,
+                save_real_qty INTEGER NOT NULL DEFAULT 1,
+                updated_at TEXT,
+                FOREIGN KEY (store_id) REFERENCES stores (store_id)
+            )
+            """
+        )
+
+        connection.execute(
+            """
             CREATE TABLE IF NOT EXISTS store_bill_settings (
                 store_id INTEGER PRIMARY KEY,
                 seal_sign_image TEXT,

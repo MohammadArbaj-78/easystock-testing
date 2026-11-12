@@ -10,6 +10,7 @@ properly the first time a real invoice for that medicine is scanned.
 import streamlit as st
 
 from modules.quick_setup import service as quick_setup_service
+from modules.store_settings import service as store_settings_service
 from core.session import get_current_store_id
 from core.cache_utils import bump_cache_epoch
 
@@ -53,6 +54,8 @@ def render_quick_setup_page() -> None:
 def _render_database_search_tab(store_id: int, cart: dict) -> None:
     """The original Quick Setup tab: search the medicine master list,
     or browse it page-by-page with A-Z jump navigation."""
+    _render_real_qty_switch(store_id)
+
     # Streamlit forgets a widget's value while another page is shown, so the
     # search text and the A-Z letter are also kept under plain keys and put
     # back when the owner returns.
@@ -119,6 +122,41 @@ def _render_database_search_tab(store_id: int, cart: dict) -> None:
     visible = quick_setup_service.browse_medicines_page(current_page, BROWSE_PAGE_SIZE)
     for index, medicine in enumerate(visible):
         _render_medicine_block(store_id, medicine, cart, index)
+
+def _save_real_qty_switch(store_id: int, key: str) -> None:
+    """Switch callback: remember the choice for this store in the database."""
+    error_key = f"{key}_error"
+    try:
+        store_settings_service.set_invoice_saves_real_quantity(store_id, st.session_state[key])
+        st.session_state.pop(error_key, None)
+    except Exception as exc:
+        st.session_state[error_key] = str(exc)
+
+
+def _render_real_qty_switch(store_id: int) -> None:
+    """The "Asli qty save karo" switch: ON = invoice scans save the real
+    quantity, OFF = they save every medicine with quantity 0. Stored per
+    store in the database, so it stays as set until the owner changes it."""
+    key = f"quick_setup_real_qty_{store_id}"
+    if key not in st.session_state:
+        st.session_state[key] = store_settings_service.invoice_saves_real_quantity(store_id)
+
+    st.toggle(
+        "Asli qty save karo (Invoice Scan)",
+        key=key,
+        on_change=_save_real_qty_switch,
+        args=(store_id, key),
+    )
+    if st.session_state.get(f"{key}_error"):
+        st.error("Ye setting save nahi ho payi. Dobara try karo.")
+    elif st.session_state[key]:
+        st.caption("ON: invoice scan ki medicine asli qty par save hogi.")
+    else:
+        st.caption(
+            "OFF: invoice scan ki sab medicine qty 0 par save hogi "
+            "(naam, batch, expiry, MRP sab save hoga)."
+        )
+
 
 def _render_letter_list(store_id: int, cart: dict, letter: str) -> None:
     """The A-Z view: page through ONLY the medicines starting with `letter`."""
