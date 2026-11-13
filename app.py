@@ -102,6 +102,7 @@ def render_main_app() -> None:
             st.rerun()
 
         _render_sidebar_style()
+        _remove_old_sidebar_backdrop()
         _render_mobile_sidebar_autoclose(selected_page)
         _render_back_button_history(selected_page)
     _render_no_pull_refresh_css()
@@ -326,7 +327,8 @@ _SIDEBAR_CSS = """<style>
         padding: 0 14px !important;
     }
     [data-testid="stSidebar"] [role="radiogroup"] label [data-testid="stMarkdownContainer"] p {
-        font-size: 1.25rem !important;
+        font-size: 1.1rem !important;
+        white-space: nowrap !important;
     }
 }
 </style>"""
@@ -335,6 +337,27 @@ _SIDEBAR_CSS = """<style>
 def _render_sidebar_style() -> None:
     """ChatGPT-style sidebar look (see _SIDEBAR_CSS above). CSS only."""
     st.markdown(_SIDEBAR_CSS, unsafe_allow_html=True)
+
+
+def _remove_old_sidebar_backdrop() -> None:
+    """Remove the dim layer left over from the earlier swipe / backdrop script.
+
+    That script put a full-screen dim <div> (id easystock-sidebar-backdrop)
+    into the browser page. Streamlit reconnects after an update without
+    reloading the page, so the old layer stayed on top of the open sidebar and
+    swallowed every tap. This removes it; once every browser has been
+    reloaded once, this function and its call can be deleted."""
+    components.html(
+        """
+        <script>
+        try {
+            var old = window.parent.document.getElementById("easystock-sidebar-backdrop");
+            if (old) { old.remove(); }
+        } catch (e) { /* best effort */ }
+        </script>
+        """,
+        height=0,
+    )
 
 
 def _render_mobile_sidebar_autoclose(current_page: str) -> None:
