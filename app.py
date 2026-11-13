@@ -302,7 +302,7 @@ _SIDEBAR_CSS = """<style>
     cursor: pointer !important;
     transition: background-color 0.15s ease !important;
 }
-[data-testid="stSidebar"] [role="radiogroup"] label > div:not([data-testid="stMarkdownContainer"]) {
+[data-testid="stSidebar"] [role="radiogroup"] label > div:not([data-testid="stMarkdownContainer"]):not(:has([data-testid="stMarkdownContainer"])) {
     display: none !important;
 }
 [data-testid="stSidebar"] [role="radiogroup"] label [data-testid="stMarkdownContainer"] p {
