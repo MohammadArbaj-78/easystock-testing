@@ -101,7 +101,8 @@ def render_main_app() -> None:
             _clear_persisted_refresh_token()
             st.rerun()
 
-        _render_mobile_sidebar_css()
+        _render_sidebar_style()
+        _render_sidebar_gestures()
         _render_mobile_sidebar_autoclose(selected_page)
         _render_back_button_history(selected_page)
     _render_no_pull_refresh_css()
@@ -245,33 +246,222 @@ def _render_back_button_history(current_page: str) -> None:
     )
 
 
-def _render_mobile_sidebar_css() -> None:
-    """Mobile-only sidebar polish: bigger touch targets and slightly
-    larger text on the nav items. Entirely inside
-    @media (max-width: 768px), so desktop spacing/fonts are completely
-    unaffected. Scoped to [data-testid="stSidebar"] [role="radiogroup"]
-    label - the sidebar's own nav radio rows - so nothing outside the
-    sidebar, and no other st.radio elsewhere in the app, is touched.
-    role="radiogroup" is a standard ARIA attribute Streamlit's radio
-    widget already provides, not an internal/unstable test id.
-    """
-    st.markdown(
-        """
-        <style>
-        @media (max-width: 768px) {
-            [data-testid="stSidebar"] [role="radiogroup"] label {
-                min-height: 3rem !important;
-                padding: 0.85rem 0.6rem !important;
-                display: flex !important;
-                align-items: center !important;
-                font-size: 1.12em !important;
-                line-height: 1.4 !important;
+# --- Sidebar look (ChatGPT-style) -----------------------------------------
+# One <style> block for the whole sidebar. Only the sidebar and its round
+# open button are touched; nothing outside them. Nav rows are the sidebar's
+# own st.radio (role="radiogroup"), so page selection logic is unchanged -
+# only how the rows LOOK changes (no radio dot, icon + text row, highlight on
+# the selected page). Phone sizes follow ChatGPT's phone sidebar: the panel
+# takes 80% of the screen width, rows are ~48px tall with 20px text.
+_SIDEBAR_CSS = """<style>
+/* ---- round hamburger button (top-left), like ChatGPT ---- */
+[data-testid="stExpandSidebarButton"],
+[data-testid="stSidebarCollapsedControl"] button,
+[data-testid="collapsedControl"] button {
+    width: 44px !important;
+    height: 44px !important;
+    min-height: 44px !important;
+    padding: 0 !important;
+    border-radius: 50% !important;
+    background-color: #ffffff !important;
+    background-image: url("data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%232B2620' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='M4 8h16M4 16h10'/%3E%3C/svg%3E") !important;
+    background-repeat: no-repeat !important;
+    background-position: center !important;
+    background-size: 24px 24px !important;
+    border: 1px solid rgba(43, 38, 32, 0.08) !important;
+    box-shadow: 0 1px 4px rgba(43, 38, 32, 0.14) !important;
+}
+[data-testid="stExpandSidebarButton"] > *,
+[data-testid="stSidebarCollapsedControl"] button > *,
+[data-testid="collapsedControl"] button > * {
+    display: none !important;
+}
+/* ---- close button inside the sidebar: same round look ---- */
+[data-testid="stSidebarCollapseButton"] button {
+    width: 44px !important;
+    height: 44px !important;
+    border-radius: 50% !important;
+    background-color: #ffffff !important;
+    border: 1px solid rgba(43, 38, 32, 0.08) !important;
+    box-shadow: 0 1px 4px rgba(43, 38, 32, 0.14) !important;
+}
+[data-testid="stSidebarResizeHandle"] { display: none !important; }
+/* ---- feature rows: icon + text, no radio dot ---- */
+[data-testid="stSidebar"] [role="radiogroup"] {
+    gap: 4px !important;
+}
+[data-testid="stSidebar"] [role="radiogroup"] label {
+    box-sizing: border-box !important;
+    width: 100% !important;
+    min-height: 40px !important;
+    margin: 0 !important;
+    padding: 0 12px !important;
+    border-radius: 12px !important;
+    display: flex !important;
+    align-items: center !important;
+    cursor: pointer !important;
+    transition: background-color 0.15s ease !important;
+}
+[data-testid="stSidebar"] [role="radiogroup"] label > div:not([data-testid="stMarkdownContainer"]) {
+    display: none !important;
+}
+[data-testid="stSidebar"] [role="radiogroup"] label [data-testid="stMarkdownContainer"] p {
+    margin: 0 !important;
+    font-size: 1rem !important;
+    font-weight: 500 !important;
+    line-height: 1.3 !important;
+}
+[data-testid="stSidebar"] [role="radiogroup"] label:hover {
+    background-color: rgba(43, 38, 32, 0.06) !important;
+}
+[data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) {
+    background-color: rgba(26, 122, 110, 0.14) !important;
+}
+[data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) [data-testid="stMarkdownContainer"] p {
+    font-weight: 700 !important;
+}
+/* ---- phone: ChatGPT-size panel (80% of the screen) and bigger rows ---- */
+@media (max-width: 768px) {
+    [data-testid="stSidebar"] {
+        width: min(80vw, 380px) !important;
+        min-width: min(80vw, 380px) !important;
+        max-width: min(80vw, 380px) !important;
+        z-index: 1000001 !important;
+    }
+    [data-testid="stSidebar"][aria-expanded="true"] {
+        box-shadow: 4px 0 24px rgba(0, 0, 0, 0.18) !important;
+    }
+    [data-testid="stSidebar"][aria-expanded="false"] {
+        transform: translateX(-100%) !important;
+        margin-left: 0 !important;
+        box-shadow: none !important;
+        visibility: hidden !important;
+        pointer-events: none !important;
+    }
+    [data-testid="stSidebar"] [role="radiogroup"] label {
+        min-height: 48px !important;
+        padding: 0 14px !important;
+    }
+    [data-testid="stSidebar"] [role="radiogroup"] label [data-testid="stMarkdownContainer"] p {
+        font-size: 1.25rem !important;
+    }
+}
+</style>"""
+
+
+def _render_sidebar_style() -> None:
+    """ChatGPT-style sidebar look (see _SIDEBAR_CSS above). CSS only."""
+    st.markdown(_SIDEBAR_CSS, unsafe_allow_html=True)
+
+
+# --- Sidebar gestures (phone) ------------------------------------------------
+# Streamlit cannot open/close its sidebar from Python, so this small best-effort
+# script (same approach as the auto-close below) adds, on phones only:
+#   * swipe right starting at the left edge of the screen -> open the sidebar
+#   * swipe left while it is open                          -> close it
+#   * a dim backdrop behind the open sidebar; tapping it   -> closes it
+# It only presses Streamlit's own open/close buttons, so nothing else changes.
+# It installs itself once per browser page and fails silently if the buttons
+# are not found.
+_SIDEBAR_GESTURES_JS = """
+<script>
+(function () {
+    try {
+        var host = window.parent;
+        if (host.__easystockSidebarGestures) { return; }
+        var install = function () {
+            if (window.__easystockSidebarGestures) { return; }
+            window.__easystockSidebarGestures = true;
+            var MOBILE_MAX = 768;   // same breakpoint as the sidebar CSS
+            var EDGE = 64;          // swipe must start within this many px of the left edge
+            var MIN_DX = 60;        // minimum horizontal travel
+            var OPEN_SELECTORS = [
+                '[data-testid="stExpandSidebarButton"]',
+                '[data-testid="stSidebarCollapsedControl"] button',
+                '[data-testid="collapsedControl"] button'
+            ];
+            var CLOSE_SELECTORS = [
+                '[data-testid="stSidebarCollapseButton"] button',
+                '[data-testid="stSidebarCollapseButton"]',
+                '[data-testid="stSidebar"] button[kind="header"]'
+            ];
+            function clickFirst(selectors) {
+                for (var i = 0; i < selectors.length; i++) {
+                    var el = document.querySelector(selectors[i]);
+                    if (el) { el.click(); return true; }
+                }
+                return false;
             }
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
+            function isOpen() {
+                var sb = document.querySelector('[data-testid="stSidebar"]');
+                if (!sb) { return false; }
+                var attr = sb.getAttribute('aria-expanded');
+                if (attr !== null) { return attr === 'true'; }
+                return sb.getBoundingClientRect().right > 40;
+            }
+            function isMobile() { return window.innerWidth <= MOBILE_MAX; }
+            function inHorizontalScroller(el) {
+                while (el && el !== document.body) {
+                    if (el.nodeType === 1) {
+                        if (el.matches && el.matches('[role="slider"], input[type="range"]')) { return true; }
+                        var cs = window.getComputedStyle(el);
+                        if (/(auto|scroll)/.test(cs.overflowX) && el.scrollWidth > el.clientWidth + 1) { return true; }
+                    }
+                    el = el.parentNode;
+                }
+                return false;
+            }
+
+            // dim backdrop behind the open sidebar (tap = close)
+            var backdrop = document.createElement('div');
+            backdrop.id = 'easystock-sidebar-backdrop';
+            backdrop.style.cssText = 'position:fixed;top:0;right:0;bottom:0;left:0;' +
+                'background:rgba(0,0,0,0.35);opacity:0;pointer-events:none;' +
+                'transition:opacity 0.2s ease;z-index:1000000;';
+            document.body.appendChild(backdrop);
+            backdrop.addEventListener('click', function () { clickFirst(CLOSE_SELECTORS); });
+            setInterval(function () {
+                var show = isMobile() && isOpen();
+                backdrop.style.opacity = show ? '1' : '0';
+                backdrop.style.pointerEvents = show ? 'auto' : 'none';
+            }, 150);
+
+            // swipe gestures
+            var startX = 0, startY = 0, mode = null;
+            document.addEventListener('touchstart', function (e) {
+                mode = null;
+                if (!isMobile() || !e.touches || e.touches.length !== 1) { return; }
+                var t = e.touches[0];
+                startX = t.clientX; startY = t.clientY;
+                if (isOpen()) { mode = 'close'; }
+                else if (startX <= EDGE && !inHorizontalScroller(e.target)) { mode = 'open'; }
+            }, { passive: true });
+            document.addEventListener('touchend', function (e) {
+                var m = mode; mode = null;
+                if (!m || !e.changedTouches || !e.changedTouches.length) { return; }
+                var t = e.changedTouches[0];
+                var dx = t.clientX - startX, dy = t.clientY - startY;
+                if (Math.abs(dx) < MIN_DX || Math.abs(dx) < Math.abs(dy) * 1.5) { return; }
+                if (m === 'open' && dx > 0 && !isOpen()) { clickFirst(OPEN_SELECTORS); }
+                else if (m === 'close' && dx < 0 && isOpen()) { clickFirst(CLOSE_SELECTORS); }
+            }, { passive: true });
+            document.addEventListener('touchcancel', function () { mode = null; }, { passive: true });
+        };
+        var bridge = host.document.createElement('script');
+        bridge.textContent = '(' + install.toString() + ')();';
+        host.document.body.appendChild(bridge);
+        host.__easystockSidebarGestures = true;
+    } catch (e) {
+        // best effort - the sidebar still opens/closes with its buttons
+    }
+})();
+</script>
+"""
+
+
+def _render_sidebar_gestures() -> None:
+    """Swipe-to-open / swipe-to-close and the dim backdrop (phone only)."""
+    components.html(_SIDEBAR_GESTURES_JS, height=0)
 
 
 def _render_mobile_sidebar_autoclose(current_page: str) -> None:

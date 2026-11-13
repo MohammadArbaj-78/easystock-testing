@@ -300,21 +300,39 @@ def _render_seal_sign_section(store_id: int) -> None:
                 bump_cache_epoch(store_id)
                 st.success("DL number save ho gaya." if dl_value.strip() else "DL number hata diya.")
 
+        seal_flash = st.session_state.pop("bill_seal_flash", None)
+        if seal_flash:
+            st.success(seal_flash)
+
+        # A new key after every successful save gives an EMPTY uploader, so the
+        # previous file can never be picked up again by the next Save press.
+        uploader_key = f"bill_seal_uploader_{st.session_state.get('bill_seal_uploader_n', 0)}"
         image = st.file_uploader(
-            "Seal ya sign ki image chuno", type=["png", "jpg", "jpeg"], key="bill_seal_uploader",
+            "Seal ya sign ki image chuno", type=["png", "jpg", "jpeg"], key=uploader_key,
         )
         if image is not None and st.button(
             "💾 Seal / sign save karo", key="bill_seal_save", use_container_width=True,
         ):
             try:
+                before = billing_service.get_seal_sign(store_id)
                 billing_service.save_seal_sign(store_id, image.getvalue())
+                after = billing_service.get_seal_sign(store_id)
             except ValidationError as error:
                 st.error(str(error))
             except Exception as error:
                 st.error(f"Save nahi ho saki (Supabase me store_bill_settings table bani hai?): {error}")
             else:
                 bump_cache_epoch(store_id)
-                st.success("Seal / sign save ho gayi. Ab har bill ke neeche chhapegi.")
+                if after == before:
+                    st.warning(
+                        "Save chala par database me seal / sign wahi purani dikh rahi hai. "
+                        "Agar wahi image dobara upload ki thi to ye theek hai, warna "
+                        "Supabase me store_bill_settings ki policy / permission check karo."
+                    )
+                else:
+                    st.session_state["bill_seal_uploader_n"] = st.session_state.get("bill_seal_uploader_n", 0) + 1
+                    st.session_state["bill_seal_flash"] = "Seal / sign save ho gayi. Ab har bill ke neeche chhapegi."
+                    st.rerun()
         try:
             current = billing_service.get_seal_sign(store_id)
         except Exception:
