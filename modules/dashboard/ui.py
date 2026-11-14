@@ -28,12 +28,15 @@ def render_dashboard() -> None:
     """Render the Dashboard screen for the currently logged-in store."""
     st.subheader("📊 Dashboard")
 
+    from core.perf import perf_log
     store_id = get_current_store_id()
+    perf_log("  dashboard data start")
     metrics = _get_dashboard_metrics_cached(
         store_id,
         get_current_low_stock_minimum(),
         get_cache_epoch(store_id),
     )
+    perf_log("  dashboard data done")
 
     if metrics["total_products"] == 0:
         st.info(

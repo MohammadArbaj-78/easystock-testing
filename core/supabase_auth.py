@@ -369,8 +369,11 @@ def restore_session(refresh_token: str) -> dict:
     # it exactly as before - no new exception type, no change to the
     # caught-error recovery path (st.query_params.clear(), rerun, etc.).
     try:
+        from core.perf import perf_log
+        perf_log("  refresh_session done")
         session = _extract_session(auth_response)
         store = _fetch_store_by_supabase_user_id(session["user_id"])
+        perf_log("  store lookup done")
     except SupabaseAuthError:
         raise
     except Exception as error:
