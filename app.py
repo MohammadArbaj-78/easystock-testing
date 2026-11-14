@@ -103,6 +103,7 @@ def render_main_app() -> None:
 
         _render_sidebar_style()
         _remove_old_sidebar_backdrop()
+        _render_sidebar_swipe()
         _render_mobile_sidebar_autoclose(selected_page)
         _render_back_button_history(selected_page)
     _render_no_pull_refresh_css()
@@ -358,6 +359,110 @@ def _remove_old_sidebar_backdrop() -> None:
         """,
         height=0,
     )
+
+
+# --- Sidebar swipe (phone) ---------------------------------------------------
+# Swipe right anywhere on the page -> open the sidebar; swipe left -> close it.
+# It ONLY presses Streamlit's own open / close buttons: it changes no sizes,
+# positions or layers and adds no dim layer, so the sidebar behaves exactly as
+# Streamlit made it. A swipe that starts on a text box, slider, picture-like
+# canvas, data table or a sideways-scrolling area is ignored, so those keep
+# working normally. Installs itself once per browser page; fails silently.
+_SIDEBAR_SWIPE_JS = """
+<script>
+(function () {
+    try {
+        var host = window.parent;
+        if (host.__easystockSwipeNav) { return; }
+        var install = function () {
+            if (window.__easystockSwipeNav) { return; }
+            window.__easystockSwipeNav = true;
+            var MOBILE_MAX = 768;   // same breakpoint as the sidebar CSS
+            var MIN_DX = 70;        // minimum sideways travel (px)
+            var RATIO = 2;          // sideways travel must be 2x the up/down travel
+            var MAX_MS = 700;       // a swipe is quick; slower drags are ignored
+            var COOLDOWN_MS = 500;
+            var lastAction = 0;
+            var OPEN_SELECTORS = [
+                '[data-testid="stExpandSidebarButton"]',
+                '[data-testid="stSidebarCollapsedControl"] button',
+                '[data-testid="collapsedControl"] button'
+            ];
+            var CLOSE_SELECTORS = [
+                '[data-testid="stSidebarCollapseButton"] button',
+                '[data-testid="stSidebarCollapseButton"]',
+                '[data-testid="stSidebar"] button[kind="header"]'
+            ];
+            var NO_SWIPE = 'input, textarea, select, canvas, [contenteditable="true"], ' +
+                '[role="slider"], [data-testid="stDataFrame"], [data-testid="stDataEditor"]';
+            function clickFirst(selectors) {
+                for (var i = 0; i < selectors.length; i++) {
+                    var el = document.querySelector(selectors[i]);
+                    if (el) { el.click(); return true; }
+                }
+                return false;
+            }
+            function isOpen() {
+                var sb = document.querySelector('[data-testid="stSidebar"]');
+                if (!sb) { return false; }
+                var attr = sb.getAttribute('aria-expanded');
+                if (attr !== null) { return attr === 'true'; }
+                return sb.getBoundingClientRect().right > 40;
+            }
+            function isMobile() { return window.innerWidth <= MOBILE_MAX; }
+            function startsOnNoSwipe(el, checkScrollers) {
+                while (el && el !== document.body) {
+                    if (el.nodeType === 1) {
+                        if (el.matches && el.matches(NO_SWIPE)) { return true; }
+                        if (checkScrollers) {
+                            var cs = window.getComputedStyle(el);
+                            if (/(auto|scroll)/.test(cs.overflowX) && el.scrollWidth > el.clientWidth + 1) { return true; }
+                        }
+                    }
+                    el = el.parentNode;
+                }
+                return false;
+            }
+
+            var startX = 0, startY = 0, startT = 0, mode = null;
+            document.addEventListener('touchstart', function (e) {
+                mode = null;
+                if (!isMobile() || !e.touches || e.touches.length !== 1) { return; }
+                var t = e.touches[0];
+                startX = t.clientX; startY = t.clientY; startT = Date.now();
+                if (isOpen()) {
+                    if (!startsOnNoSwipe(e.target, false)) { mode = 'close'; }
+                } else if (!startsOnNoSwipe(e.target, true)) {
+                    mode = 'open';
+                }
+            }, { passive: true });
+            document.addEventListener('touchend', function (e) {
+                var m = mode; mode = null;
+                if (!m || !e.changedTouches || !e.changedTouches.length) { return; }
+                if (Date.now() - startT > MAX_MS || Date.now() - lastAction < COOLDOWN_MS) { return; }
+                var t = e.changedTouches[0];
+                var dx = t.clientX - startX, dy = t.clientY - startY;
+                if (Math.abs(dx) < MIN_DX || Math.abs(dx) < Math.abs(dy) * RATIO) { return; }
+                if (m === 'open' && dx > 0 && !isOpen()) { lastAction = Date.now(); clickFirst(OPEN_SELECTORS); }
+                else if (m === 'close' && dx < 0 && isOpen()) { lastAction = Date.now(); clickFirst(CLOSE_SELECTORS); }
+            }, { passive: true });
+            document.addEventListener('touchcancel', function () { mode = null; }, { passive: true });
+        };
+        var bridge = host.document.createElement('script');
+        bridge.textContent = '(' + install.toString() + ')();';
+        host.document.body.appendChild(bridge);
+        host.__easystockSwipeNav = true;
+    } catch (e) {
+        // best effort - the sidebar still opens / closes with its buttons
+    }
+})();
+</script>
+"""
+
+
+def _render_sidebar_swipe() -> None:
+    """Swipe right / left to open / close the sidebar (phone only)."""
+    components.html(_SIDEBAR_SWIPE_JS, height=0)
 
 
 def _render_mobile_sidebar_autoclose(current_page: str) -> None:
