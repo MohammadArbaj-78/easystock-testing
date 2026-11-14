@@ -8,9 +8,6 @@ and no direct database access - if this file starts growing beyond
 routing, that's a sign logic is leaking into the wrong layer.
 """
 
-from core.perf import perf_start, perf_log
-perf_start("script run start")
-
 import streamlit as st
 import streamlit.components.v1 as components
 
@@ -36,8 +33,6 @@ from modules.sales.ui import render_sales_page
 from modules.agencies.ui import render_agencies_page
 from modules.quick_setup.ui import render_quick_setup_page, discard_database_quantities
 
-perf_log("imports done")
-
 st.set_page_config(
     page_title=APP_NAME,
     page_icon="📦",
@@ -49,7 +44,6 @@ st.set_page_config(
 # important for an MVP that needs to "just work" the first time a store
 # opens the app, including on a fresh Streamlit Cloud deployment.
 initialize_database()
-perf_log("initialize_database done")
 
 # Maps a nav label to its module's render function. Adding a new module
 # to the app means adding one entry here - app.py itself doesn't grow
@@ -107,7 +101,9 @@ def render_main_app() -> None:
             _clear_persisted_refresh_token()
             st.rerun()
 
-        _render_mobile_sidebar_css()
+        _render_sidebar_style()
+        _remove_old_sidebar_backdrop()
+        _render_sidebar_swipe()
         _render_mobile_sidebar_autoclose(selected_page)
         _render_back_button_history(selected_page)
     _render_no_pull_refresh_css()
@@ -251,33 +247,222 @@ def _render_back_button_history(current_page: str) -> None:
     )
 
 
-def _render_mobile_sidebar_css() -> None:
-    """Mobile-only sidebar polish: bigger touch targets and slightly
-    larger text on the nav items. Entirely inside
-    @media (max-width: 768px), so desktop spacing/fonts are completely
-    unaffected. Scoped to [data-testid="stSidebar"] [role="radiogroup"]
-    label - the sidebar's own nav radio rows - so nothing outside the
-    sidebar, and no other st.radio elsewhere in the app, is touched.
-    role="radiogroup" is a standard ARIA attribute Streamlit's radio
-    widget already provides, not an internal/unstable test id.
-    """
-    st.markdown(
+# --- Sidebar look (ChatGPT-style) -----------------------------------------
+# One <style> block for the whole sidebar. Only the sidebar and its round
+# open button are touched; nothing outside them. Nav rows are the sidebar's
+# own st.radio (role="radiogroup"), so page selection logic is unchanged -
+# only how the rows LOOK changes (no radio dot, icon + text row, highlight on
+# the selected page). On phones the rows are ~48px tall with 20px text; the
+# sidebar's own width and open / close behaviour are left to Streamlit.
+_SIDEBAR_CSS = """<style>
+/* ---- round hamburger button (top-left), like ChatGPT ---- */
+[data-testid="stExpandSidebarButton"],
+[data-testid="stSidebarCollapsedControl"] button,
+[data-testid="collapsedControl"] button {
+    width: 44px !important;
+    height: 44px !important;
+    min-height: 44px !important;
+    padding: 0 !important;
+    border-radius: 50% !important;
+    background-color: #ffffff !important;
+    background-image: url("data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%232B2620' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='M4 8h16M4 16h10'/%3E%3C/svg%3E") !important;
+    background-repeat: no-repeat !important;
+    background-position: center !important;
+    background-size: 24px 24px !important;
+    border: 1px solid rgba(43, 38, 32, 0.08) !important;
+    box-shadow: 0 1px 4px rgba(43, 38, 32, 0.14) !important;
+}
+[data-testid="stExpandSidebarButton"] > *,
+[data-testid="stSidebarCollapsedControl"] button > *,
+[data-testid="collapsedControl"] button > * {
+    display: none !important;
+}
+/* ---- close button inside the sidebar: same round look ---- */
+[data-testid="stSidebarCollapseButton"] button {
+    width: 44px !important;
+    height: 44px !important;
+    border-radius: 50% !important;
+    background-color: #ffffff !important;
+    border: 1px solid rgba(43, 38, 32, 0.08) !important;
+    box-shadow: 0 1px 4px rgba(43, 38, 32, 0.14) !important;
+}
+[data-testid="stSidebarResizeHandle"] { display: none !important; }
+/* ---- feature rows: icon + text, no radio dot ---- */
+[data-testid="stSidebar"] [role="radiogroup"] {
+    gap: 4px !important;
+}
+[data-testid="stSidebar"] [role="radiogroup"] label {
+    box-sizing: border-box !important;
+    width: 100% !important;
+    min-height: 40px !important;
+    margin: 0 !important;
+    padding: 0 12px !important;
+    border-radius: 12px !important;
+    display: flex !important;
+    align-items: center !important;
+    cursor: pointer !important;
+    transition: background-color 0.15s ease !important;
+}
+[data-testid="stSidebar"] [role="radiogroup"] label > div:not([data-testid="stMarkdownContainer"]):not(:has([data-testid="stMarkdownContainer"])) {
+    display: none !important;
+}
+[data-testid="stSidebar"] [role="radiogroup"] label [data-testid="stMarkdownContainer"] p {
+    margin: 0 !important;
+    font-size: 1rem !important;
+    font-weight: 500 !important;
+    line-height: 1.3 !important;
+}
+[data-testid="stSidebar"] [role="radiogroup"] label:hover {
+    background-color: rgba(43, 38, 32, 0.06) !important;
+}
+[data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) {
+    background-color: rgba(26, 122, 110, 0.14) !important;
+}
+[data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) [data-testid="stMarkdownContainer"] p {
+    font-weight: 700 !important;
+}
+/* ---- phone: bigger rows (the sidebar's own size / open / close is Streamlit's) ---- */
+@media (max-width: 768px) {
+    [data-testid="stSidebar"] [role="radiogroup"] label {
+        min-height: 48px !important;
+        padding: 0 14px !important;
+    }
+    [data-testid="stSidebar"] [role="radiogroup"] label [data-testid="stMarkdownContainer"] p {
+        font-size: 1.1rem !important;
+        white-space: nowrap !important;
+    }
+}
+</style>"""
+
+
+def _render_sidebar_style() -> None:
+    """ChatGPT-style sidebar look (see _SIDEBAR_CSS above). CSS only."""
+    st.markdown(_SIDEBAR_CSS, unsafe_allow_html=True)
+
+
+def _remove_old_sidebar_backdrop() -> None:
+    """Remove the dim layer left over from the earlier swipe / backdrop script.
+
+    That script put a full-screen dim <div> (id easystock-sidebar-backdrop)
+    into the browser page. Streamlit reconnects after an update without
+    reloading the page, so the old layer stayed on top of the open sidebar and
+    swallowed every tap. This removes it; once every browser has been
+    reloaded once, this function and its call can be deleted."""
+    components.html(
         """
-        <style>
-        @media (max-width: 768px) {
-            [data-testid="stSidebar"] [role="radiogroup"] label {
-                min-height: 3rem !important;
-                padding: 0.85rem 0.6rem !important;
-                display: flex !important;
-                align-items: center !important;
-                font-size: 1.12em !important;
-                line-height: 1.4 !important;
-            }
-        }
-        </style>
+        <script>
+        try {
+            var old = window.parent.document.getElementById("easystock-sidebar-backdrop");
+            if (old) { old.remove(); }
+        } catch (e) { /* best effort */ }
+        </script>
         """,
-        unsafe_allow_html=True,
+        height=0,
     )
+
+
+# --- Sidebar swipe (phone) ---------------------------------------------------
+# Swipe right anywhere on the page -> open the sidebar; swipe left -> close it.
+# It ONLY presses Streamlit's own open / close buttons: it changes no sizes,
+# positions or layers and adds no dim layer, so the sidebar behaves exactly as
+# Streamlit made it. A swipe that starts on a text box, slider, picture-like
+# canvas, data table or a sideways-scrolling area is ignored, so those keep
+# working normally. Installs itself once per browser page; fails silently.
+_SIDEBAR_SWIPE_JS = """
+<script>
+(function () {
+    try {
+        var host = window.parent;
+        if (host.__easystockSwipeNav) { return; }
+        var install = function () {
+            if (window.__easystockSwipeNav) { return; }
+            window.__easystockSwipeNav = true;
+            var MOBILE_MAX = 768;   // same breakpoint as the sidebar CSS
+            var MIN_DX = 70;        // minimum sideways travel (px)
+            var RATIO = 2;          // sideways travel must be 2x the up/down travel
+            var MAX_MS = 700;       // a swipe is quick; slower drags are ignored
+            var COOLDOWN_MS = 500;
+            var lastAction = 0;
+            var OPEN_SELECTORS = [
+                '[data-testid="stExpandSidebarButton"]',
+                '[data-testid="stSidebarCollapsedControl"] button',
+                '[data-testid="collapsedControl"] button'
+            ];
+            var CLOSE_SELECTORS = [
+                '[data-testid="stSidebarCollapseButton"] button',
+                '[data-testid="stSidebarCollapseButton"]',
+                '[data-testid="stSidebar"] button[kind="header"]'
+            ];
+            var NO_SWIPE = 'input, textarea, select, canvas, [contenteditable="true"], ' +
+                '[role="slider"], [data-testid="stDataFrame"], [data-testid="stDataEditor"]';
+            function clickFirst(selectors) {
+                for (var i = 0; i < selectors.length; i++) {
+                    var el = document.querySelector(selectors[i]);
+                    if (el) { el.click(); return true; }
+                }
+                return false;
+            }
+            function isOpen() {
+                var sb = document.querySelector('[data-testid="stSidebar"]');
+                if (!sb) { return false; }
+                var attr = sb.getAttribute('aria-expanded');
+                if (attr !== null) { return attr === 'true'; }
+                return sb.getBoundingClientRect().right > 40;
+            }
+            function isMobile() { return window.innerWidth <= MOBILE_MAX; }
+            function startsOnNoSwipe(el, checkScrollers) {
+                while (el && el !== document.body) {
+                    if (el.nodeType === 1) {
+                        if (el.matches && el.matches(NO_SWIPE)) { return true; }
+                        if (checkScrollers) {
+                            var cs = window.getComputedStyle(el);
+                            if (/(auto|scroll)/.test(cs.overflowX) && el.scrollWidth > el.clientWidth + 1) { return true; }
+                        }
+                    }
+                    el = el.parentNode;
+                }
+                return false;
+            }
+
+            var startX = 0, startY = 0, startT = 0, mode = null;
+            document.addEventListener('touchstart', function (e) {
+                mode = null;
+                if (!isMobile() || !e.touches || e.touches.length !== 1) { return; }
+                var t = e.touches[0];
+                startX = t.clientX; startY = t.clientY; startT = Date.now();
+                if (isOpen()) {
+                    if (!startsOnNoSwipe(e.target, false)) { mode = 'close'; }
+                } else if (!startsOnNoSwipe(e.target, true)) {
+                    mode = 'open';
+                }
+            }, { passive: true });
+            document.addEventListener('touchend', function (e) {
+                var m = mode; mode = null;
+                if (!m || !e.changedTouches || !e.changedTouches.length) { return; }
+                if (Date.now() - startT > MAX_MS || Date.now() - lastAction < COOLDOWN_MS) { return; }
+                var t = e.changedTouches[0];
+                var dx = t.clientX - startX, dy = t.clientY - startY;
+                if (Math.abs(dx) < MIN_DX || Math.abs(dx) < Math.abs(dy) * RATIO) { return; }
+                if (m === 'open' && dx > 0 && !isOpen()) { lastAction = Date.now(); clickFirst(OPEN_SELECTORS); }
+                else if (m === 'close' && dx < 0 && isOpen()) { lastAction = Date.now(); clickFirst(CLOSE_SELECTORS); }
+            }, { passive: true });
+            document.addEventListener('touchcancel', function () { mode = null; }, { passive: true });
+        };
+        var bridge = host.document.createElement('script');
+        bridge.textContent = '(' + install.toString() + ')();';
+        host.document.body.appendChild(bridge);
+        host.__easystockSwipeNav = true;
+    } catch (e) {
+        // best effort - the sidebar still opens / closes with its buttons
+    }
+})();
+</script>
+"""
+
+
+def _render_sidebar_swipe() -> None:
+    """Swipe right / left to open / close the sidebar (phone only)."""
+    components.html(_SIDEBAR_SWIPE_JS, height=0)
 
 
 def _render_mobile_sidebar_autoclose(current_page: str) -> None:
@@ -451,9 +636,7 @@ def _attempt_session_restoration() -> None:
         # A restoration attempt is already in flight - try it once, then
         # clear the query param either way so this can never loop.
         try:
-            perf_log("restore_session start")
             store = restore_session(token_param)
-            perf_log("restore_session done")
             start_session(
                 store_id=store["store_id"],
                 store_name=store["store_name"],
@@ -513,8 +696,6 @@ if is_logged_in():
         _persist_refresh_token_to_browser(_current_refresh_token)
         st.session_state["_persisted_refresh_token"] = _current_refresh_token
     render_main_app()
-    perf_log("main app rendered")
 else:
     _attempt_session_restoration()
     render_login_signup_screen()
-    perf_log("login screen rendered")
