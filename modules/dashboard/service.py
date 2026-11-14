@@ -84,7 +84,17 @@ def get_dashboard_metrics(store_id: int, low_stock_minimum: int = None) -> dict:
 
     low_stock_items = snapshot["low_stock_items"]
 
+    # Expiry-alert bucket counts for the Dashboard warning banner. When the
+    # snapshot carries the already-fetched rows (Supabase), reuse them so the
+    # products table is not fetched a second/third time; otherwise (SQLite)
+    # fall back to the normal path. Same filters either way.
+    from modules.alerts import service as _alerts_service
+    alert_counts = _alerts_service.get_alert_counts(
+        store_id, rows=snapshot.get("all_rows")
+    )
+
     return {
+        "alert_counts": alert_counts,
         "total_products": total_products,
         "expiring_soon_count": len(expiring_soon_items),
         "expiring_soon_items": expiring_soon_items,

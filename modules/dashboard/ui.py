@@ -43,7 +43,7 @@ def render_dashboard() -> None:
         return
 
     _render_metric_cards(metrics)
-    _render_expiring_soon_warning(store_id)
+    _render_expiring_soon_warning(store_id, metrics.get("alert_counts"))
     st.divider()
     _render_detail_sections(metrics)
 
@@ -51,7 +51,7 @@ def render_dashboard() -> None:
 def _get_alert_counts_cached(store_id: int, _epoch: int) -> dict:
     return alerts_service.get_alert_counts(store_id)
 
-def _render_expiring_soon_warning(store_id: int) -> None:
+def _render_expiring_soon_warning(store_id: int, counts: dict = None) -> None:
     """Show a single color-coded warning card for the most urgent
     non-empty expiry bucket, mirroring the existing Low Stock warning
     card's placement and tone.
@@ -61,7 +61,8 @@ def _render_expiring_soon_warning(store_id: int) -> None:
     the same function Expiry Alerts uses for its product rows, so both
     pages are guaranteed to look and feel identical.
     """
-    counts = _get_alert_counts_cached(store_id, get_cache_epoch(store_id))
+    if counts is None:
+        counts = _get_alert_counts_cached(store_id, get_cache_epoch(store_id))
     
     if counts.get(alerts_service.ALERT_TYPE_15_DAYS, 0) > 0:
         alert_type = alerts_service.ALERT_TYPE_15_DAYS

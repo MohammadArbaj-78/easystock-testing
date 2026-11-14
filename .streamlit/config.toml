@@ -15,4 +15,4 @@ font = "sans serif"
 
 [server]
 maxUploadSize = 25
-disconnectedSessionTTL = 1800
+disconnectedSessionTTL = 21600

@@ -128,6 +128,9 @@ def get_dashboard_snapshot(store_id: int, within_days: int, low_stock_global_min
         "expired_items": _filter_expired_rows(rows),
         "expiring_soon_items": _filter_expiring_soon_rows(rows, within_days),
         "low_stock_items": _filter_low_stock_rows(rows, low_stock_global_minimum),
+        # The same rows fetched above, handed back so the Dashboard can
+        # build its expiry-alert counts WITHOUT fetching the table again.
+        "all_rows": rows,
     }
 
 

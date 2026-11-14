@@ -74,7 +74,7 @@ def _bucket_label_for_window(days: int) -> str:
     return mapping[days]
 
 
-def get_categorized_alerts(store_id: int) -> dict:
+def get_categorized_alerts(store_id: int, rows: list = None) -> dict:
     """Fetch and bucket all expiry-relevant products for a store.
 
     Reuses products_repository.get_expired_products and
@@ -95,6 +95,12 @@ def get_categorized_alerts(store_id: int) -> dict:
         product dicts (product_id, name, batch_number, expiry_date,
         quantity) belonging to that bucket, sorted by expiry_date
         ascending within each bucket.
+
+        rows: Optional - this store's product rows already fetched by the
+            caller (product_id, name, batch_number, expiry_date, quantity,
+            ...). When given, no database fetch is made and the exact same
+            filters are applied to these rows. When None (default), behaves
+            exactly as before.
     """
     buckets = {alert_type: [] for alert_type in ALL_ALERT_TYPES}
 
@@ -102,7 +108,11 @@ def get_categorized_alerts(store_id: int) -> dict:
     import calendar as _calendar
     from utils.validators import parse_expiry_month_year
     today_local = date.today()
-    for product in products_repository.get_expired_products(store_id):
+    if rows is None:
+        expired_source = products_repository.get_expired_products(store_id)
+    else:
+        expired_source = products_repository._filter_expired_rows(rows)
+    for product in expired_source:
         if product["quantity"] == 0:
             # A returned/zeroed medicine (see products_service.return_medicine)
             # is no longer stocked, so it should no longer surface as an
@@ -131,9 +141,14 @@ def get_categorized_alerts(store_id: int) -> dict:
     # this avoids running three increasingly-narrow SQL queries against
     # the same table when one query covers the widest window already.
     widest_window = max(EXPIRY_ALERT_WINDOWS_DAYS)
-    all_expiring_soon = products_repository.get_expiring_soon_products(
-        store_id, within_days=widest_window
-    )
+    if rows is None:
+        all_expiring_soon = products_repository.get_expiring_soon_products(
+            store_id, within_days=widest_window
+        )
+    else:
+        all_expiring_soon = products_repository._filter_expiring_soon_rows(
+            rows, widest_window
+        )
 
     today = date.today()
     sorted_windows = sorted(EXPIRY_ALERT_WINDOWS_DAYS)
@@ -211,7 +226,7 @@ def get_filtered_alerts(store_id: int, alert_type: str = None, search_term: str 
     return all_buckets
 
 
-def get_alert_counts(store_id: int) -> dict:
+def get_alert_counts(store_id: int, rows: list = None) -> dict:
     """Get just the count of products in each alert bucket, without
     fetching full product details - used for the filter dropdown's
     labels (e.g. "Expired (3)") so a store owner can see at a glance
@@ -223,5 +238,5 @@ def get_alert_counts(store_id: int) -> dict:
     Returns:
         A dict keyed by ALERT_TYPE_*, values are integer counts.
     """
-    buckets = get_categorized_alerts(store_id)
+    buckets = get_categorized_alerts(store_id, rows=rows)
     return {alert_type: len(products) for alert_type, products in buckets.items()}
