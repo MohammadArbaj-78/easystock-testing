@@ -49,6 +49,7 @@ _NEXT_ID = "sales_bill_next_id"
 _SEARCH_VERSION = "sales_bill_search_version"
 _FLASH = "sales_bill_flash"
 _UNIT_CHOICE = "sales_bill_unit_choice"
+_DEFAULT_UNIT = "Tablet"          # what a new medicine starts in (until the owner picks Strip)
 _STORE_OWNER = "sales_bill_store"
 _KEYUP_DEBOUNCE_MS = 150
 _CATALOG_KEY = "bill_store_catalog"
@@ -552,11 +553,12 @@ def _add_stock_line(store_id: int, product: dict) -> None:
     if existing is not None:
         _change_quantity(existing["id"], 1)
     else:
-        unit = st.session_state.get(_UNIT_CHOICE, "Strip")
+        unit = st.session_state.get(_UNIT_CHOICE, _DEFAULT_UNIT)
         line = bill_service.build_stock_line(store_id, _new_line_id(), product, unit)
         lines.append(line)
         # From now this line keeps its OWN unit - a button on another line never changes it.
         st.session_state[f"bill_unit_{line['id']}"] = unit if line.get("pack_from_db") else "Strip"
+        _mark_fresh(line, unit)
     
     # Version bump separately so the search clears without blocking the add
     st.session_state[_SEARCH_VERSION] = st.session_state.get(_SEARCH_VERSION, 0) + 1
@@ -570,10 +572,11 @@ def _add_zero_line(product: dict) -> None:
     if existing is not None:
         _change_quantity(existing["id"], 1)
     else:
-        unit = st.session_state.get(_UNIT_CHOICE, "Strip")
+        unit = st.session_state.get(_UNIT_CHOICE, _DEFAULT_UNIT)
         line = bill_service.build_zero_line(_new_line_id(), product, unit)
         lines.append(line)
         st.session_state[f"bill_unit_{line['id']}"] = unit if line.get("pack_from_db") else "Strip"
+        _mark_fresh(line, unit)
     st.session_state[_SEARCH_VERSION] = st.session_state.get(_SEARCH_VERSION, 0) + 1
 
 def _add_unlisted_line(kind: str, name: str) -> None:
@@ -585,6 +588,13 @@ def _add_unlisted_line(kind: str, name: str) -> None:
     else:
         lines.append(bill_service.build_unlisted_line(_new_line_id(), kind, name))
     st.session_state[_SEARCH_VERSION] = st.session_state.get(_SEARCH_VERSION, 0) + 1
+
+
+def _mark_fresh(line: dict, unit: str) -> None:
+    """A line that starts in Strip (1 strip) and has not been touched yet:
+    the first press of Tablet then shows 1 tablet, not the strip's tablets."""
+    if unit == "Strip" and line.get("pack_from_db") and line.get("pack"):
+        line["fresh"] = True
 
 
 def _set_unit(line_id: int, unit: str) -> None:
@@ -685,6 +695,8 @@ def _on_tablet_press(line_id: int) -> None:
         return
     box_key = f"bill_pack_edit_{line_id}"
     if line.get("pack_from_db"):
+        if line.pop("fresh", False) and _unit_of(line) == "Strip":
+            line["qty"] = 1                               # first switch, nothing pressed yet: 1 tablet
         _set_unit(line_id, "Tablet")
     elif st.session_state.get(box_key):
         _close_pack_box(line)
@@ -701,6 +713,7 @@ def _change_quantity(line_id: int, direction: int) -> None:
         return
     if st.session_state.get(f"bill_pack_edit_{line_id}"):
         _close_pack_box(line)                              # - / + hides the pack box, keeping the pack typed
+    line.pop("fresh", None)                                # the owner has set the quantity himself
     new_quantity = line["qty"] + direction * _step(line)
     if line.get("stock_units") is not None:
         new_quantity = min(new_quantity, line["stock_units"])

@@ -232,7 +232,7 @@ def get_sellable_stock(store_id: int, name: str) -> int:
     return sum(lot["quantity"] for lot in get_lots_by_name_sorted_by_expiry(store_id, name))
 
 
-def sell_product(store_id: int, product_id: int, quantity: int) -> int:
+def sell_product(store_id: int, product_id: int, quantity: int, _prefetched=None) -> int:
     """Sell a quantity of a medicine, consuming stock First-Expiry-
     First-Out (FIFO) across every lot (batch/expiry) of that medicine's
     name - not only the specific batch row the store owner clicked on
@@ -281,11 +281,15 @@ def sell_product(store_id: int, product_id: int, quantity: int) -> int:
     if quantity < 1:
         raise ValidationError("Quantity must be at least 1.")
 
-    product = products_repository.get_product_by_id(store_id, product_id)
-    if product is None:
-        raise ValidationError("Product not found.")
+    if _prefetched is not None:
+        # sell_tablets has just read exactly these two things: no second read.
+        product, lots = _prefetched
+    else:
+        product = products_repository.get_product_by_id(store_id, product_id)
+        if product is None:
+            raise ValidationError("Product not found.")
 
-    lots = get_lots_by_name_sorted_by_expiry(store_id, product["name"])
+        lots = get_lots_by_name_sorted_by_expiry(store_id, product["name"])
     total_available = sum(lot["quantity"] for lot in lots)
     if total_available < quantity:
         raise ValidationError(
@@ -659,7 +663,7 @@ def sell_tablets(store_id: int, product_id: int, tablets: int) -> int:
 
     # Whole strips out of stock that is all whole strips: the existing path.
     if tablets % pack == 0 and all(abs(lot["quantity"] - round(lot["quantity"])) < 1e-9 for lot in lots):
-        return sell_product(store_id, product_id, tablets // pack)
+        return sell_product(store_id, product_id, tablets // pack, _prefetched=(product, lots))
 
     remaining = tablets
     last_sale_id = None
