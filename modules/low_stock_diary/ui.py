@@ -10,6 +10,7 @@ import html
 import time
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 from core.cache_utils import get_cache_epoch
 from core.session import get_current_store_id
@@ -38,9 +39,142 @@ def render_low_stock_diary() -> None:
     """The Diary tab. A problem here (e.g. the table is not created yet) is
     shown as a message and never breaks the Alerts tab."""
     try:
+        _inject_css()
+        _inject_swipe_script()
         _render_diary(get_current_store_id())
     except Exception as error:
         st.error(_TABLE_HELP + str(error))
+
+
+def _inject_css() -> None:
+    """Thin diary lines (no empty space) and the hidden remove button."""
+    st.markdown(
+        """
+        <style>
+        div[class*="st-key-lsd_row_"] {
+            padding: 0.4rem 0.75rem !important;
+            touch-action: pan-y;
+        }
+        div[class*="st-key-lsd_row_"] [data-testid="stVerticalBlock"] {
+            gap: 0 !important;
+        }
+        div[class*="st-key-lsd_del_"] {
+            display: none !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _inject_swipe_script() -> None:
+    """Swipe a diary line to the RIGHT (finger on a phone, mouse drag on a PC)
+    to remove it. The line FOLLOWS the finger and fades while it moves; let go
+    past a third of the width (or with a quick flick) and it flies off to the
+    right, otherwise it springs back. Streamlit has no swipe gesture, so this
+    small script only DRAGS the line and presses that line's own hidden remove
+    button - the removal itself is the normal Python callback _delete. It fails
+    silently if the page structure is not found, and installs itself once per
+    browser tab."""
+    components.html(
+        """
+        <script>
+        try {
+            var run = function () {
+                if (window.__easystockDiarySwipeV1) { return; }
+                window.__easystockDiarySwipeV1 = true;
+                var drag = null;
+
+                function boxOf(card) {
+                    return card.closest('[data-testid="stVerticalBlockBorderWrapper"]') || card;
+                }
+                function restore(box, animate) {
+                    box.style.transition = animate ? "transform 0.2s ease-out, opacity 0.2s ease-out" : "none";
+                    box.style.transform = "";
+                    box.style.opacity = "";
+                    box.style.willChange = "";
+                    box.style.userSelect = "";
+                }
+
+                document.addEventListener("pointerdown", function (e) {
+                    if (e.pointerType === "mouse" && e.button !== 0) { return; }
+                    if (e.target.closest("button, input, textarea, label, a")) { return; }
+                    var card = e.target.closest('[class*="st-key-lsd_row_"]');
+                    if (!card) { return; }
+                    var idPart = String(card.className).split("st-key-lsd_row_")[1];
+                    var rowId = idPart ? parseInt(idPart, 10) : NaN;
+                    if (isNaN(rowId)) { return; }
+                    drag = {
+                        id: rowId, box: boxOf(card), x: e.clientX, y: e.clientY,
+                        t: Date.now(), dx: 0, active: false,
+                        main: document.querySelector('[data-testid="stMain"]'), mainOverflow: ""
+                    };
+                }, true);
+
+                document.addEventListener("pointermove", function (e) {
+                    if (!drag) { return; }
+                    var dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+                    if (!drag.active) {
+                        if (Math.abs(dy) > 14 && Math.abs(dy) > Math.abs(dx)) { drag = null; return; }   // it is a scroll
+                        if (!(dx > 8 && dx > Math.abs(dy))) { return; }
+                        drag.active = true;
+                        if (drag.main) {
+                            drag.mainOverflow = drag.main.style.overflowX;
+                            drag.main.style.overflowX = "hidden";
+                        }
+                        drag.box.style.transition = "none";
+                        drag.box.style.willChange = "transform";
+                        drag.box.style.userSelect = "none";
+                    }
+                    drag.dx = Math.max(0, dx);
+                    var width = drag.box.offsetWidth || 300;
+                    drag.box.style.transform = "translateX(" + drag.dx + "px)";
+                    drag.box.style.opacity = String(Math.max(0.25, 1 - drag.dx / (width * 1.1)));
+                    if (e.cancelable) { e.preventDefault(); }
+                }, true);
+
+                function finish(cancelled) {
+                    if (!drag) { return; }
+                    var d = drag;
+                    drag = null;
+                    if (!d.active) { return; }
+                    var width = d.box.offsetWidth || 300;
+                    var speed = d.dx / Math.max(1, Date.now() - d.t);           // pixels per millisecond
+                    var remove = !cancelled && (d.dx > Math.max(70, width * 0.3) || (d.dx > 40 && speed > 0.6));
+                    if (!remove) {
+                        restore(d.box, true);
+                        setTimeout(function () { if (d.main) { d.main.style.overflowX = d.mainOverflow; } }, 250);
+                        return;
+                    }
+                    d.box.style.transition = "transform 0.16s ease-out, opacity 0.16s ease-out";
+                    d.box.style.transform = "translateX(" + (width + 40) + "px)";
+                    d.box.style.opacity = "0";
+                    var button = document.querySelector(".st-key-lsd_del_" + d.id + " button");
+                    if (button) { button.click(); }                              // the real removal starts at once
+                    // When the line is really gone from the page (or after 3 s),
+                    // clear the styles: the page may reuse this same box.
+                    var tries = 0;
+                    var timer = setInterval(function () {
+                        tries += 1;
+                        var stillThere = document.querySelector(".st-key-lsd_del_" + d.id + " button");
+                        if (!stillThere || tries > 30) {
+                            clearInterval(timer);
+                            restore(d.box, false);
+                            if (d.main) { d.main.style.overflowX = d.mainOverflow; }
+                        }
+                    }, 100);
+                }
+                document.addEventListener("pointerup", function () { finish(false); }, true);
+                document.addEventListener("pointercancel", function () { finish(true); }, true);
+            };
+            var bridge = window.parent.document.createElement("script");
+            bridge.textContent = "(" + run.toString() + ")();";
+            window.parent.document.body.appendChild(bridge);
+        } catch (e) { /* best effort - without it the list still shows */ }
+        </script>
+        """,
+        height=0,
+    )
 
 
 def _entries(store_id: int) -> list:
@@ -139,20 +273,16 @@ def _render_diary(store_id: int) -> None:
     if not rows:
         st.info("Diary khali hai. Upar dawai ka naam likhkar jodo.")
         return
-    st.caption(f"📒 {len(rows)} dawai")
+    st.caption(f"📒 {len(rows)} dawai  •  hatane ke liye dawai ko right slide karo")
     for row in rows:
         with st.container(border=True, key=f"lsd_row_{row['diary_id']}"):
-            name_col, delete_col = st.columns([5, 1], vertical_alignment="center")
-            with name_col:
-                st.markdown(
-                    f"<div style='font-size:1.05rem; font-weight:600;'>{html.escape(str(row['name']))}</div>",
-                    unsafe_allow_html=True,
-                )
-            with delete_col:
-                st.button(
-                    "🗑️", key=f"lsd_del_{row['diary_id']}", use_container_width=True,
-                    on_click=_delete, args=(store_id, row["diary_id"]),
-                )
+            st.markdown(
+                f"<div style='font-size:1rem; font-weight:600; line-height:1.3;'>{html.escape(str(row['name']))}</div>",
+                unsafe_allow_html=True,
+            )
+            # Hidden by CSS: the swipe gesture presses it (the removal itself is
+            # the normal Python callback _delete).
+            st.button("✖", key=f"lsd_del_{row['diary_id']}", on_click=_delete, args=(store_id, row["diary_id"]))
 
 
 def _store_result(store_id: int, term: str) -> dict:

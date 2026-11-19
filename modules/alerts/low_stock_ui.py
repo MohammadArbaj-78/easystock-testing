@@ -16,6 +16,7 @@ repository, never here.
 import html
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 from modules.alerts import low_stock_service
 from config.alert_theme import render_alert_banner
@@ -52,10 +53,112 @@ def _get_low_stock_alerts_cached(store_id: int, search_term: str, global_minimum
         store_id, search_term=search_term, global_minimum=global_minimum
     )
 
+# Swiping on the Low Stock page:
+#   - on the Alerts tab: swipe LEFT (finger from right to left) -> Diary opens;
+#     swipe RIGHT still opens the sidebar, as everywhere in the app.
+#   - on the Diary tab: swipe RIGHT -> back to Alerts, and the sidebar does NOT
+#     open there (a line swiped right inside the Diary is removed, see
+#     modules.low_stock_diary.ui; that swipe must not open the sidebar either).
+# It only presses a tab's own button, so the tabs behave exactly as Streamlit
+# made them. Ignored while the sidebar is open (a left swipe then closes it),
+# and when the swipe starts on a text box, slider, table or a sideways-scrolling
+# area. The sidebar is kept shut on the Diary tab by listening first (capture
+# phase) and stopping that one touchend from reaching the sidebar's own
+# listener. Installs itself once per browser page; fails silently.
+_TAB_SWIPE_JS = """
+<script>
+(function () {
+    try {
+        var host = window.parent;
+        if (host.__easystockTabSwipeV2) { return; }
+        var install = function () {
+            if (window.__easystockTabSwipeV2) { return; }
+            window.__easystockTabSwipeV2 = true;
+            var MIN_DX = 70, RATIO = 2, MAX_MS = 700;
+            var NO_SWIPE = 'input, textarea, select, canvas, [contenteditable="true"], ' +
+                '[role="slider"], [data-testid="stDataFrame"], [data-testid="stDataEditor"], ' +
+                '[data-testid="stSidebar"]';
+            function sidebarOpen() {
+                var sb = document.querySelector('[data-testid="stSidebar"]');
+                if (!sb) { return false; }
+                var attr = sb.getAttribute('aria-expanded');
+                if (attr !== null) { return attr === 'true'; }
+                return sb.getBoundingClientRect().right > 40;
+            }
+            function startsOnNoSwipe(el) {
+                while (el && el !== document.body) {
+                    if (el.nodeType === 1) {
+                        if (el.matches && el.matches(NO_SWIPE)) { return true; }
+                        var cs = window.getComputedStyle(el);
+                        if (/(auto|scroll)/.test(cs.overflowX) && el.scrollWidth > el.clientWidth + 1) { return true; }
+                    }
+                    el = el.parentNode;
+                }
+                return false;
+            }
+            function findTab(word, other) {
+                var tabs = document.querySelectorAll('[role="tab"]');
+                for (var i = 0; i < tabs.length; i++) {
+                    if ((tabs[i].textContent || '').indexOf(word) === -1) { continue; }
+                    var bar = tabs[i].parentElement;
+                    if (bar && (bar.textContent || '').indexOf(other) !== -1) { return tabs[i]; }
+                }
+                return null;
+            }
+            function selected(tab) { return !!tab && tab.getAttribute('aria-selected') === 'true'; }
+
+            var startX = 0, startY = 0, startT = 0, armed = false, onLine = false;
+            document.addEventListener('touchstart', function (e) {
+                armed = false;
+                if (!e.touches || e.touches.length !== 1) { return; }
+                var t = e.touches[0];
+                startX = t.clientX; startY = t.clientY; startT = Date.now();
+                onLine = !!(e.target.closest && e.target.closest('[class*="st-key-lsd_row_"]'));
+                armed = !startsOnNoSwipe(e.target);
+            }, { passive: true, capture: true });
+            document.addEventListener('touchend', function (e) {
+                var ok = armed; armed = false;
+                if (!ok || !e.changedTouches || !e.changedTouches.length) { return; }
+                if (Date.now() - startT > MAX_MS) { return; }
+                var t = e.changedTouches[0];
+                var dx = t.clientX - startX, dy = t.clientY - startY;
+                if (Math.abs(dx) < Math.abs(dy) * RATIO) { return; }
+                var diary = findTab('Diary', 'Alerts');
+                var alerts = findTab('Alerts', 'Diary');
+                if (!diary || !alerts) { return; }
+                if (selected(diary)) {
+                    // Diary tab: a swipe to the right must not open the sidebar.
+                    if (dx >= 40 && !sidebarOpen()) {
+                        e.stopPropagation();
+                        if (dx >= MIN_DX && !onLine) { alerts.click(); }
+                    }
+                } else if (dx <= -MIN_DX && !sidebarOpen()) {
+                    diary.click();
+                }
+            }, { passive: false, capture: true });
+            document.addEventListener('touchcancel', function () { armed = false; }, { passive: true });
+        };
+        var bridge = host.document.createElement('script');
+        bridge.textContent = '(' + install.toString() + ')();';
+        host.document.body.appendChild(bridge);
+        host.__easystockTabSwipeV2 = true;
+    } catch (e) {
+        // best effort - the tabs still work with a tap
+    }
+})();
+</script>
+"""
+
+
+def _inject_tab_swipe() -> None:
+    components.html(_TAB_SWIPE_JS, height=0)
+
+
 def render_low_stock_alerts_page() -> None:
     """Render the Low Stock screen: two tabs - the alerts (as always) and
     the Low Stock Diary."""
     st.subheader("📦 Low Stock")
+    _inject_tab_swipe()
     alerts_tab, diary_tab = st.tabs(["⚠️ Alerts", "📒 Diary"])
     with alerts_tab:
         _render_alerts_tab()
