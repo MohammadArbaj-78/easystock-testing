@@ -27,6 +27,7 @@ from core.session import (
 from core.supabase_auth import update_store_low_stock_minimum
 from config.settings import DEFAULT_LOW_STOCK_THRESHOLD
 from core.cache_utils import bump_cache_epoch, get_cache_epoch
+from modules.low_stock_diary.ui import render_low_stock_diary
 
 FILTER_OPTION_ALL = "All"
 GLOBAL_MINIMUM_OPTIONS = list(range(1, 11))  # Requirement 5: strictly 1-10
@@ -52,9 +53,18 @@ def _get_low_stock_alerts_cached(store_id: int, search_term: str, global_minimum
     )
 
 def render_low_stock_alerts_page() -> None:
-    """Render the Low Stock Alerts screen."""
-    st.subheader("📦 Low Stock Alerts")
+    """Render the Low Stock screen: two tabs - the alerts (as always) and
+    the Low Stock Diary."""
+    st.subheader("📦 Low Stock")
+    alerts_tab, diary_tab = st.tabs(["⚠️ Alerts", "📒 Diary"])
+    with alerts_tab:
+        _render_alerts_tab()
+    with diary_tab:
+        render_low_stock_diary()
 
+
+def _render_alerts_tab() -> None:
+    """The Low Stock Alerts (everything this page showed before the Diary)."""
     store_id = get_current_store_id()
 
     # "Set quantity" mode: the zero stock medicines as +/- blocks. The switch
