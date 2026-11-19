@@ -6,6 +6,8 @@ come the same way as the Sales search: the store's own medicines first, else
 the medicine list, else "add what you typed".
 """
 
+from urllib.parse import quote
+
 from core import name_matching
 from modules.low_stock_diary import repository
 from modules.sales import service as sales_service
@@ -106,3 +108,50 @@ def suggest(term: str, store_names: list) -> dict:
     if is_valid:
         return {"kind": "new", "items": [], "name": cleaned}
     return {"kind": "none", "items": []}
+
+
+def assign_to_agency(store_id: int, diary_ids: list, agency_id: int) -> None:
+    """Put these diary medicines on an agency's "Mangwana hai" list."""
+    repository.set_agency(store_id, diary_ids, agency_id)
+
+
+def return_to_diary(store_id: int, diary_ids: list) -> None:
+    """Take these medicines off their agency's list, back to the plain diary."""
+    repository.set_agency(store_id, diary_ids, None)
+
+
+def split_rows(rows: list) -> tuple:
+    """(plain diary rows, {agency_id: rows on that agency's list}); the order
+    of each list stays as given (newest first)."""
+    plain, by_agency = [], {}
+    for row in rows:
+        if row.get("agency_id") is None:
+            plain.append(row)
+        else:
+            by_agency.setdefault(int(row["agency_id"]), []).append(row)
+    return plain, by_agency
+
+
+def agency_list(store_id: int, agency_id: int) -> list:
+    """The medicines on one agency's "Mangwana hai" list, oldest first
+    (read fresh from the database)."""
+    _, by_agency = split_rows(repository.list_entries(store_id))
+    return list(reversed(by_agency.get(int(agency_id), [])))
+
+
+def clear_agency_list(store_id: int, agency_id: int) -> int:
+    """The order is done: delete this agency's whole list. Returns how many."""
+    ids = [row["diary_id"] for row in agency_list(store_id, agency_id)]
+    repository.delete_entries(store_id, ids)
+    return len(ids)
+
+
+def order_message(agency_name: str, names: list) -> str:
+    """The text to send / copy: a numbered list of medicines."""
+    lines = [f"{number}. {name}" for number, name in enumerate(names, start=1)]
+    return f"Namaste {agency_name},\nMujhe ye dawai chahiye:\n" + "\n".join(lines) + "\nThank you."
+
+
+def whatsapp_url(text: str) -> str:
+    """Opens WhatsApp with the text ready (the owner picks who to send to)."""
+    return "https://wa.me/?text=" + quote(text)

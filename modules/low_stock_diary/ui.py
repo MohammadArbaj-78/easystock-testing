@@ -15,6 +15,7 @@ import streamlit.components.v1 as components
 from core.cache_utils import get_cache_epoch
 from core.session import get_current_store_id
 from modules.low_stock_diary import service
+from modules.agencies import service as agencies_service
 from modules.sales import service as sales_service
 
 try:
@@ -25,6 +26,8 @@ except ImportError:          # package not installed: a normal text box is used 
 _STATE = "lsd_state"
 _VERSION = "lsd_search_version"
 _FLASH = "lsd_flash"
+_SELECTED = "lsd_selected"
+_AGENCY_PICK = "lsd_agency_pick"
 _NAMES = "lsd_store_names"
 _NAMES_MAX_AGE_SECONDS = 600
 _KEYUP_DEBOUNCE_MS = 120
@@ -60,7 +63,12 @@ def _inject_css() -> None:
             touch-action: pan-y;
             overflow-wrap: anywhere;
         }
-        div[class*="st-key-lsd_del_"] { display: none !important; }
+        .lsd-row.lsd-sel {
+            border-color: var(--primary-color, #1f6f5b);
+            background: rgba(31, 111, 91, 0.12);
+        }
+        .lsd-row.lsd-sel::before { content: "\\2713  "; color: var(--primary-color, #1f6f5b); }
+        div[class*="st-key-lsd_del_"], div[class*="st-key-lsd_sel_"] { display: none !important; }
         </style>
         """,
         unsafe_allow_html=True,
@@ -81,8 +89,8 @@ def _inject_swipe_script() -> None:
         <script>
         try {
             var run = function () {
-                if (window.__easystockDiarySwipeV2) { return; }
-                window.__easystockDiarySwipeV2 = true;
+                if (window.__easystockDiarySwipeV3) { return; }
+                window.__easystockDiarySwipeV3 = true;
                 var drag = null;
 
                 function boxOf(card) { return card; }
@@ -104,7 +112,7 @@ def _inject_swipe_script() -> None:
                     if (isNaN(rowId)) { return; }
                     drag = {
                         id: rowId, box: boxOf(card), x: e.clientX, y: e.clientY,
-                        t: Date.now(), dx: 0, active: false,
+                        t: Date.now(), dx: 0, active: false, moved: 0,
                         main: document.querySelector('[data-testid="stMain"]'), mainOverflow: ""
                     };
                 }, true);
@@ -112,6 +120,7 @@ def _inject_swipe_script() -> None:
                 document.addEventListener("pointermove", function (e) {
                     if (!drag) { return; }
                     var dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+                    drag.moved = Math.max(drag.moved, Math.abs(dx), Math.abs(dy));
                     if (!drag.active) {
                         if (Math.abs(dy) > 14 && Math.abs(dy) > Math.abs(dx)) { drag = null; return; }   // it is a scroll
                         if (!(dx > 8 && dx > Math.abs(dy))) { return; }
@@ -135,7 +144,14 @@ def _inject_swipe_script() -> None:
                     if (!drag) { return; }
                     var d = drag;
                     drag = null;
-                    if (!d.active) { return; }
+                    if (!d.active) {
+                        // A plain tap (no real movement) selects / unselects the line.
+                        if (!cancelled && d.moved < 10 && Date.now() - d.t < 700) {
+                            var pick = document.querySelector(".st-key-lsd_sel_" + d.id + " button");
+                            if (pick) { pick.click(); }
+                        }
+                        return;
+                    }
                     var width = d.box.offsetWidth || 300;
                     var speed = d.dx / Math.max(1, Date.now() - d.t);           // pixels per millisecond
                     var remove = !cancelled && (d.dx > Math.max(70, width * 0.3) || (d.dx > 40 && speed > 0.6));
@@ -248,9 +264,62 @@ def _add(store_id: int, name: str) -> None:
 
 def _delete(store_id: int, diary_id: int) -> None:
     service.remove_medicines(store_id, [diary_id])
+    st.session_state.get(_SELECTED, set()).discard(diary_id)
     state = st.session_state.get(_STATE)
     if state is not None and state["store_id"] == store_id:
         state["rows"] = [row for row in state["rows"] if row["diary_id"] != diary_id]
+
+
+def _toggle(diary_id: int) -> None:
+    chosen = st.session_state.setdefault(_SELECTED, set())
+    if diary_id in chosen:
+        chosen.discard(diary_id)
+    else:
+        chosen.add(diary_id)
+
+
+@st.cache_data(show_spinner=False, ttl=300)
+def _agency_names_cached(store_id: int, _epoch: int) -> list:
+    """[(agency_id, agency_name)] - only the names are used here."""
+    return [(a["agency_id"], a["agency_name"]) for a in agencies_service.get_agency_ledger(store_id)]
+
+
+def _send_to_agency(store_id: int, agency_id, agency_name: str, ids: list) -> None:
+    service.assign_to_agency(store_id, ids, agency_id)
+    state = st.session_state.get(_STATE)
+    if state is not None and state["store_id"] == store_id:
+        for row in state["rows"]:
+            if row["diary_id"] in ids:
+                row["agency_id"] = agency_id
+    st.session_state[_SELECTED] = set()
+    st.session_state[_AGENCY_PICK] = st.session_state.get(_AGENCY_PICK, 0) + 1
+    st.session_state[_FLASH] = ("success", f"✅ {len(ids)} dawai {agency_name} ki 'Mangwana hai' list me gayi.")
+
+
+def _clear_selection() -> None:
+    st.session_state[_SELECTED] = set()
+
+
+def _render_send_bar(store_id: int, ids: list) -> None:
+    """Shown only while medicines are selected: pick an agency, send them there."""
+    agencies = _agency_names_cached(store_id, get_cache_epoch(store_id))
+    st.markdown(f"**{len(ids)} dawai chuni**")
+    if not agencies:
+        st.caption("Abhi koi agency nahi hai. Pehle kisi agency ka bill scan karke save karo.")
+    else:
+        names = dict(agencies)
+        pick = st.selectbox(
+            "Agency chuno", options=[agency_id for agency_id, _ in agencies],
+            format_func=lambda agency_id: names[agency_id], index=None,
+            placeholder="Agency chuno", label_visibility="collapsed",
+            key=f"lsd_agency_{st.session_state.get(_AGENCY_PICK, 0)}",
+        )
+        st.button(
+            "📤 Is agency ki list me bhejo", key="lsd_send", use_container_width=True,
+            disabled=pick is None, type="primary",
+            on_click=_send_to_agency, args=(store_id, pick, names.get(pick, ""), ids),
+        )
+    st.button("Chunav hatao", key="lsd_unselect", on_click=_clear_selection)
 
 
 def _tile(label: str, key: str, store_id: int, name: str) -> None:
@@ -272,23 +341,30 @@ def _render_diary(store_id: int) -> None:
         _render_suggestions(store_id, result)
 
     st.divider()
-    if not rows:
+    plain, _ = service.split_rows(rows)
+    if not plain:
         st.info("Diary khali hai. Upar dawai ka naam likhkar jodo.")
         return
-    st.caption(f"📒 {len(rows)} dawai  •  hatane ke liye dawai ko right slide karo")
+    chosen = st.session_state.setdefault(_SELECTED, set())
+    chosen &= {row["diary_id"] for row in plain}
+    st.caption(f"📒 {len(plain)} dawai  •  tap = chuno  •  right slide = hatao")
+    if chosen:
+        _render_send_bar(store_id, sorted(chosen))
     st.markdown(
         "<div class='lsd-list'>"
         + "".join(
-            f"<div class='lsd-row lsd-id-{int(row['diary_id'])}'>{html.escape(str(row['name']))}</div>"
-            for row in rows
+            f"<div class='lsd-row lsd-id-{int(row['diary_id'])}"
+            f"{' lsd-sel' if row['diary_id'] in chosen else ''}'>{html.escape(str(row['name']))}</div>"
+            for row in plain
         )
         + "</div>",
         unsafe_allow_html=True,
     )
-    # Hidden by CSS: the swipe gesture presses a line's button (the removal
-    # itself is the normal Python callback _delete).
-    for row in rows:
+    # Hidden by CSS: the gestures press these (removal / selection are the
+    # normal Python callbacks _delete / _toggle).
+    for row in plain:
         st.button("✖", key=f"lsd_del_{row['diary_id']}", on_click=_delete, args=(store_id, row["diary_id"]))
+        st.button("✔", key=f"lsd_sel_{row['diary_id']}", on_click=_toggle, args=(row["diary_id"],))
 
 
 def _store_result(store_id: int, term: str) -> dict:

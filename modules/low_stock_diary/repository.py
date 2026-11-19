@@ -38,6 +38,19 @@ def delete_entries(store_id: int, diary_ids: list) -> None:
         _delete_sqlite(store_id, ids)
 
 
+def set_agency(store_id: int, diary_ids: list, agency_id) -> None:
+    """Move these diary rows to an agency's "to order" list (agency_id), or
+    back to the plain diary (agency_id None). Own store only."""
+    ids = [int(diary_id) for diary_id in diary_ids]
+    if not ids:
+        return
+    value = None if agency_id is None else int(agency_id)
+    if ACTIVE_DB_BACKEND == "supabase":
+        _table().update({"agency_id": value}).eq("store_id", store_id).in_("diary_id", ids).execute()
+    else:
+        _set_agency_sqlite(store_id, ids, value)
+
+
 # --------------------------------------------------------------- Supabase
 
 def _table():
@@ -110,4 +123,15 @@ def _delete_sqlite(store_id: int, ids: list) -> None:
         connection.execute(
             f"DELETE FROM low_stock_diary WHERE store_id = ? AND diary_id IN ({marks})",
             [store_id, *ids],
+        )
+
+
+def _set_agency_sqlite(store_id: int, ids: list, agency_id) -> None:
+    from core.database import get_connection
+    marks = ",".join("?" for _ in ids)
+    with get_connection() as connection:
+        _ensure_sqlite_table(connection)
+        connection.execute(
+            f"UPDATE low_stock_diary SET agency_id = ? WHERE store_id = ? AND diary_id IN ({marks})",
+            [agency_id, store_id, *ids],
         )
