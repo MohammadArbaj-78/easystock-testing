@@ -26,8 +26,8 @@ _STATE = "lsd_state"
 _VERSION = "lsd_search_version"
 _FLASH = "lsd_flash"
 _NAMES = "lsd_store_names"
-_NAMES_MAX_AGE_SECONDS = 120
-_KEYUP_DEBOUNCE_MS = 150
+_NAMES_MAX_AGE_SECONDS = 600
+_KEYUP_DEBOUNCE_MS = 120
 
 _TABLE_HELP = (
     "Diary abhi shuru nahi ho saki. Supabase me `database/low_stock_diary.sql` "
@@ -47,20 +47,20 @@ def render_low_stock_diary() -> None:
 
 
 def _inject_css() -> None:
-    """Thin diary lines (no empty space) and the hidden remove button."""
+    """Thin diary lines (own simple styling, no empty space) and the hidden remove buttons."""
     st.markdown(
         """
         <style>
-        div[class*="st-key-lsd_row_"] {
-            padding: 0.4rem 0.75rem !important;
+        .lsd-list { display: flex; flex-direction: column; gap: 0.3rem; margin: 0.2rem 0 0.4rem 0; }
+        .lsd-row {
+            border: 1px solid rgba(49, 51, 63, 0.2);
+            border-radius: 0.5rem;
+            padding: 0.45rem 0.75rem;
+            font-size: 1rem; font-weight: 600; line-height: 1.35;
             touch-action: pan-y;
+            overflow-wrap: anywhere;
         }
-        div[class*="st-key-lsd_row_"] [data-testid="stVerticalBlock"] {
-            gap: 0 !important;
-        }
-        div[class*="st-key-lsd_del_"] {
-            display: none !important;
-        }
+        div[class*="st-key-lsd_del_"] { display: none !important; }
         </style>
         """,
         unsafe_allow_html=True,
@@ -81,13 +81,11 @@ def _inject_swipe_script() -> None:
         <script>
         try {
             var run = function () {
-                if (window.__easystockDiarySwipeV1) { return; }
-                window.__easystockDiarySwipeV1 = true;
+                if (window.__easystockDiarySwipeV2) { return; }
+                window.__easystockDiarySwipeV2 = true;
                 var drag = null;
 
-                function boxOf(card) {
-                    return card.closest('[data-testid="stVerticalBlockBorderWrapper"]') || card;
-                }
+                function boxOf(card) { return card; }
                 function restore(box, animate) {
                     box.style.transition = animate ? "transform 0.2s ease-out, opacity 0.2s ease-out" : "none";
                     box.style.transform = "";
@@ -99,10 +97,10 @@ def _inject_swipe_script() -> None:
                 document.addEventListener("pointerdown", function (e) {
                     if (e.pointerType === "mouse" && e.button !== 0) { return; }
                     if (e.target.closest("button, input, textarea, label, a")) { return; }
-                    var card = e.target.closest('[class*="st-key-lsd_row_"]');
+                    var card = e.target.closest('.lsd-row');
                     if (!card) { return; }
-                    var idPart = String(card.className).split("st-key-lsd_row_")[1];
-                    var rowId = idPart ? parseInt(idPart, 10) : NaN;
+                    var found = /lsd-id-(\\d+)/.exec(String(card.className));
+                    var rowId = found ? parseInt(found[1], 10) : NaN;
                     if (isNaN(rowId)) { return; }
                     drag = {
                         id: rowId, box: boxOf(card), x: e.clientX, y: e.clientY,
@@ -233,26 +231,30 @@ def _stock_text(quantity) -> str:
 
 
 def _add(store_id: int, name: str) -> None:
-    result = service.add_medicine(store_id, name)
+    """One tap = one database write. The diary list is already in the session,
+    so nothing is read first (the database itself refuses a duplicate) and the
+    new line is put on top of the list directly."""
+    rows = _entries(store_id)
+    result = service.add_medicine(store_id, name, known_rows=rows)
     if result["status"] == "added":
+        rows.insert(0, {"diary_id": result["diary_id"], "name": result["name"], "agency_id": None})
         st.session_state[_FLASH] = ("success", f"✅ {result['name']} diary me jud gayi.")
     elif result["status"] == "exists":
         st.session_state[_FLASH] = ("info", f"{result['name']} pehle se diary me hai.")
     else:
         st.session_state[_FLASH] = ("warning", "Dawai ka naam kam se kam 3 akshar ka likho.")
-    _reload(store_id)
     st.session_state[_VERSION] = st.session_state.get(_VERSION, 0) + 1     # empty search box again
 
 
 def _delete(store_id: int, diary_id: int) -> None:
     service.remove_medicines(store_id, [diary_id])
-    _reload(store_id)
+    state = st.session_state.get(_STATE)
+    if state is not None and state["store_id"] == store_id:
+        state["rows"] = [row for row in state["rows"] if row["diary_id"] != diary_id]
 
 
 def _tile(label: str, key: str, store_id: int, name: str) -> None:
-    if st.button(label, key=key, use_container_width=True):
-        _add(store_id, name)
-        st.rerun(scope="fragment")
+    st.button(label, key=key, use_container_width=True, on_click=_add, args=(store_id, name))
 
 
 @st.fragment
@@ -274,15 +276,19 @@ def _render_diary(store_id: int) -> None:
         st.info("Diary khali hai. Upar dawai ka naam likhkar jodo.")
         return
     st.caption(f"📒 {len(rows)} dawai  •  hatane ke liye dawai ko right slide karo")
+    st.markdown(
+        "<div class='lsd-list'>"
+        + "".join(
+            f"<div class='lsd-row lsd-id-{int(row['diary_id'])}'>{html.escape(str(row['name']))}</div>"
+            for row in rows
+        )
+        + "</div>",
+        unsafe_allow_html=True,
+    )
+    # Hidden by CSS: the swipe gesture presses a line's button (the removal
+    # itself is the normal Python callback _delete).
     for row in rows:
-        with st.container(border=True, key=f"lsd_row_{row['diary_id']}"):
-            st.markdown(
-                f"<div style='font-size:1rem; font-weight:600; line-height:1.3;'>{html.escape(str(row['name']))}</div>",
-                unsafe_allow_html=True,
-            )
-            # Hidden by CSS: the swipe gesture presses it (the removal itself is
-            # the normal Python callback _delete).
-            st.button("✖", key=f"lsd_del_{row['diary_id']}", on_click=_delete, args=(store_id, row["diary_id"]))
+        st.button("✖", key=f"lsd_del_{row['diary_id']}", on_click=_delete, args=(store_id, row["diary_id"]))
 
 
 def _store_result(store_id: int, term: str) -> dict:

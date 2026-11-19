@@ -113,7 +113,7 @@ _TAB_SWIPE_JS = """
                 if (!e.touches || e.touches.length !== 1) { return; }
                 var t = e.touches[0];
                 startX = t.clientX; startY = t.clientY; startT = Date.now();
-                onLine = !!(e.target.closest && e.target.closest('[class*="st-key-lsd_row_"]'));
+                onLine = !!(e.target.closest && e.target.closest('.lsd-row'));
                 armed = !startsOnNoSwipe(e.target);
             }, { passive: true, capture: true });
             document.addEventListener('touchend', function (e) {

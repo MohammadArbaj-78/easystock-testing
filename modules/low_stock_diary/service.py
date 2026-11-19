@@ -18,10 +18,14 @@ def get_entries(store_id: int) -> list:
     return repository.list_entries(store_id)
 
 
-def add_medicine(store_id: int, name: str) -> dict:
+def add_medicine(store_id: int, name: str, known_rows: list = None) -> dict:
     """Put a medicine in the diary.
 
-    Returns {"status": "added" | "exists" | "invalid", "name": cleaned name}.
+    known_rows: the diary rows the caller already has - then the list is not
+    read again (a stale list is still safe: the database refuses a duplicate).
+
+    Returns {"status": "added" | "exists" | "invalid", "name": cleaned name,
+    "diary_id": new id (only when added)}.
     "exists": the medicine (same name, ignoring case / spaces / punctuation)
     is already in the diary - nothing is added twice.
     """
@@ -29,16 +33,17 @@ def add_medicine(store_id: int, name: str) -> dict:
     if not is_valid:
         return {"status": "invalid", "name": name_matching.clean_spaces(name)}
     key = name_matching.normalized_name(cleaned)
-    if any(name_matching.normalized_name(row["name"]) == key for row in repository.list_entries(store_id)):
+    current = known_rows if known_rows is not None else repository.list_entries(store_id)
+    if any(name_matching.normalized_name(row["name"]) == key for row in current):
         return {"status": "exists", "name": cleaned}
     try:
-        repository.add_entry(store_id, cleaned, key)
+        diary_id = repository.add_entry(store_id, cleaned, key)
     except Exception as error:
         text = str(error).lower()
         if "duplicate" in text or "unique" in text or "23505" in text:
             return {"status": "exists", "name": cleaned}
         raise
-    return {"status": "added", "name": cleaned}
+    return {"status": "added", "name": cleaned, "diary_id": diary_id}
 
 
 def remove_medicines(store_id: int, diary_ids: list) -> None:
