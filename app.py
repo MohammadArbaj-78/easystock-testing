@@ -31,6 +31,7 @@ from modules.invoice_scan.upload_ui import render_invoice_scan_page
 from modules.invoice_scan import review_service
 from modules.sales.ui import render_sales_page
 from modules.agencies.ui import render_agencies_page
+from modules.udhar.ui import render_udhar_page
 from modules.quick_setup.ui import render_quick_setup_page, discard_database_quantities
 
 st.set_page_config(
@@ -56,6 +57,7 @@ NAV_PAGES = {
     "⏰ Expiry Alerts": render_expiry_alerts_page,
     "📦 Low Stock": render_low_stock_alerts_page,
     "🏢 Agencies": render_agencies_page,
+    "📒 Udhar Khata": render_udhar_page,
     "⚡ Quick Setup": render_quick_setup_page,
 }
 
@@ -133,6 +135,12 @@ def render_main_app() -> None:
     
     if page_function is not render_sales_page:
         st.session_state.pop("sales_history_visible_limit", None)
+
+    if page_function is not render_udhar_page:
+        # Opened again later, Udhar Khata starts at the customer list and
+        # reads the balances fresh.
+        for key in ("udhar_state", "udhar_selected", "udhar_mode", "udhar_confirm_delete"):
+            st.session_state.pop(key, None)    
     
     if page_function is not render_quick_setup_page:
         # Quick Setup now keeps what the owner was doing when another page is
