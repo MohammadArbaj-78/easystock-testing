@@ -51,13 +51,27 @@ def _inject_css() -> None:
     st.markdown(
         """
         <style>
+        /* बॉर्डर वाले मुख्य बॉक्स की पैडिंग और अलाइनमेंट सही करने के लिए */
         div[class*="st-key-lsd_row_"] {
-            padding: 0.4rem 0.75rem !important;
+            padding: 0.55rem 0.9rem !important;
+            display: flex !important;
+            align-items: center !important;
+            min-height: 2.6rem !important;
             touch-action: pan-y;
         }
+        /* अंदर के वर्टिकल ब्लॉक का गैप और पैडिंग हटाने के लिए */
         div[class*="st-key-lsd_row_"] [data-testid="stVerticalBlock"] {
             gap: 0 !important;
+            padding: 0 !important;
+            justify-content: center !important;
         }
+        /* टेक्स्ट (p टैग) के नीचे का एक्स्ट्रा मार्जिन हटाने के लिए ताकि वह बाहर न निकले */
+        div[class*="st-key-lsd_row_"] p {
+            margin: 0 !important;
+            padding: 0 !important;
+            line-height: 1.4 !important;
+        }
+        /* छुपा हुआ डिलीट बटन */
         div[class*="st-key-lsd_del_"] {
             display: none !important;
         }
@@ -65,7 +79,6 @@ def _inject_css() -> None:
         """,
         unsafe_allow_html=True,
     )
-
 
 def _inject_swipe_script() -> None:
     """Swipe a diary line to the RIGHT (finger on a phone, mouse drag on a PC)
