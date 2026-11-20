@@ -147,3 +147,9 @@ def reminder_message(store_name: str, customer_name: str, balance: float) -> str
 def whatsapp_url(mobile: str, message: str) -> str:
     """A link that opens WhatsApp with the message ready for this number."""
     return f"https://wa.me/91{mobile}?text={quote(message)}"
+
+
+def sms_url(mobile: str, message: str) -> str:
+    """A link that opens the phone's SMS app with the message ready for this
+    number ("?&body=" is the form that works on both Android and iPhone)."""
+    return f"sms:+91{mobile}?&body={quote(message)}"

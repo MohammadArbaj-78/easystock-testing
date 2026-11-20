@@ -89,9 +89,16 @@ _CSS = """
 .st-key-udhar_mode_got button, .st-key-udhar_save_got button { background: #2E7D32 !important; border-color: #2E7D32 !important; color: #fff !important; }
 .st-key-udhar_mode_gave button, .st-key-udhar_mode_got button { min-height: 3rem; font-weight: 700; }
 .st-key-udhar_mode_gave button *, .st-key-udhar_mode_got button *, .st-key-udhar_save_gave button *, .st-key-udhar_save_got button * { color: #fff !important; }
-/* reminder: green filled */
-.st-key-udhar_remind a { background: #2E7D32 !important; border-color: #2E7D32 !important; color: #fff !important; min-height: 2.8rem; font-weight: 700; }
-.st-key-udhar_remind a * { color: #fff !important; }
+/* reminder bar: fixed at the bottom of the screen, only the list scrolls */
+.st-key-udhar_bar { position: fixed; left: 0; right: 0; bottom: 0; max-width: 46rem; margin: 0 auto; z-index: 999;
+                    background: #fff; border-top: 1px solid rgba(49,51,63,0.15); box-shadow: 0 -2px 8px rgba(0,0,0,0.06);
+                    padding: 0.55rem 1rem calc(0.55rem + env(safe-area-inset-bottom, 0px)); }
+.st-key-udhar_bar [data-testid="stHorizontalBlock"] { flex-wrap: nowrap !important; gap: 0.5rem !important; }
+.st-key-udhar_bar [data-testid="stHorizontalBlock"] > * { min-width: 0 !important; flex: 1 1 0 !important; width: auto !important; }
+.st-key-udhar_wa a { background: #25D366 !important; border-color: #25D366 !important; color: #fff !important; }
+.st-key-udhar_sms a { background: #1E88E5 !important; border-color: #1E88E5 !important; color: #fff !important; }
+.st-key-udhar_wa a, .st-key-udhar_sms a { min-height: 3rem; font-weight: 700; font-size: 0.82rem; white-space: nowrap; padding-left: 0.3rem !important; padding-right: 0.3rem !important; }
+.st-key-udhar_wa a *, .st-key-udhar_sms a * { color: #fff !important; }
 /* no "Press Enter to submit form" text inside the boxes */
 .st-key-udhar_form_box [data-testid="InputInstructions"],
 .st-key-udhar_entry_box_gave [data-testid="InputInstructions"],
@@ -100,6 +107,7 @@ _CSS = """
 div[class*="st-key-udhar_open_"], div[class*="st-key-udhar_del_"], div[class*="st-key-udhar_yes_"],
 div[class*="st-key-udhar_no_"], .st-key-udhar_nav_back { display: none !important; }
 </style>
+<div class="ud-page" style="display:none"></div>
 """
 
 # Runs in the page itself (installed once per browser tab, fails silently):
@@ -179,6 +187,7 @@ try {
                     if (d.act) {
                         press(d.act.classList.contains("ud-yes") ? ".st-key-udhar_yes_" + d.id : ".st-key-udhar_no_" + d.id);
                     } else if (!d.entry) {
+                        if (window.__easystockUdharNav) { window.__easystockUdharNav.push(1); }
                         press(".st-key-udhar_open_" + d.id);
                     }
                 }
@@ -193,6 +202,13 @@ try {
         }
         document.addEventListener("pointerup", function () { finish(false); }, true);
         document.addEventListener("pointercancel", function () { finish(true); }, true);
+
+        // Opening the entry form is one Back step too: note it at the moment of the tap.
+        document.addEventListener("click", function (e) {
+            var nav = window.__easystockUdharNav;
+            if (nav && e.target.closest && e.target.closest(".st-key-udhar_mode_gave button, .st-key-udhar_mode_got button")
+                && nav.dom() === 1) { nav.push(2); }
+        }, true);
 
         // A right swipe that starts on a history line must not open the sidebar.
         var touch = null;
@@ -257,6 +273,20 @@ _NAV_JS = """
             var install = function () {
                 var PAGE = "\\ud83d\\udcd2 Udhar Khata";
                 var nav = window.__easystockUdharNav = { level: 0, skip: false, fromPop: false };
+                // what is really on the screen: 0 list, 1 customer, 2 entry form
+                nav.dom = function () {
+                    if (!document.querySelector(".st-key-udhar_nav_back")) { return 0; }
+                    return document.querySelector(".st-key-udhar_entry_box_gave, .st-key-udhar_entry_box_got") ? 2 : 1;
+                };
+                // called at the moment of the tap (a real user action), before the page answers
+                nav.push = function (level) {
+                    try {
+                        if (level > nav.level) {
+                            history.pushState({ es_page: PAGE, es_udhar: level }, "");
+                            nav.level = level;
+                        }
+                    } catch (err) { /* no history support */ }
+                };
                 nav.sync = function (level, fresh) {
                     try {
                         var state = history.state;
@@ -281,12 +311,18 @@ _NAV_JS = """
                     if (nav.skip) { nav.skip = false; return; }
                     var s = e.state;
                     if (!s || s.es_page !== PAGE) { return; }
-                    var target = (typeof s.es_udhar === "number") ? s.es_udhar : 0;   // the page's own entry = list
-                    if (target < nav.level) {
+                    if (!document.querySelector(".ud-page")) { return; }      // another page is showing: the app's own Back handles it
+                    var shown = nav.dom();
+                    if (shown > 0) {
+                        // something deeper is on the screen: Back goes exactly one step up
                         nav.fromPop = true;
-                        nav.level = target;
+                        nav.level = shown - 1;
                         var button = document.querySelector(".st-key-udhar_nav_back button");
                         if (button) { button.click(); }
+                    } else {
+                        // the list is already showing: this is an old, left-over entry - skip it
+                        nav.level = 0;
+                        history.back();
                     }
                 });
             };
@@ -593,14 +629,6 @@ def _render_customer(store_id: int, customer_id: int) -> None:
     if mode:
         _render_entry_form(store_id, customer, mode)
 
-    if balance > 0:
-        message = service.reminder_message(get_current_store_name(), customer["name"], balance)
-        with st.container(key="udhar_remind"):
-            st.link_button(
-                "📲 Reminder bhejo", service.whatsapp_url(customer["mobile"], message),
-                use_container_width=True,
-            )
-
     history = _history(store_id, customer)
     if not history:
         st.info("Abhi koi entry nahi hai.")
@@ -612,6 +640,24 @@ def _render_customer(store_id: int, customer_id: int) -> None:
                 st.rerun()
         return
     _render_history(store_id, history)
+    if balance > 0 and not mode:
+        _render_reminder_bar(customer)
+
+
+def _render_reminder_bar(customer: dict) -> None:
+    """Fixed at the bottom (only the list scrolls): WhatsApp and SMS reminder."""
+    message = service.reminder_message(get_current_store_name(), customer["name"], customer["balance"])
+    st.markdown("<div style='height:4.5rem;'></div>", unsafe_allow_html=True)      # the last line is not hidden behind the bar
+    with st.container(key="udhar_bar"):
+        wa_col, sms_col = st.columns(2)
+        with wa_col:
+            with st.container(key="udhar_wa"):
+                st.link_button("💬 WhatsApp reminder", service.whatsapp_url(customer["mobile"], message),
+                               use_container_width=True)
+        with sms_col:
+            with st.container(key="udhar_sms"):
+                st.link_button("✉️ SMS reminder", service.sms_url(customer["mobile"], message),
+                               use_container_width=True)
 
 
 def _render_entry_form(store_id: int, customer: dict, mode: str) -> None:
