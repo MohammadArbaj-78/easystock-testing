@@ -183,3 +183,29 @@ def test_screen_state_flow(sqlite_db):
         ui._back()
         assert ui._SELECTED not in state
         assert ui._find_customer(2, cid) is None                     # another store sees nothing
+
+
+def test_customer_row_has_no_mobile_and_is_escaped():
+    from modules.udhar import ui
+    row = {"customer_id": 4, "name": "<b>Ra</b>mesh", "mobile": "9876543210", "balance": 250.0}
+    text = ui._row_html(row)
+    assert "9876543210" not in text and "<b>Ra" not in text and "ud-id-4" in text
+    assert "Lena hai" in text and "₹250" in text
+    assert "Barabar" in ui._row_html({**row, "balance": 0.0})
+    assert "Advance" in ui._row_html({**row, "balance": -10.0})
+
+
+def test_entry_row_shows_question_only_when_asking():
+    from modules.udhar import ui
+    entry = {"entry_id": 9, "kind": "gave", "amount": 100.0, "note": "Dolo <i>", "entry_date": "2026-11-20", "balance_after": 100.0}
+    plain, asking = ui._entry_html(entry, False), ui._entry_html(entry, True)
+    assert "ud-yes" not in plain and "ud-yes" in asking and "ud-id-9" in plain
+    assert "<i>" not in plain and "−₹100" in plain and "20 Nov 2026" in plain
+
+
+def test_wrong_number_clears_only_the_number_box():
+    from modules.udhar import ui
+    state = {}
+    with patch.object(ui, "st", types.SimpleNamespace(session_state=state)):
+        ui._bump(ui._NC_MOBILE_V)
+        assert state[ui._NC_MOBILE_V] == 1 and ui._NC_NAME_V not in state      # name box keeps its key (and text)
