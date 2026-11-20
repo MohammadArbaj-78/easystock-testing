@@ -377,7 +377,70 @@ def _lots_match(name_a, batch_a, expiry_a, name_b, batch_b, expiry_b) -> bool:
     )
 
 
-def find_exact_lot_match(store_id: int, name: str, batch_number: str, expiry_date: str) -> dict:
+class InvoiceLotReader:
+    """Reads "the store's products matching this search text" for the
+    invoice save, each distinct text from the database only once.
+
+    Without it every medicine row asked the database for the same list 3-4
+    times (exact lot, zero quantity, placeholder, possible match). This keeps
+    the answers, and can fetch the lists of all rows of an invoice at the same
+    time before the first row is saved.
+
+    The answers are always exactly what a fresh database read would give:
+    whenever the save writes a product (create / update), note_write() drops
+    every remembered list that product could appear in (its old or new name /
+    batch contains the search text), so the next row reads it again.
+    """
+
+    def __init__(self, store_id: int):
+        self.store_id = store_id
+        self._lists = {}
+
+    def read(self, term) -> list:
+        key = str(term or "").strip()
+        if key not in self._lists:
+            self._lists[key] = products_repository.get_all_products(self.store_id, search_term=term)
+        return self._lists[key]
+
+    def prefetch(self, terms, pool) -> None:
+        """Read these search texts at the same time (on `pool`). A text that
+        fails to read is simply left out: the row that needs it reads it
+        again and gets the error where it always did."""
+        wanted = []
+        for term in terms:
+            key = str(term or "").strip()
+            if key and key not in self._lists and key not in wanted:
+                wanted.append(key)
+        futures = [(key, pool.submit(products_repository.get_all_products, self.store_id, key)) for key in wanted]
+        for key, future in futures:
+            try:
+                self._lists[key] = future.result()
+            except Exception:
+                pass
+
+    def note_write(self, *products) -> None:
+        """A product was created / changed: forget every remembered list it
+        could be part of. `products` are dicts with name and batch_number
+        (the old row and/or the new values)."""
+        texts = []
+        for product in products:
+            if product:
+                texts.append(str(product.get("name") or "").lower())
+                texts.append(str(product.get("batch_number") or "").lower())
+        for key in list(self._lists):
+            lowered = key.lower()
+            # % and _ are wildcards in the database search: always forget.
+            if "%" in lowered or "_" in lowered or any(lowered in text for text in texts):
+                del self._lists[key]
+
+
+def _reader_function(store_id: int, read):
+    if read is not None:
+        return read
+    return lambda term: products_repository.get_all_products(store_id, search_term=term)
+
+
+def find_exact_lot_match(store_id: int, name: str, batch_number: str, expiry_date: str, read=None) -> dict:
     """Find an existing product row that is the exact same stock lot
     (same name + same batch + same expiry - batch may be blank on both
     sides and still count as an exact match on that field).
@@ -391,7 +454,7 @@ def find_exact_lot_match(store_id: int, name: str, batch_number: str, expiry_dat
     Returns:
         The matching product dict, or None if no exact match exists.
     """
-    candidates = products_repository.get_all_products(store_id, search_term=name)
+    candidates = _reader_function(store_id, read)(name)
     for product in candidates:
         if _lots_match(
             name, batch_number, expiry_date,
@@ -401,7 +464,7 @@ def find_exact_lot_match(store_id: int, name: str, batch_number: str, expiry_dat
     return None
 
 
-def find_possible_batch_match(store_id: int, name: str, expiry_date: str) -> dict:
+def find_possible_batch_match(store_id: int, name: str, expiry_date: str, read=None) -> dict:
     """When an incoming row has no batch number, look for an existing
     lot that might be the same medicine restocked - same name and same
     expiry, but a real (non-blank) batch number already on file. This
@@ -417,7 +480,7 @@ def find_possible_batch_match(store_id: int, name: str, expiry_date: str) -> dic
         The first matching existing product dict (non-blank batch,
         same name + expiry), or None if there is no such candidate.
     """
-    candidates = products_repository.get_all_products(store_id, search_term=name)
+    candidates = _reader_function(store_id, read)(name)
     for product in candidates:
         if not product["batch_number"].strip():
             continue
@@ -429,7 +492,7 @@ def find_possible_batch_match(store_id: int, name: str, expiry_date: str) -> dic
     return None
 
 
-def find_zero_quantity_lot_by_name(store_id: int, name: str) -> dict:
+def find_zero_quantity_lot_by_name(store_id: int, name: str, read=None) -> dict:
     """Find an existing product row for the same medicine name whose
     quantity is currently 0 (e.g. previously sold out, or Returned via
     modules.products.service.return_medicine), regardless of its batch
@@ -455,13 +518,13 @@ def find_zero_quantity_lot_by_name(store_id: int, name: str) -> dict:
         The first matching existing product dict (same name,
         quantity == 0), or None if there is no such record.
     """
-    candidates = products_repository.get_all_products(store_id, search_term=name)
+    candidates = _reader_function(store_id, read)(name)
     for product in candidates:
         if product["quantity"] == 0 and _normalize_lot_key(product["name"]) == _normalize_lot_key(name):
             return product
     return None
 
-def find_quick_setup_placeholder_by_name(store_id: int, name: str) -> dict:
+def find_quick_setup_placeholder_by_name(store_id: int, name: str, read=None) -> dict:
     """Find this store's Quick Setup placeholder row for a medicine
     name - the one product row (see modules.quick_setup.repository)
     created with just a name + quantity, no batch number yet, because
@@ -485,7 +548,7 @@ def find_quick_setup_placeholder_by_name(store_id: int, name: str) -> dict:
     Returns:
         The matching product dict, or None if there is no such record.
     """
-    candidates = products_repository.get_all_products(store_id, search_term=name)
+    candidates = _reader_function(store_id, read)(name)
     for product in candidates:
         if (
             not str(product["batch_number"] or "").strip()
@@ -495,10 +558,10 @@ def find_quick_setup_placeholder_by_name(store_id: int, name: str) -> dict:
     # No exact-name placeholder. An invoice often prints the same medicine
     # a little differently (TAB for Tablet, no dosage form, a hyphen), so
     # try the careful similar-name match below before giving up.
-    return _find_placeholder_by_similar_name(store_id, name)
+    return _find_placeholder_by_similar_name(store_id, name, read)
 
 
-def _find_placeholder_by_similar_name(store_id: int, name: str) -> dict:
+def _find_placeholder_by_similar_name(store_id: int, name: str, read=None) -> dict:
     """Find the ONE Quick Setup / Sales-saved placeholder row whose name
     is the same medicine as `name` written differently - see
     core.name_matching.names_match for exactly what counts as "the same".
@@ -519,7 +582,7 @@ def _find_placeholder_by_similar_name(store_id: int, name: str) -> dict:
         return None
     # Narrow the database read by the first word of the name (the brand);
     # the careful comparison then runs in memory on that small set.
-    candidates = products_repository.get_all_products(store_id, search_term=tokens[0])
+    candidates = _reader_function(store_id, read)(tokens[0])
     matches = [
         product
         for product in candidates
@@ -697,6 +760,7 @@ def save_or_merge_invoice_lot(
     lot_data: dict,
     merge_into_product_id: int = None,
     force_new: bool = False,
+    reader: InvoiceLotReader = None,
 ) -> dict:
     """Save one invoice-sourced medicine row using the stock-lot
     identity/merge rules (see this section's module docstring).
@@ -732,21 +796,30 @@ def save_or_merge_invoice_lot(
 
     Raises:
         ValidationError: If the row's data fails validation.
+
+    `reader` (optional): the InvoiceLotReader of the invoice save, so the
+    lists the match rules read are shared between the rows of one invoice.
+    Without it this call keeps its own, so each list is still read once.
     """
     cleaned = _clean_invoice_lot_data(lot_data)
+    if reader is None:
+        reader = InvoiceLotReader(store_id)
+    read = reader.read
 
     if merge_into_product_id is not None:
         existing = products_repository.get_product_by_id(store_id, merge_into_product_id)
         if existing is None:
             raise ValidationError("The medicine to merge into could not be found.")
         _add_quantity_to_existing_lot(store_id, existing, cleaned["quantity"], cleaned.get("pack_size"))
+        reader.note_write(existing)
         return {"status": "merged", "product_id": existing["product_id"]}
 
     exact_match = find_exact_lot_match(
-        store_id, cleaned["name"], cleaned["batch_number"], cleaned["expiry_date"]
+        store_id, cleaned["name"], cleaned["batch_number"], cleaned["expiry_date"], read=read
     )
     if exact_match is not None:
         _add_quantity_to_existing_lot(store_id, exact_match, cleaned["quantity"], cleaned.get("pack_size"))
+        reader.note_write(exact_match)
         return {"status": "merged", "product_id": exact_match["product_id"]}
 
     # Zero-quantity reuse (Requirement 1): checked after an exact lot
@@ -759,9 +832,10 @@ def save_or_merge_invoice_lot(
     # never matched here (find_zero_quantity_lot_by_name only ever
     # returns a quantity == 0 row), so this cannot affect the existing,
     # unmodified behavior for any lot that still has real stock.
-    zero_qty_match = find_zero_quantity_lot_by_name(store_id, cleaned["name"])
+    zero_qty_match = find_zero_quantity_lot_by_name(store_id, cleaned["name"], read=read)
     if zero_qty_match is not None:
         _replace_zero_quantity_lot(store_id, zero_qty_match, cleaned)
+        reader.note_write(zero_qty_match, cleaned)
         return {"status": "merged", "product_id": zero_qty_match["product_id"]}
 
     # Quick Setup integration: a placeholder row (blank batch, real
@@ -770,7 +844,7 @@ def save_or_merge_invoice_lot(
     # separate row. Reuses the same proven replace-helper as the
     # zero-quantity path above - only WHICH existing row qualifies
     # differs.
-    placeholder_match = find_quick_setup_placeholder_by_name(store_id, cleaned["name"])
+    placeholder_match = find_quick_setup_placeholder_by_name(store_id, cleaned["name"], read=read)
     if placeholder_match is not None:
         # The placeholder's quantity is the owner's real counted stock, so
         # the invoice quantity is ADDED to it (7 saved + 10 invoiced = 17),
@@ -779,16 +853,18 @@ def save_or_merge_invoice_lot(
         merged_lot = dict(cleaned)
         merged_lot["quantity"] = float(placeholder_match["quantity"] or 0) + float(cleaned["quantity"])
         _replace_zero_quantity_lot(store_id, placeholder_match, merged_lot)
+        reader.note_write(placeholder_match, merged_lot)
         return {"status": "merged", "product_id": placeholder_match["product_id"]}
 
     if not cleaned["batch_number"] and not force_new:
         possible_match = find_possible_batch_match(
-            store_id, cleaned["name"], cleaned["expiry_date"]
+            store_id, cleaned["name"], cleaned["expiry_date"], read=read
         )
         if possible_match is not None:
             return {"status": "needs_confirmation", "match": possible_match}
 
     new_product_id = products_repository.create_product(store_id, cleaned)
+    reader.note_write(cleaned)
     return {"status": "created", "product_id": new_product_id}
 
 

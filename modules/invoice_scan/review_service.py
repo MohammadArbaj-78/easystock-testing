@@ -19,11 +19,16 @@ import copy
 import hashlib
 import re
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 import streamlit as st
 
+from config.settings import ACTIVE_DB_BACKEND
+
 from modules.invoice_scan.ocr_service import MEDICINE_FIELDS, INVOICE_HEADER_FIELDS
 from modules.invoice_scan.validation import validate_medicines
+
+_SAVE_WORKERS = 6        # database calls of one invoice save made at the same time
 
 _SESSION_KEY = "invoice_review"
 
@@ -354,8 +359,10 @@ def save_invoice_medicines(store_id: int) -> dict:
         {"saved": int, "skipped": [{"row", "name", "error"}, ...],
          "pending": int}
     """
-    from modules.products.service import save_or_merge_invoice_lot
+    from modules.products.service import save_or_merge_invoice_lot, InvoiceLotReader
     from core.exceptions import ValidationError
+    from core.name_matching import normalized_name
+    from modules.agencies.service import record_bill_from_invoice_header
 
     medicines = get_medicines()
     saved = 0
@@ -367,8 +374,72 @@ def save_invoice_medicines(store_id: int) -> dict:
     # store only scans invoices for now, so every medicine is saved with
     # quantity 0 (everything else is saved exactly as usual).
     from modules.store_settings.service import invoice_saves_real_quantity
-    save_real_qty = invoice_saves_real_quantity(store_id)
 
+    # Things that do not depend on each other are done at the same time
+    # (on Supabase every database call is a trip over the network):
+    #   - the bill goes into the agency's ledger while the medicines are saved
+    #   - the lists the match rules need for ALL rows are read together
+    #     BEFORE the first row is saved (see InvoiceLotReader: it forgets
+    #     any list a save could change, so a row always sees what a fresh
+    #     read would show, exactly as when the rows were saved one by one).
+    # The rows themselves are still saved one after the other, in order.
+    session = st.session_state.get(_SESSION_KEY) or {}
+    invoice_header = get_invoice_header()
+    reader = InvoiceLotReader(store_id)
+    pool = ThreadPoolExecutor(max_workers=_SAVE_WORKERS) if ACTIVE_DB_BACKEND == "supabase" else None
+    ledger_future = None
+    try:
+        if pool is not None:
+            ledger_future = pool.submit(
+                record_bill_from_invoice_header,
+                store_id,
+                invoice_header,
+                image_bytes=session.get("image_bytes"),
+                image_content_type=session.get("image_content_type"),
+            )
+            settings_future = pool.submit(invoice_saves_real_quantity, store_id)
+            terms = []
+            for med in medicines:
+                name = str(med.get("name", "") or "").strip()
+                if name:
+                    terms.append(name)
+                    tokens = normalized_name(name).split()
+                    if tokens:
+                        terms.append(tokens[0])
+            reader.prefetch(terms, pool)
+            save_real_qty = settings_future.result()
+        else:
+            save_real_qty = invoice_saves_real_quantity(store_id)
+
+        saved, skipped, pending_matches, saved_product_ids = _save_rows(
+            store_id, medicines, save_real_qty, reader, save_or_merge_invoice_lot, ValidationError,
+        )
+
+        if ledger_future is not None:
+            ledger = ledger_future.result()
+        else:
+            ledger = record_bill_from_invoice_header(
+                store_id,
+                invoice_header,
+                image_bytes=session.get("image_bytes"),
+                image_content_type=session.get("image_content_type"),
+            )
+    finally:
+        if pool is not None:
+            pool.shutdown(wait=True)
+
+    return _finish_save(
+        store_id, medicines, session, saved, skipped, pending_matches, saved_product_ids, ledger,
+    )
+
+
+def _save_rows(store_id, medicines, save_real_qty, reader, save_or_merge_invoice_lot, ValidationError):
+    """Save the reviewed rows one after the other (the part of
+    save_invoice_medicines that has to stay in order)."""
+    saved = 0
+    skipped = []
+    pending_matches = []
+    saved_product_ids = {}
     for idx, row in enumerate(medicines):
         lot_data = {
             "name":         row.get("name", ""),
@@ -382,7 +453,7 @@ def save_invoice_medicines(store_id: int) -> dict:
             "purchase_date": "",
         }
         try:
-            outcome = save_or_merge_invoice_lot(store_id, lot_data)
+            outcome = save_or_merge_invoice_lot(store_id, lot_data, reader=reader)
             if outcome["status"] == "needs_confirmation":
                 pending_matches.append({
                     "row": idx + 1,
@@ -407,22 +478,20 @@ def save_invoice_medicines(store_id: int) -> dict:
                 "error": f"Unexpected error: {exc}",
             })
 
-    # Add this bill to the agency's ledger - regardless of how many
-    # medicine rows above were actually saved, since the money owed to
-    # the agency is real either way. Never blocks or fails the medicine
-    # save above: if the agency name or total is missing/invalid,
-    # ledger.recorded is simply False (the store owner already saw a
-    # "required" warning for these in the Review screen, via
-    # validate_invoice_header, before clicking Save).
-    session = st.session_state.get(_SESSION_KEY) or {}
-    from modules.agencies.service import record_bill_from_invoice_header
-    ledger = record_bill_from_invoice_header(
-        store_id,
-        get_invoice_header(),
-        image_bytes=session.get("image_bytes"),
-        image_content_type=session.get("image_content_type"),
-    )
+    return saved, skipped, pending_matches, saved_product_ids
 
+
+def _finish_save(store_id, medicines, session, saved, skipped, pending_matches, saved_product_ids, ledger) -> dict:
+    """The rest of the save, after the rows and the agency ledger entry:
+    keep the bill's medicines under the agency and remember the result.
+
+    (The bill was added to the agency's ledger - regardless of how many
+    medicine rows were actually saved, since the money owed to the agency is
+    real either way. That never blocks or fails the medicine save: if the
+    agency name or total is missing/invalid, ledger.recorded is simply False -
+    the store owner already saw a "required" warning for these in the Review
+    screen, via validate_invoice_header, before clicking Save.)
+    """
     # Keep this bill's medicines under the agency, exactly as reviewed
     # (name, batch, qty, expiry, MRP, rate). Once per review session, so
     # pressing Save again (e.g. after filling in a missing agency name)
