@@ -90,9 +90,10 @@ _CSS = """
 .st-key-udhar_mode_gave button, .st-key-udhar_mode_got button { min-height: 3rem; font-weight: 700; }
 .st-key-udhar_mode_gave button *, .st-key-udhar_mode_got button *, .st-key-udhar_save_gave button *, .st-key-udhar_save_got button * { color: #fff !important; }
 /* reminder bar: fixed at the bottom of the screen, only the list scrolls */
-.st-key-udhar_bar { position: fixed; left: 0; right: 0; bottom: 0; max-width: 46rem; margin: 0 auto; z-index: 999;
-                    background: #fff; border-top: 1px solid rgba(49,51,63,0.15); box-shadow: 0 -2px 8px rgba(0,0,0,0.06);
-                    padding: 0.55rem 1rem calc(0.55rem + env(safe-area-inset-bottom, 0px)); }
+/* it floats ABOVE Streamlit's own "Manage app" / app badge at the bottom corner (about 3.2rem tall) */
+.st-key-udhar_bar { position: fixed; left: 0.5rem; right: 0.5rem; bottom: 3.8rem; max-width: 45rem; margin: 0 auto; z-index: 999;
+                    background: #fff; border: 1px solid rgba(49,51,63,0.15); border-radius: 0.8rem;
+                    box-shadow: 0 2px 10px rgba(0,0,0,0.12); padding: 0.5rem; }
 .st-key-udhar_bar [data-testid="stHorizontalBlock"] { flex-wrap: nowrap !important; gap: 0.5rem !important; }
 .st-key-udhar_bar [data-testid="stHorizontalBlock"] > * { min-width: 0 !important; flex: 1 1 0 !important; width: auto !important; }
 .st-key-udhar_wa a { background: #25D366 !important; border-color: #25D366 !important; color: #fff !important; }
@@ -647,7 +648,7 @@ def _render_customer(store_id: int, customer_id: int) -> None:
 def _render_reminder_bar(customer: dict) -> None:
     """Fixed at the bottom (only the list scrolls): WhatsApp and SMS reminder."""
     message = service.reminder_message(get_current_store_name(), customer["name"], customer["balance"])
-    st.markdown("<div style='height:4.5rem;'></div>", unsafe_allow_html=True)      # the last line is not hidden behind the bar
+    st.markdown("<div style='height:8.5rem;'></div>", unsafe_allow_html=True)      # the last line is not hidden behind the bar
     with st.container(key="udhar_bar"):
         wa_col, sms_col = st.columns(2)
         with wa_col:
