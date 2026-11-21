@@ -19,15 +19,16 @@ from modules.low_stock_diary import service
 from modules.low_stock_diary import ui as diary_ui
 
 _FLASH = "lsa_flash"
+_MOBILES = "lsa_mobiles"
 
 _CSS = """
 <style>
 /* the buttons under an agency's list: side by side, also on a phone */
 div[class*="st-key-lsa_btns_"] [data-testid="stHorizontalBlock"] { flex-wrap: nowrap !important; gap: 0.5rem !important; }
 div[class*="st-key-lsa_btns_"] [data-testid="stHorizontalBlock"] > * { min-width: 0 !important; flex: 1 1 0 !important; width: auto !important; }
-div[class*="st-key-lsa_wa_"] a { background: #25D366 !important; border-color: #25D366 !important; color: #fff !important;
+div[class*="st-key-lsa_wa_"] a, div[class*="st-key-lsa_wa_"] button[kind="secondary"] { background: #25D366 !important; border-color: #25D366 !important; color: #fff !important;
                                  min-height: 2.8rem; font-weight: 700; }
-div[class*="st-key-lsa_wa_"] a * { color: #fff !important; }
+div[class*="st-key-lsa_wa_"] a *, div[class*="st-key-lsa_wa_"] button[kind="secondary"] * { color: #fff !important; }
 </style>
 """
 
@@ -55,6 +56,28 @@ def _order_done(store_id: int, agency_id: int, agency_name: str) -> None:
     st.session_state[_FLASH] = f"✅ {agency_name} ki list saaf ho gayi ({count} dawai)."
 
 
+def _mobiles(store_id: int) -> dict:
+    """The saved agency numbers: read once, kept in the session, changed only
+    by _save_mobile (so this tab does not ask the database on every redraw)."""
+    saved = st.session_state.get(_MOBILES)
+    if saved is None or saved[0] != store_id:
+        saved = (store_id, service.agency_mobiles(store_id))
+        st.session_state[_MOBILES] = saved
+    return saved[1]
+
+
+def _save_mobile(store_id: int, agency_id: int, text: str) -> None:
+    result = service.save_agency_mobile(store_id, agency_id, text)
+    if result["status"] == "saved":
+        _mobiles(store_id)[int(agency_id)] = result["mobile"]
+        st.session_state[_FLASH] = "✅ Number save ho gaya. Ab WhatsApp reminder par tap karoge to seedhi chat khulegi."
+    elif result["status"] == "bad_mobile":
+        st.session_state[_FLASH] = "⚠️ Number sahi nahi hai - 10 digit ka mobile number daalo."
+    else:
+        st.session_state[_FLASH] = ("⚠️ Number save nahi ho paya. Ek baar database/agency_contacts.sql "
+                                    "Supabase me chalani hogi.")
+
+
 def _agency_names(store_id: int) -> dict:
     try:
         return dict(diary_ui._agency_names_cached(store_id, get_cache_epoch(store_id)))
@@ -65,7 +88,7 @@ def _agency_names(store_id: int) -> dict:
 def _render(store_id: int) -> None:
     flash = st.session_state.pop(_FLASH, None)
     if flash:
-        st.success(flash)
+        (st.success if flash.startswith("✅") else st.warning)(flash)
 
     _, by_agency = service.split_rows(diary_ui._entries(store_id))
     if not by_agency:
@@ -74,6 +97,7 @@ def _render(store_id: int) -> None:
         return
 
     names = _agency_names(store_id)
+    mobiles = _mobiles(store_id)
     total = sum(len(rows) for rows in by_agency.values())
     st.caption(f"🏢 {len(by_agency)} agency  •  {total} dawai mangwani hai  •  dawai ko right slide karo = Diary me wapas")
 
@@ -81,11 +105,11 @@ def _render(store_id: int) -> None:
     for agency_id in ordered:
         rows = list(reversed(by_agency[agency_id]))            # oldest first
         agency_name = names.get(agency_id) or f"Agency {agency_id}"
-        with st.expander(f"🏢 {agency_name}  •  {len(rows)} dawai", expanded=len(ordered) == 1):
-            _render_agency(store_id, agency_id, agency_name, rows)
+        with st.expander(f"🏢 {agency_name}  •  {len(rows)} dawai", expanded=False):      # closed every time the tab is opened
+            _render_agency(store_id, agency_id, agency_name, rows, mobiles.get(agency_id))
 
 
-def _render_agency(store_id: int, agency_id: int, agency_name: str, rows: list) -> None:
+def _render_agency(store_id: int, agency_id: int, agency_name: str, rows: list, mobile: str = None) -> None:
     st.markdown(
         "<div class='lsd-list'>"
         + "".join(
@@ -101,7 +125,24 @@ def _render_agency(store_id: int, agency_id: int, agency_name: str, rows: list) 
 
     message = service.order_message(agency_name, [row["name"] for row in rows])
     with st.container(key=f"lsa_wa_{agency_id}"):
-        st.link_button("💬 WhatsApp par bhejo", service.whatsapp_url(message), use_container_width=True)
+        if mobile:
+            # number known: the agency's own chat opens directly
+            st.link_button("💬 WhatsApp reminder", service.whatsapp_url(message, mobile), use_container_width=True)
+        else:
+            # first time: ask the number once - or go on without it
+            with st.popover("💬 WhatsApp reminder", use_container_width=True):
+                st.caption("Agency ka WhatsApp number daalo, agli baar se seedhi uski chat khulegi.")
+                number = st.text_input(
+                    "Agency ka mobile number", key=f"lsa_num_{agency_id}", max_chars=15,
+                    placeholder="10 digit number", label_visibility="collapsed",
+                )
+                st.button(
+                    "💾 Number save karo", key=f"lsa_save_{agency_id}", type="primary",
+                    use_container_width=True, on_click=_save_mobile, args=(store_id, agency_id, number),
+                )
+                st.link_button(
+                    "Bina number ke aage badho", service.whatsapp_url(message), use_container_width=True,
+                )
     with st.container(key=f"lsa_btns_{agency_id}"):
         copy_col, done_col = st.columns(2)
         with copy_col:
@@ -114,3 +155,13 @@ def _render_agency(store_id: int, agency_id: int, agency_name: str, rows: list) 
                     "Haan, list saaf karo", key=f"lsa_done_{agency_id}", type="primary",
                     on_click=_order_done, args=(store_id, agency_id, agency_name),
                 )
+    if mobile:
+        with st.popover(f"📞 +91 {mobile}  (badlo)", use_container_width=True):
+            number = st.text_input(
+                "Naya number", key=f"lsa_edit_{agency_id}", max_chars=15,
+                placeholder="10 digit number", label_visibility="collapsed",
+            )
+            st.button(
+                "💾 Number badlo", key=f"lsa_change_{agency_id}", type="primary",
+                use_container_width=True, on_click=_save_mobile, args=(store_id, agency_id, number),
+            )

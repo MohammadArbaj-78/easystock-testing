@@ -311,13 +311,10 @@ def _render_send_bar(store_id: int, ids: list) -> None:
         pick = st.selectbox(
             "Agency chuno", options=[agency_id for agency_id, _ in agencies],
             format_func=lambda agency_id: names[agency_id], index=None,
-            placeholder="Agency chuno", label_visibility="collapsed",
+            placeholder="Agency chuno (chunte hi list me jayegi)", label_visibility="collapsed",
             key=f"lsd_agency_{st.session_state.get(_AGENCY_PICK, 0)}",
         )
-        if st.button(
-            "📤 Is agency ki list me bhejo", key="lsd_send", use_container_width=True,
-            disabled=pick is None, type="primary",
-        ):
+        if pick is not None:        # choosing the agency sends the medicines right away
             _send_to_agency(store_id, pick, names.get(pick, ""), ids)
             st.rerun()               # the whole page: the Agency tab shows the new list too
     st.button("Chunav hatao", key="lsd_unselect", on_click=_clear_selection)

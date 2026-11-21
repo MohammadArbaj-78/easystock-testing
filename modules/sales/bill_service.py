@@ -149,6 +149,24 @@ def bill_total(lines: list) -> float:
     return round(sum(line_amount(line) for line in lines), 2)
 
 
+def bill_message(store_name: str, lines: list, customer: dict = None) -> str:
+    """The bill as plain text for WhatsApp / SMS: store name, the medicines
+    with quantity and amount, the total."""
+    customer = customer or {}
+    head = str(store_name or "").strip() or "Bill"
+    name = str(customer.get("name") or "").strip()
+    parts = [f"*{head}*"]
+    if name:
+        parts.append(f"Customer: {name}")
+    parts.append("")
+    for number, line in enumerate(lines, start=1):
+        parts.append(f"{number}. {line['name']} x {quantity_text(line)} = {money(line_amount(line))}")
+    parts.append("")
+    parts.append(f"Total: {money(bill_total(lines))}")
+    parts.append("Dhanyavaad!")
+    return "\n".join(parts)
+
+
 def same_medicine(line: dict, kind: str, name: str) -> bool:
     return line["kind"] == kind and name_matching.normalized_name(line["name"]) == name_matching.normalized_name(name)
 

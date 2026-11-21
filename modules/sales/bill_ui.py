@@ -1059,6 +1059,50 @@ def _render_bill_form(store_id: int, lines: list) -> None:
         st.caption("DL number bill par tab chhapega jab Quick Setup mein save karoge.")
     if st.button("🖨️ Print", key="bill_print", type="primary", use_container_width=True):
         _sell_and_print(store_id, lines, details, seal_uri, store_name, dl_number)
+    _render_share_buttons(store_name, lines, details)
+
+
+_SHARE_CSS = """
+<style>
+div[class*="st-key-bill_share"] [data-testid="stHorizontalBlock"] { flex-wrap: nowrap !important; gap: 0.5rem !important; }
+div[class*="st-key-bill_share"] [data-testid="stColumn"] { min-width: 0 !important; flex: 1 1 0 !important; width: auto !important; }
+div[class*="st-key-bill_share"] [data-testid="stColumn"]:nth-child(1) a { background: #25D366 !important; border-color: #25D366 !important; color: #fff !important; font-weight: 700; }
+div[class*="st-key-bill_share"] [data-testid="stColumn"]:nth-child(1) a * { color: #fff !important; }
+div[class*="st-key-bill_share"] [data-testid="stColumn"]:nth-child(2) a { background: #1E88E5 !important; border-color: #1E88E5 !important; color: #fff !important; font-weight: 700; }
+div[class*="st-key-bill_share"] [data-testid="stColumn"]:nth-child(2) a * { color: #fff !important; }
+</style>
+"""
+
+
+def _render_share_buttons(store_name: str, lines: list, details: dict) -> None:
+    """WhatsApp / SMS bill under Print: the bill text goes to the number typed
+    in "Mobile number" (the chat / SMS of that number opens with the bill
+    ready). Without a number the phone asks who to send it to. This only
+    sends the text - the medicines are sold by Print."""
+    from modules.udhar import service as udhar_service
+    from urllib.parse import quote
+
+    typed = str(details.get("mobile") or "").strip()
+    mobile = udhar_service.normalize_mobile(typed) if typed else None
+    if typed and mobile is None:
+        st.caption("⚠️ Mobile number sahi nahi hai (10 digit) - WhatsApp / SMS bill ke liye theek karo.")
+        return
+    text = bill_service.bill_message(store_name, lines, details)
+    if mobile:
+        whatsapp = udhar_service.whatsapp_url(mobile, text)
+        sms = udhar_service.sms_url(mobile, text)
+    else:
+        whatsapp = "whatsapp://send?text=" + quote(text)
+        sms = "sms:?&body=" + quote(text)
+    st.markdown(_SHARE_CSS, unsafe_allow_html=True)
+    with st.container(key="bill_share"):
+        whatsapp_col, sms_col = st.columns(2)
+        with whatsapp_col:
+            st.link_button("💬 WhatsApp bill", whatsapp, use_container_width=True)
+        with sms_col:
+            st.link_button("✉️ SMS bill", sms, use_container_width=True)
+    st.caption("Ye sirf bill ka message bhejta hai. Dawai bechne (stock kam karne) ke liye Print dabao. "
+               "Keypad wale phone par WhatsApp nahi hota - uske liye SMS bill dabao.")
 
 
 def _sell_and_print(store_id: int, lines: list, details: dict, seal_uri, store_name: str, dl_number: str = "") -> None:

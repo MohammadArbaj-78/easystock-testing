@@ -152,7 +152,32 @@ def order_message(agency_name: str, names: list) -> str:
     return f"Namaste {agency_name},\nMujhe ye dawai chahiye:\n" + "\n".join(lines) + "\nThank you."
 
 
-def whatsapp_url(text: str) -> str:
-    """Opens the WhatsApp app itself with the text ready (the owner picks who to
-    send to); no browser page in between."""
+def whatsapp_url(text: str, mobile: str = None) -> str:
+    """Opens the WhatsApp app itself with the text ready, no browser page in
+    between. With the agency's saved number the chat of that agency opens
+    directly; without it the owner picks who to send to."""
+    if mobile:
+        return f"whatsapp://send?phone=91{mobile}&text=" + quote(text)
     return "whatsapp://send?text=" + quote(text)
+
+
+def agency_mobiles(store_id: int) -> dict:
+    """{agency_id: mobile}. A problem here (for example the agency_contacts
+    table is not created yet) just means "no numbers saved"."""
+    try:
+        return repository.list_agency_mobiles(store_id)
+    except Exception:
+        return {}
+
+
+def save_agency_mobile(store_id: int, agency_id: int, text: str) -> dict:
+    """{"status": "saved", "mobile"} | "bad_mobile" | "error"."""
+    from modules.udhar.service import normalize_mobile
+    mobile = normalize_mobile(text)
+    if mobile is None:
+        return {"status": "bad_mobile"}
+    try:
+        repository.set_agency_mobile(store_id, agency_id, mobile)
+    except Exception as error:
+        return {"status": "error", "error": str(error)}
+    return {"status": "saved", "mobile": mobile}

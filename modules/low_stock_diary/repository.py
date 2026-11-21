@@ -51,6 +51,71 @@ def set_agency(store_id: int, diary_ids: list, agency_id) -> None:
         _set_agency_sqlite(store_id, ids, value)
 
 
+def list_agency_mobiles(store_id: int) -> dict:
+    """{agency_id: 10 digit mobile} of the agencies whose number was saved."""
+    if ACTIVE_DB_BACKEND == "supabase":
+        from core.supabase_client import get_supabase_client
+        response = (
+            get_supabase_client().table("agency_contacts").select("agency_id, mobile")
+            .eq("store_id", store_id).execute()
+        )
+        rows = response.data or []
+    else:
+        rows = _list_mobiles_sqlite(store_id)
+    return {int(row["agency_id"]): row["mobile"] for row in rows}
+
+
+def set_agency_mobile(store_id: int, agency_id: int, mobile: str) -> None:
+    """Save (or change) the number of one agency of this store."""
+    if ACTIVE_DB_BACKEND == "supabase":
+        from core.supabase_client import get_supabase_client
+        get_supabase_client().table("agency_contacts").upsert(
+            {"store_id": store_id, "agency_id": int(agency_id), "mobile": mobile},
+            on_conflict="store_id,agency_id",
+        ).execute()
+    else:
+        _set_mobile_sqlite(store_id, int(agency_id), mobile)
+
+
+def _ensure_contacts_table(connection) -> None:
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS agency_contacts (
+            contact_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            store_id   INTEGER NOT NULL,
+            agency_id  INTEGER NOT NULL,
+            mobile     TEXT NOT NULL,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (store_id, agency_id)
+        )
+        """
+    )
+
+
+def _list_mobiles_sqlite(store_id: int) -> list:
+    from core.database import get_connection
+    with get_connection() as connection:
+        _ensure_contacts_table(connection)
+        rows = connection.execute(
+            "SELECT agency_id, mobile FROM agency_contacts WHERE store_id = ?", (store_id,)
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def _set_mobile_sqlite(store_id: int, agency_id: int, mobile: str) -> None:
+    from core.database import get_connection
+    with get_connection() as connection:
+        _ensure_contacts_table(connection)
+        connection.execute(
+            """
+            INSERT INTO agency_contacts (store_id, agency_id, mobile) VALUES (?, ?, ?)
+            ON CONFLICT (store_id, agency_id) DO UPDATE SET mobile = excluded.mobile,
+                                                          updated_at = CURRENT_TIMESTAMP
+            """,
+            (store_id, agency_id, mobile),
+        )
+
+
 # --------------------------------------------------------------- Supabase
 
 def _table():
