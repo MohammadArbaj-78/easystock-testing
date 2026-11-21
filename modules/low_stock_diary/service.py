@@ -153,5 +153,6 @@ def order_message(agency_name: str, names: list) -> str:
 
 
 def whatsapp_url(text: str) -> str:
-    """Opens WhatsApp with the text ready (the owner picks who to send to)."""
-    return "https://wa.me/?text=" + quote(text)
+    """Opens the WhatsApp app itself with the text ready (the owner picks who to
+    send to); no browser page in between."""
+    return "whatsapp://send?text=" + quote(text)

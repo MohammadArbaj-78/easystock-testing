@@ -314,11 +314,12 @@ def _render_send_bar(store_id: int, ids: list) -> None:
             placeholder="Agency chuno", label_visibility="collapsed",
             key=f"lsd_agency_{st.session_state.get(_AGENCY_PICK, 0)}",
         )
-        st.button(
+        if st.button(
             "📤 Is agency ki list me bhejo", key="lsd_send", use_container_width=True,
             disabled=pick is None, type="primary",
-            on_click=_send_to_agency, args=(store_id, pick, names.get(pick, ""), ids),
-        )
+        ):
+            _send_to_agency(store_id, pick, names.get(pick, ""), ids)
+            st.rerun()               # the whole page: the Agency tab shows the new list too
     st.button("Chunav hatao", key="lsd_unselect", on_click=_clear_selection)
 
 

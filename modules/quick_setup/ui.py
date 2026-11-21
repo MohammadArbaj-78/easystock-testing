@@ -128,6 +128,7 @@ def _save_real_qty_switch(store_id: int, key: str) -> None:
     error_key = f"{key}_error"
     try:
         store_settings_service.set_invoice_saves_real_quantity(store_id, st.session_state[key])
+        st.session_state.pop("ls_real_qty", None)      # the Low Stock page reads the switch again
         st.session_state.pop(error_key, None)
     except Exception as exc:
         # Not saved: put the switch back so it never shows a value the

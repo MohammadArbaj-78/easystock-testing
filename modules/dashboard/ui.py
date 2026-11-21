@@ -11,6 +11,8 @@ numbers and renders them. If a metric card's number looks wrong, the
 bug is in service.py or repository.py, never in this file.
 """
 
+import html
+
 import streamlit as st
 
 from modules.dashboard.service import get_dashboard_metrics
@@ -18,6 +20,7 @@ from modules.alerts import service as alerts_service
 from config.alert_theme import render_alert_banner
 from core.session import get_current_store_id, get_current_low_stock_minimum
 from core.cache_utils import get_cache_epoch
+from modules.alerts import mode as alerts_mode
 
 
 @st.cache_data(show_spinner=False)
@@ -35,17 +38,38 @@ def render_dashboard() -> None:
         get_cache_epoch(store_id),
     )
 
-    if metrics["total_products"] == 0:
+    metrics = _with_low_stock_mode(store_id, metrics)
+
+    if metrics["total_products"] == 0 and metrics["low_stock_count"] == 0:
         st.info(
             "No products yet. Once you add products, your inventory "
             "summary will appear here."
         )
         return
 
+    st.markdown(_CSS, unsafe_allow_html=True)
     _render_metric_cards(metrics)
     _render_expiring_soon_warning(store_id)
-    st.divider()
     _render_detail_sections(metrics)
+
+
+def _with_low_stock_mode(store_id: int, metrics: dict) -> dict:
+    """When the store does not keep real quantities (Quick Setup "Asli qty
+    save" OFF) there are no stock alerts, so Low Stock is the Diary list:
+    every medicine written there, with or without an agency. It leaves only
+    when its agency order is done ("Order ho gaya") or it is removed from
+    the Diary. When the switch is ON the normal low stock numbers stay."""
+    try:
+        if alerts_mode.alerts_enabled(store_id):
+            return metrics
+        rows = alerts_mode.diary_rows(store_id)
+    except Exception:
+        return metrics
+    result = dict(metrics)
+    result["low_stock_count"] = len(rows)
+    result["low_stock_items"] = []
+    result["low_stock_diary"] = list(rows)
+    return result
 
 @st.cache_data(show_spinner=False)
 def _get_alert_counts_cached(store_id: int, _epoch: int) -> dict:
@@ -78,56 +102,79 @@ def _render_expiring_soon_warning(store_id: int) -> None:
     st.markdown(render_alert_banner(message, alert_type), unsafe_allow_html=True)
 
 
+_CSS = """
+<style>
+/* four tiles, always two per row (also on a phone) */
+.db-tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 0.6rem; margin: 0.2rem 0 0.8rem 0; }
+.db-tile { background: #fff; border: 1px solid rgba(49,51,63,0.14); border-radius: 0.8rem;
+           padding: 0.7rem 0.8rem; min-width: 0; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
+.db-ico { width: 2.1rem; height: 2.1rem; border-radius: 50%; display: flex; align-items: center;
+          justify-content: center; font-size: 1.1rem; margin-bottom: 0.35rem; }
+.db-tl { font-size: 0.8rem; color: #777; line-height: 1.2; }
+.db-tv { font-size: 1.7rem; font-weight: 800; line-height: 1.2; }
+.db-ts { font-size: 0.72rem; color: #999; min-height: 1rem; }
+.db-list { display: flex; flex-direction: column; gap: 0.3rem; margin: 0.2rem 0 0.3rem 0; }
+.db-row { background: #fff; border: 1px solid rgba(49,51,63,0.12); border-radius: 0.6rem; padding: 0.4rem 0.7rem; }
+.db-n { font-weight: 600; line-height: 1.3; overflow-wrap: anywhere; }
+.db-s { font-size: 0.78rem; color: #777; }
+</style>
+"""
+
+_TILES = (
+    # key, label, icon, colour, background, sub-text when > 0
+    ("total_products", "Total Products", "💊", "#1565C0", "#E3F2FD", ""),
+    ("expiring_soon_count", "Expiring Soon", "⏳", "#F9A825", "#FFF8E1", "30 din ke andar"),
+    ("expired_count", "Expired", "⛔", "#D32F2F", "#FFEBEE", "Action needed"),
+    ("low_stock_count", "Low Stock", "📉", "#EF6C00", "#FFF3E0", "Reorder soon"),
+)
+
+
+def _tiles_html(metrics: dict) -> str:
+    parts = []
+    for key, label, icon, color, background, sub in _TILES:
+        value = int(metrics.get(key) or 0)
+        if key == "total_products":
+            sub_text = ""
+        elif key == "expiring_soon_count":
+            sub_text = sub
+        else:
+            sub_text = sub if value > 0 else ""
+        parts.append(
+            f"<div class='db-tile'><div class='db-ico' style='background:{background};color:{color}'>{icon}</div>"
+            f"<div class='db-tl'>{label}</div>"
+            f"<div class='db-tv' style='color:{color}'>{value}</div>"
+            f"<div class='db-ts'>{sub_text}</div></div>"
+        )
+    return "<div class='db-tiles'>" + "".join(parts) + "</div>"
+
+
 def _render_metric_cards(metrics: dict) -> None:
-    """Render the four top-level numbers as a 2x2 grid of metric cards.
+    """The four numbers as a 2x2 grid of tiles (two per row on a phone too,
+    like Khatabook): Total Products, Expiring Soon, Expired, Low Stock."""
+    st.markdown(_tiles_html(metrics), unsafe_allow_html=True)
 
-    A 2x2 grid (rather than 4-across) is deliberate: on a phone screen,
-    four columns side by side would force tiny text, working against the
-    "readable fonts, mobile-friendly" UI rule. Two columns keep each
-    number large and legible on a small screen.
-    """
-    row1_col1, row1_col2 = st.columns(2)
-    row2_col1, row2_col2 = st.columns(2)
 
-    with row1_col1:
-        st.metric("Total Products", metrics["total_products"])
+def _rows_html(items: list, sub_fn) -> str:
+    return "<div class='db-list'>" + "".join(
+        f"<div class='db-row'><div class='db-n'>{html.escape(str(item.get('name') or ''))}</div>"
+        f"<div class='db-s'>{html.escape(sub_fn(item))}</div></div>"
+        for item in items
+    ) + "</div>"
 
-    with row1_col2:
-        st.metric(
-            "Expiring Soon",
-            metrics["expiring_soon_count"],
-            help="Products expiring within 30 days",
-        )
 
-    with row2_col1:
-        # delta_color="inverse" renders the expired count in red/warning
-        # styling rather than Streamlit's default green-for-positive,
-        # since a high expired count is bad news, not good news.
-        st.metric(
-            "Expired Products",
-            metrics["expired_count"],
-            delta=("Action needed" if metrics["expired_count"] > 0 else None),
-            delta_color="inverse",
-        )
+def _lot_sub(item: dict) -> str:
+    return (f"Batch {item.get('batch_number') or '-'} • Exp {item.get('expiry_date') or '-'} • "
+            f"Qty {item.get('quantity')} • MRP {item.get('mrp')} • Rate {item.get('rate')}")
 
-    with row2_col2:
-        st.metric(
-            "Low Stock",
-            metrics["low_stock_count"],
-            delta=("Reorder soon" if metrics["low_stock_count"] > 0 else None),
-            delta_color="inverse",
-        )
+
+def _low_sub(item: dict) -> str:
+    return (f"Batch {item.get('batch_number') or '-'} • Qty {item.get('quantity')} / "
+            f"Limit {item.get('effective_threshold')} • MRP {item.get('mrp')} • Rate {item.get('rate')}")
 
 
 def _render_detail_sections(metrics: dict) -> None:
-    """Render expandable detail lists for each metric that has items
-    needing attention.
-
-    Expanders are used instead of always-visible tables so the screen
-    stays simple by default (matching "minimal clicks, simple") while
-    still letting an owner tap in for specifics when a number looks
-    concerning.
-    """
+    """Expandable lists for each tile that has items (the screen stays
+    simple by default; tap in for specifics)."""
     if metrics["expired_count"] > 0:
         with st.expander(f"🔴 {metrics['expired_count']} Expired Product(s)"):
             _render_item_table(metrics["expired_items"])
@@ -138,25 +185,18 @@ def _render_detail_sections(metrics: dict) -> None:
 
     if metrics["low_stock_count"] > 0:
         with st.expander(f"🟠 {metrics['low_stock_count']} Low Stock Product(s)"):
-            for item in metrics["low_stock_items"]:
-                st.write(
-                    f"**{item['name']}** (Batch: {item['batch_number']}) - "
-                    f"Qty: {item['quantity']} / Threshold: {item['effective_threshold']} - "
-                    f"MRP: {item.get('mrp')} - Rate: {item.get('rate')}"
+            if "low_stock_diary" in metrics:
+                st.markdown(
+                    _rows_html(
+                        metrics["low_stock_diary"],
+                        lambda row: "Agency ko bhej di" if row.get("agency_id") else "Diary me",
+                    ),
+                    unsafe_allow_html=True,
                 )
+            else:
+                st.markdown(_rows_html(metrics["low_stock_items"], _low_sub), unsafe_allow_html=True)
 
 
 def _render_item_table(items: list) -> None:
-    """Render a simple list of products with name, batch, expiry, and
-    price info.
-
-    Args:
-        items: List of product dicts with name, batch_number,
-            expiry_date, quantity, mrp, rate keys.
-    """
-    for item in items:
-        st.write(
-            f"**{item['name']}** (Batch: {item['batch_number']}) - "
-            f"Expires: {item['expiry_date']} - Qty: {item['quantity']} - "
-            f"MRP: {item.get('mrp')} - Rate: {item.get('rate')}"
-        )
+    """A thin list of products: name, then batch / expiry / qty / prices."""
+    st.markdown(_rows_html(items, _lot_sub), unsafe_allow_html=True)

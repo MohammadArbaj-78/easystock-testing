@@ -201,6 +201,26 @@ def get_payments_for_agency(store_id: int, agency_id: int) -> list:
 # SQLite implementation
 # =====================================================================
 
+def _best_similar_agency(agency_name: str, rows) -> int:
+    """The agency_id of the existing agency that is the same name written a
+    little differently (spaces, a small spelling slip, Pvt/Ltd, Pharma vs
+    Pharmaceuticals ...), or None. rows: dicts with agency_id, agency_name.
+    The best score wins; two equally good different agencies = no match
+    (a new agency is safer than a wrong ledger)."""
+    from core.name_matching import agency_similarity
+    scored = []
+    for row in rows:
+        score = agency_similarity(agency_name, row["agency_name"])
+        if score > 0:
+            scored.append((score, row["agency_id"]))
+    if not scored:
+        return None
+    scored.sort(reverse=True)
+    if len(scored) > 1 and scored[0][0] == scored[1][0]:
+        return None
+    return scored[0][1]
+
+
 def _find_or_create_agency_sqlite(store_id: int, agency_name: str) -> int:
     normalized = normalize_agency_name(agency_name)
     with get_connection() as connection:
@@ -210,6 +230,14 @@ def _find_or_create_agency_sqlite(store_id: int, agency_name: str) -> int:
         ).fetchone()
         if existing:
             return existing["agency_id"]
+
+        similar = _best_similar_agency(agency_name, [
+            dict(row) for row in connection.execute(
+                "SELECT agency_id, agency_name FROM agencies WHERE store_id = ?", (store_id,)
+            ).fetchall()
+        ])
+        if similar is not None:
+            return similar
 
         cursor = connection.execute(
             "INSERT INTO agencies (store_id, agency_name, normalized_name) VALUES (?, ?, ?)",
@@ -412,6 +440,12 @@ def _find_or_create_agency_supabase(store_id: int, agency_name: str) -> int:
     )
     if response.data:
         return response.data[0]["agency_id"]
+
+    similar = _best_similar_agency(agency_name, _fetch_all(lambda: (
+        _agencies_table().select("agency_id, agency_name").eq("store_id", store_id)
+    )))
+    if similar is not None:
+        return similar
 
     response = (
         _agencies_table()

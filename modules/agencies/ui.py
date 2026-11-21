@@ -14,7 +14,6 @@ modules.agencies.service or modules.agencies.repository, never here.
 import streamlit as st
 
 from modules.agencies import service as agencies_service
-from modules.low_stock_diary import service as diary_service
 from core.session import get_current_store_id
 from core.cache_utils import get_cache_epoch, bump_cache_epoch
 import html
@@ -129,8 +128,6 @@ def _render_agency_detail(store_id: int, agency: dict, detail: dict = None, imag
 
     _render_medicines_section(store_id, agency_id)
 
-    _render_order_list_section(store_id, agency_id, agency["agency_name"])
-
     st.markdown("**Bills**")
     if not detail["bills"]:
         st.caption("No bills recorded yet.")
@@ -146,54 +143,6 @@ def _render_medicines_section(store_id: int, agency_id: int) -> None:
     if not st.toggle("💊 Medicines", key=f"agency_meds_open_{agency_id}"):
         return
     _render_agency_medicines(store_id, agency_id)
-
-
-def _render_order_list_section(store_id: int, agency_id: int, agency_name: str) -> None:
-    """The medicines to order from this agency (moved here from the Low Stock
-    Diary). Nothing is read until the switch is turned on."""
-    if not st.toggle("📝 Mangwana hai", key=f"agency_order_open_{agency_id}"):
-        return
-    _render_order_list(store_id, agency_id, agency_name)
-
-
-def _diary_changed() -> None:
-    """The Low Stock Diary keeps its own copy of the list: make it read again."""
-    st.session_state.pop("lsd_state", None)
-
-
-def _back_to_diary(store_id: int, diary_id: int) -> None:
-    diary_service.return_to_diary(store_id, [diary_id])
-    _diary_changed()
-
-
-def _order_done(store_id: int, agency_id: int) -> None:
-    diary_service.clear_agency_list(store_id, agency_id)
-    _diary_changed()
-
-
-@st.fragment
-def _render_order_list(store_id: int, agency_id: int, agency_name: str) -> None:
-    rows = diary_service.agency_list(store_id, agency_id)
-    if not rows:
-        st.caption("Is agency ke liye abhi koi dawai nahi hai. Low Stock → Diary se dawai chun kar yahan bhejo.")
-        return
-    names = [row["name"] for row in rows]
-    st.caption(f"{len(rows)} dawai mangwani hai")
-    for row in rows:
-        name_col, back_col = st.columns([5, 1])
-        name_col.markdown(f"**{html.escape(str(row['name']))}**", unsafe_allow_html=True)
-        back_col.button(
-            "↩️", key=f"agency_order_back_{row['diary_id']}", help="Wapas Diary me",
-            on_click=_back_to_diary, args=(store_id, row["diary_id"]),
-        )
-    message = diary_service.order_message(agency_name, names)
-    st.link_button("📲 WhatsApp par bhejo", diary_service.whatsapp_url(message), use_container_width=True)
-    with st.expander("📋 Copy karo"):
-        st.code(message, language=None)
-    with st.popover("✅ Order ho gaya", use_container_width=True):
-        st.caption("Is agency ki poori list saaf ho jayegi.")
-        st.button("Haan, list saaf karo", key=f"agency_order_done_{agency_id}", type="primary",
-                  on_click=_order_done, args=(store_id, agency_id))
 
 
 def _load_more_medicines(limit_key: str) -> None:

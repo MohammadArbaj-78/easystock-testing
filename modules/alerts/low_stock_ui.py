@@ -1,11 +1,14 @@
 """
-Low Stock Alerts screen UI.
+Low Stock screen UI.
 
-Renders three severity-coded sections (Out of Stock = Red, Very Low =
-Orange, Low = Yellow) with a filter dropdown and search box. Each
-product row shows its current quantity and the effective threshold it
-was compared against, so a store owner knows exactly how far below
-the reorder point each item is.
+Tabs depend on the Quick Setup switch "Asli qty save karo":
+  ON  : Alerts | Diary | Agency   (stock is real, so alerts make sense)
+  OFF : Diary | Agency            (stock is not kept, so no alerts)
+
+The Alerts tab shows three severity-coded sections (Out of Stock = Red, Very
+Low = Orange, Low = Yellow) as thin white lines with a severity filter and a
+search box. Each line shows the current quantity and the effective threshold
+it was compared against.
 
 No business logic, no SQL - calls modules.alerts.low_stock_service and
 renders results. If a product appears in the wrong severity or counts
@@ -14,6 +17,7 @@ repository, never here.
 """
 
 import html
+import time
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -28,7 +32,14 @@ from core.session import (
 from core.supabase_auth import update_store_low_stock_minimum
 from config.settings import DEFAULT_LOW_STOCK_THRESHOLD
 from core.cache_utils import bump_cache_epoch, get_cache_epoch
+from modules.low_stock_diary.agency_tab import render_agency_tab
 from modules.low_stock_diary.ui import render_low_stock_diary
+from modules.alerts import mode as alerts_mode
+
+try:
+    from st_keyup import st_keyup
+except ImportError:          # package not installed: a normal text box is used instead
+    st_keyup = None
 
 FILTER_OPTION_ALL = "All"
 GLOBAL_MINIMUM_OPTIONS = list(range(1, 11))  # Requirement 5: strictly 1-10
@@ -53,16 +64,17 @@ def _get_low_stock_alerts_cached(store_id: int, search_term: str, global_minimum
         store_id, search_term=search_term, global_minimum=global_minimum
     )
 
-# Swiping on the Low Stock page:
-#   - on the Alerts tab: swipe LEFT (finger from right to left) -> Diary opens;
-#     swipe RIGHT still opens the sidebar, as everywhere in the app.
-#   - on the Diary tab: swipe RIGHT -> back to Alerts, and the sidebar does NOT
-#     open there (a line swiped right inside the Diary is removed, see
-#     modules.low_stock_diary.ui; that swipe must not open the sidebar either).
+# Swiping on the Low Stock page (2 or 3 tabs):
+#   - swipe LEFT (finger from right to left)  -> the next tab,
+#   - swipe RIGHT                             -> the previous tab. On the FIRST
+#     tab a right swipe opens the sidebar, as everywhere in the app.
+#   - a line swiped right inside the Diary / Agency tab is removed (see
+#     modules.low_stock_diary.ui); that swipe never opens the sidebar and never
+#     changes the tab.
 # It only presses a tab's own button, so the tabs behave exactly as Streamlit
 # made them. Ignored while the sidebar is open (a left swipe then closes it),
 # and when the swipe starts on a text box, slider, table or a sideways-scrolling
-# area. The sidebar is kept shut on the Diary tab by listening first (capture
+# area. The sidebar is kept shut when a tab changes by listening first (capture
 # phase) and stopping that one touchend from reaching the sidebar's own
 # listener. Installs itself once per browser page; fails silently.
 _TAB_SWIPE_JS = """
@@ -70,10 +82,10 @@ _TAB_SWIPE_JS = """
 (function () {
     try {
         var host = window.parent;
-        if (host.__easystockTabSwipeV2) { return; }
+        if (host.__easystockTabSwipeV3) { return; }
         var install = function () {
-            if (window.__easystockTabSwipeV2) { return; }
-            window.__easystockTabSwipeV2 = true;
+            if (window.__easystockTabSwipeV3) { return; }
+            window.__easystockTabSwipeV3 = true;
             var MIN_DX = 70, RATIO = 2, MAX_MS = 700;
             var NO_SWIPE = 'input, textarea, select, canvas, [contenteditable="true"], ' +
                 '[role="slider"], [data-testid="stDataFrame"], [data-testid="stDataEditor"], ' +
@@ -96,16 +108,17 @@ _TAB_SWIPE_JS = """
                 }
                 return false;
             }
-            function findTab(word, other) {
-                var tabs = document.querySelectorAll('[role="tab"]');
-                for (var i = 0; i < tabs.length; i++) {
-                    if ((tabs[i].textContent || '').indexOf(word) === -1) { continue; }
-                    var bar = tabs[i].parentElement;
-                    if (bar && (bar.textContent || '').indexOf(other) !== -1) { return tabs[i]; }
+            // The Low Stock tab bar: the one that has both a Diary and an Agency tab.
+            function lowStockTabs() {
+                var all = document.querySelectorAll('[role="tab"]');
+                for (var i = 0; i < all.length; i++) {
+                    if ((all[i].textContent || '').indexOf('Diary') === -1) { continue; }
+                    var bar = all[i].parentElement;
+                    if (!bar || (bar.textContent || '').indexOf('Agency') === -1) { continue; }
+                    return Array.prototype.slice.call(bar.querySelectorAll('[role="tab"]'));
                 }
                 return null;
             }
-            function selected(tab) { return !!tab && tab.getAttribute('aria-selected') === 'true'; }
 
             var startX = 0, startY = 0, startT = 0, armed = false, onLine = false;
             document.addEventListener('touchstart', function (e) {
@@ -123,17 +136,21 @@ _TAB_SWIPE_JS = """
                 var t = e.changedTouches[0];
                 var dx = t.clientX - startX, dy = t.clientY - startY;
                 if (Math.abs(dx) < Math.abs(dy) * RATIO) { return; }
-                var diary = findTab('Diary', 'Alerts');
-                var alerts = findTab('Alerts', 'Diary');
-                if (!diary || !alerts) { return; }
-                if (selected(diary)) {
-                    // Diary tab: a swipe to the right must not open the sidebar.
-                    if (dx >= 40 && !sidebarOpen()) {
+                var tabs = lowStockTabs();
+                if (!tabs || tabs.length < 2) { return; }
+                if (sidebarOpen()) { return; }
+                var index = 0;
+                for (var i = 0; i < tabs.length; i++) {
+                    if (tabs[i].getAttribute('aria-selected') === 'true') { index = i; }
+                }
+                if (dx >= 40) {
+                    if (onLine) { e.stopPropagation(); return; }          // the line's own slide-to-remove
+                    if (index > 0) {                                      // not the first tab: no sidebar here
                         e.stopPropagation();
-                        if (dx >= MIN_DX && !onLine) { alerts.click(); }
+                        if (dx >= MIN_DX) { tabs[index - 1].click(); }
                     }
-                } else if (dx <= -MIN_DX && !sidebarOpen()) {
-                    diary.click();
+                } else if (dx <= -MIN_DX && index < tabs.length - 1) {
+                    tabs[index + 1].click();
                 }
             }, { passive: false, capture: true });
             document.addEventListener('touchcancel', function () { armed = false; }, { passive: true });
@@ -141,7 +158,7 @@ _TAB_SWIPE_JS = """
         var bridge = host.document.createElement('script');
         bridge.textContent = '(' + install.toString() + ')();';
         host.document.body.appendChild(bridge);
-        host.__easystockTabSwipeV2 = true;
+        host.__easystockTabSwipeV3 = true;
     } catch (e) {
         // best effort - the tabs still work with a tap
     }
@@ -154,20 +171,35 @@ def _inject_tab_swipe() -> None:
     components.html(_TAB_SWIPE_JS, height=0)
 
 
+# The Quick Setup switch "Asli qty save karo" - see modules/alerts/mode.py.
+_REAL_QTY_KEY = alerts_mode.REAL_QTY_KEY
+
+
+def _alerts_enabled(store_id: int) -> bool:
+    """True when the store keeps real quantities: then the Alerts tab shows."""
+    return alerts_mode.alerts_enabled(store_id)
+
+
 def render_low_stock_alerts_page() -> None:
-    """Render the Low Stock screen: two tabs - the alerts (as always) and
-    the Low Stock Diary."""
+    """The Low Stock screen: Alerts | Diary | Agency, or only Diary | Agency
+    when the store does not keep real quantities."""
     st.subheader("📦 Low Stock")
+    store_id = get_current_store_id()
     _inject_tab_swipe()
-    alerts_tab, diary_tab = st.tabs(["⚠️ Alerts", "📒 Diary"])
-    with alerts_tab:
-        _render_alerts_tab()
+    if _alerts_enabled(store_id):
+        alerts_tab, diary_tab, agency_tab = st.tabs(["⚠️ Alerts", "📒 Diary", "🏢 Agency"])
+        with alerts_tab:
+            _render_alerts_tab()
+    else:
+        diary_tab, agency_tab = st.tabs(["📒 Diary", "🏢 Agency"])
     with diary_tab:
         render_low_stock_diary()
+    with agency_tab:
+        render_agency_tab()
 
 
 def _render_alerts_tab() -> None:
-    """The Low Stock Alerts (everything this page showed before the Diary)."""
+    """The Low Stock Alerts."""
     store_id = get_current_store_id()
 
     # "Set quantity" mode: the zero stock medicines as +/- blocks. The switch
@@ -179,79 +211,103 @@ def _render_alerts_tab() -> None:
     if zero_mode:
         _render_zero_stock_setter(store_id)
         return
+    _render_alerts_list(store_id)
 
-    # Requirement 5: session-only (not persisted to the database - see
-    # the investigation's recommendation), defaulting to the existing
-    # DEFAULT_LOW_STOCK_THRESHOLD so a store that never touches this
-    # dropdown sees identical behavior to before this feature existed.
-    # A product's own custom minimum_stock_threshold still always wins
-    # over this - unchanged, enforced entirely inside
-    # products_repository's existing COALESCE/effective-threshold logic.
-    
-    global_minimum = get_current_low_stock_minimum()
 
-    counts = _get_low_stock_counts_cached(store_id, global_minimum, get_cache_epoch(store_id))
+_CSS = """
+<style>
+.ls-list { display: flex; flex-direction: column; gap: 0.35rem; margin: 0.2rem 0 0.5rem 0; }
+.ls-head { font-weight: 700; font-size: 0.9rem; margin: 0.6rem 0 0.1rem 0.1rem; }
+.ls-row { display: flex; align-items: center; gap: 0.7rem; background: #fff;
+          border: 1px solid rgba(49,51,63,0.12); border-left: 5px solid #ccc; border-radius: 0.6rem;
+          padding: 0.45rem 0.75rem; }
+.ls-main { flex: 1; min-width: 0; }
+.ls-name { font-weight: 600; line-height: 1.3; overflow-wrap: anywhere; }
+.ls-sub { font-size: 0.76rem; color: #777; line-height: 1.3; overflow-wrap: anywhere; }
+.ls-qty { text-align: right; flex: none; line-height: 1.2; }
+.ls-qty b { font-size: 1.15rem; }
+.ls-qty small { display: block; font-size: 0.72rem; color: #888; }
+</style>
+"""
 
-    if counts["total"] == 0:
-        st.success("All products are sufficiently stocked. Nothing to reorder right now.")
-        # The dropdown is still rendered below the empty-state message in
-        # every other branch of this function; here there's nothing to
-        # filter yet, so - matching the existing early-return for "no
-        # results at all" - the page stops here, same as before this
-        # feature (this early return already existed; only the
-        # get_low_stock_counts() call above it now takes global_minimum).
-        _render_global_minimum_dropdown()
-        return
 
-    filter_col, minimum_col = st.columns(2)
-    with minimum_col:
-        global_minimum = _render_global_minimum_dropdown()
+def _search_box() -> str:
+    hint = "Dawai ya batch number se dhoondho"
+    if st_keyup is not None:
+        try:
+            text = st_keyup("Search", placeholder=hint, debounce=150, key="low_stock_search_kw",
+                            label_visibility="collapsed")
+        except TypeError:
+            text = st_keyup("Search", debounce=150, key="low_stock_search_kw")
+        return (text or "").strip()
+    return (st.text_input("Search", placeholder=hint, key="low_stock_search_kw",
+                          label_visibility="collapsed") or "").strip()
 
-    # Recompute with the JUST-selected minimum, before building the
-    # filter dropdown's per-severity numbers - otherwise those numbers
-    # would still reflect the PREVIOUS minimum for one extra render
-    # (the exact bug this fixes).
-    counts = _get_low_stock_counts_cached(store_id, global_minimum, get_cache_epoch(store_id))
 
-    with filter_col:
-        selected_severity = _render_filter_dropdown(counts)
+def _qty_text(value) -> str:
+    try:
+        return f"{float(value):g}"
+    except (TypeError, ValueError):
+        return str(value)
 
-    search_col, search_btn_col = st.columns([6, 1.3])
 
-    with search_col:
-        search_term = st.text_input(
-            "Search by medicine name or batch number",
-            placeholder="e.g. Paracetamol or B001",
-            key="low_stock_search_term",
-        )
-    
-    with search_btn_col:
-        st.button(
-            "🔎 Search",
-            key="low_stock_search_button",
-            type="primary",
-            use_container_width=True,
-        )
-    
-    buckets = _get_low_stock_alerts_cached(
-        store_id,
-        search_term,
-        global_minimum,
-        get_cache_epoch(store_id),
+def _row_html(product: dict, severity: str) -> str:
+    color = low_stock_service.SEVERITY_DISPLAY[severity]["color"]
+    sub = [f"Batch {product['batch_number']}"] if product.get("batch_number") else []
+    for label, key in (("MRP", "mrp"), ("Rate", "rate")):
+        value = product.get(key)
+        if value not in (None, "", 0, 0.0):
+            sub.append(f"{label} ₹{_qty_text(value)}")
+    return (
+        f"<div class='ls-row' style='border-left-color:{color};'>"
+        f"<div class='ls-main'><div class='ls-name'>{html.escape(str(product['name']))}</div>"
+        f"<div class='ls-sub'>{html.escape('  •  '.join(sub))}</div></div>"
+        f"<div class='ls-qty'><b style='color:{color};'>{html.escape(_qty_text(product['quantity']))}</b>"
+        f"<small>Min {html.escape(_qty_text(product['effective_threshold']))}</small></div></div>"
     )
 
-    # Apply severity filter after fetching (search is applied inside
-    # get_low_stock_alerts; severity filter is applied here since it's
-    # a pure display concern, not worth a second DB call).
+
+def _section_html(severity: str, products: list, total_count: int) -> str:
+    display = low_stock_service.SEVERITY_DISPLAY[severity]
+    return (
+        f"<div class='ls-head' style='color:{display['color']};'>{display['icon']} {display['label']} • {total_count}</div>"
+        "<div class='ls-list'>" + "".join(_row_html(product, severity) for product in products) + "</div>"
+    )
+
+
+@st.fragment
+def _render_alerts_list(store_id: int) -> None:
+    """A fragment: typing in the search box or tapping a filter redraws only
+    this list."""
+    st.markdown(_CSS, unsafe_allow_html=True)
+
+    # Session-only minimum (see _render_global_minimum_dropdown); a product's
+    # own custom minimum always wins, enforced inside the products repository.
+    with st.expander("⚙️ Minimum stock limit"):
+        global_minimum = _render_global_minimum_dropdown()
+
+    counts = _get_low_stock_counts_cached(store_id, global_minimum, get_cache_epoch(store_id))
+    if counts["total"] == 0:
+        st.success("Sab products ka stock theek hai. Abhi kuch mangwana nahi hai.")
+        return
+
+    selected_severity = st.pills(
+        "Filter", low_stock_service.ALL_SEVERITIES, selection_mode="single",
+        format_func=lambda severity: (
+            f"{low_stock_service.SEVERITY_DISPLAY[severity]['icon']} "
+            f"{low_stock_service.SEVERITY_DISPLAY[severity]['label']} ({counts[severity]})"
+        ),
+        key="low_stock_severity_pills", label_visibility="collapsed",
+    )
+    search_term = _search_box()
+
+    buckets = _get_low_stock_alerts_cached(store_id, search_term, global_minimum, get_cache_epoch(store_id))
     if selected_severity:
-        buckets = {
-            k: (v if k == selected_severity else [])
-            for k, v in buckets.items()
-        }
+        buckets = {k: (v if k == selected_severity else []) for k, v in buckets.items()}
 
     total_visible = sum(len(v) for v in buckets.values())
     if total_visible == 0:
-        st.info("No products match the current filter/search.")
+        st.info("Is filter ya search me koi dawai nahi mili.")
         return
 
     # A new search / severity filter / minimum starts again from page 1.
@@ -262,20 +318,21 @@ def _render_alerts_tab() -> None:
     limit = st.session_state.get("low_stock_visible_limit", LOW_STOCK_PAGE_SIZE)
 
     remaining = limit
+    parts = []
     for severity in low_stock_service.ALL_SEVERITIES:
         if buckets[severity] and remaining > 0:
             shown = buckets[severity][:remaining]
-            _render_severity_section(severity, shown, len(buckets[severity]))
+            parts.append(_section_html(severity, shown, len(buckets[severity])))
             remaining -= len(shown)
+    st.markdown("".join(parts), unsafe_allow_html=True)
 
     if total_visible > limit:
-        st.caption(f"Showing {limit} of {total_visible}")
+        st.caption(f"{limit} / {total_visible} dikh rahi hain")
         st.button(
-            f"⬇️ Load {min(LOW_STOCK_PAGE_SIZE, total_visible - limit)} more",
-            key="low_stock_load_more",
-            use_container_width=True,
-            on_click=_load_more_low_stock,
+            f"⬇️ Aur {min(LOW_STOCK_PAGE_SIZE, total_visible - limit)} dikhao",
+            key="low_stock_load_more", use_container_width=True, on_click=_load_more_low_stock,
         )
+
 
 _ZERO_KEY = "low_stock_zero_state"
 _ZERO_PAGE_SIZE = 20
@@ -447,96 +504,3 @@ def _render_global_minimum_dropdown() -> int:
         set_current_low_stock_minimum(selected)
     
     return selected
-
-
-def _render_filter_dropdown(counts: dict) -> str | None:
-    """Render the severity filter dropdown with live counts.
-
-    Args:
-        counts: Output of low_stock_service.get_low_stock_counts().
-
-    Returns:
-        The selected SEVERITY_* constant, or None for "All".
-    """
-    options = [FILTER_OPTION_ALL]
-    option_to_severity = {FILTER_OPTION_ALL: None}
-
-    for severity in low_stock_service.ALL_SEVERITIES:
-        display = low_stock_service.SEVERITY_DISPLAY[severity]
-        label = f"{display['icon']} {display['label']} ({counts[severity]})"
-        options.append(label)
-        option_to_severity[label] = severity
-
-    selected_label = st.selectbox("Filter by severity", options)
-    return option_to_severity[selected_label]
-
-
-def _render_severity_section(severity: str, products: list, total_count: int = None) -> None:
-    """Render one severity section: a colored header and one banner
-    row per product.
-
-    Args:
-        severity: One of low_stock_service.SEVERITY_* constants.
-        products: Products in this severity tier.
-    """
-    display = low_stock_service.SEVERITY_DISPLAY[severity]
-
-    # Colored section header, same pattern as Expiry Alerts, using the
-    # same color values as SEVERITY_DISPLAY (which deliberately mirrors
-    # Expiry Alerts' red/orange/yellow palette for visual consistency).
-    st.markdown(
-        f"<h4 style='color:{display['color']}; margin-bottom:0.2rem;'>"
-        f"{display['icon']} {display['label']} "
-        f"({total_count if total_count is not None else len(products)})</h4>",
-        unsafe_allow_html=True,
-    )
-
-    for product in products:
-        _render_low_stock_row(product, severity)
-
-    st.write("")
-
-
-def _render_low_stock_row(product: dict, severity: str) -> None:
-    """Render a single low-stock product row showing name, batch,
-    current quantity, and the effective threshold - so the store owner
-    can see both how low stock is and what the reorder trigger is.
-
-    Uses render_alert_banner from config.alert_theme for structural
-    consistency with the Expiry Alerts rows and the Dashboard warning
-    card. The color comes from SEVERITY_DISPLAY (not from alert_theme's
-    ALERT_TYPE_DISPLAY) because low-stock severity tiers are a distinct
-    concept from expiry urgency windows - they just happen to share the
-    same red/orange/yellow palette by design choice.
-
-    Args:
-        product: Dict with name, batch_number, quantity,
-            effective_threshold, mrp, rate.
-        severity: One of low_stock_service.SEVERITY_* constants.
-    """
-    color = low_stock_service.SEVERITY_DISPLAY[severity]["color"]
-    qty = product["quantity"]
-    threshold = product["effective_threshold"]
-
-    message = (
-        f"{product['name']} &nbsp;•&nbsp; "
-        f"Batch: {product['batch_number']} &nbsp;•&nbsp; "
-        f"Qty: {qty} / Min: {threshold} &nbsp;•&nbsp; "
-        f"MRP: {product.get('mrp')} &nbsp;•&nbsp; "
-        f"Rate: {product.get('rate')}"
-    )
-
-    # render_alert_banner takes an alert_type key from alert_theme's
-    # ALERT_TYPE_DISPLAY - but low-stock severity keys are different
-    # ("critical", "warning", "low") from expiry alert keys ("expired",
-    # "7_days", etc.). So we build the HTML directly here rather than
-    # shoehorning severity keys into alert_theme's expiry-specific dict.
-    # The visual structure is identical (same border/padding/radius).
-    st.markdown(
-        f"<div style='border-left: 4px solid {color}; padding: 0.5rem 1rem; "
-        f"margin: 0.4rem 0; background-color: rgba(0,0,0,0.02); "
-        f"border-radius: 4px;'>"
-        f"🔹 <strong>{message}</strong>"
-        f"</div>",
-        unsafe_allow_html=True,
-    )

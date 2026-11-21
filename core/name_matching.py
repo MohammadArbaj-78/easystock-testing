@@ -109,6 +109,137 @@ def names_match(name_a, name_b) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Careful "same name, printed a little differently" matching (invoice save)
+# ---------------------------------------------------------------------------
+
+import difflib
+
+# Words that may be added / dropped on an invoice without making it another
+# medicine ("Telsar 40 Tablets IP" == "Telsar 40").
+_HARMLESS_MEDICINE_WORDS = {"ip", "bp", "usp", "strip", "pack", "of"}
+
+# Words that change the product - never ignored when comparing.
+_PRODUCT_WORDS = {"plus", "forte", "new", "oral", "nasal", "junior", "kid", "kids", "adult"}
+
+
+def _compact(tokens) -> str:
+    return "".join(tokens)
+
+
+def similar_medicine_names(name_a, name_b) -> bool:
+    """True if two medicine names are almost surely the same medicine with
+    a spacing / spelling / extra-word difference.
+
+    Strict on purpose (a wrong merge adds stock to the wrong medicine):
+      - every number (strength) must be identical,
+      - the dosage form must agree (or be missing on one side),
+      - "TELSAR H" == "TELSARH" (spacing only) is always accepted,
+      - otherwise the letters must be >= 92% alike, 8+ letters long, and
+        every word that is only on ONE side must be a long word (5+
+        letters) that is not a product word (Plus / Forte / New ...) or
+        a harmless word (IP / BP ...).
+    """
+    if names_match(name_a, name_b):
+        return True
+    core_a, form_a = name_key(name_a)
+    core_b, form_b = name_key(name_b)
+    if not core_a or not core_b:
+        return False
+    if not (form_a == form_b or form_a is None or form_b is None):
+        return False
+
+    def digits(core):
+        return sorted(t for t in core if any(c.isdigit() for c in t))
+
+    if digits(core_a) != digits(core_b):
+        return False
+    core_a = tuple(t for t in core_a if t not in _HARMLESS_MEDICINE_WORDS)
+    core_b = tuple(t for t in core_b if t not in _HARMLESS_MEDICINE_WORDS)
+    if not core_a or not core_b:
+        return False
+    compact_a, compact_b = _compact(core_a), _compact(core_b)
+    if compact_a == compact_b:
+        return True
+    if min(len(compact_a), len(compact_b)) < 8:
+        return False
+    if difflib.SequenceMatcher(None, compact_a, compact_b).ratio() < 0.92:
+        return False
+    only_one_side = set(core_a) ^ set(core_b)
+    for token in only_one_side:
+        if any(c.isdigit() for c in token) or token in _PRODUCT_WORDS or len(token) < 5:
+            # a short / product / number word differs - but a pure
+            # spacing difference ("tel sar" vs "telsar") also lands here,
+            # so allow it when the other side contains it joined.
+            other = compact_b if token in core_a else compact_a
+            if token in other:
+                continue
+            return False
+    return True
+
+
+# Agency names ---------------------------------------------------------
+
+_AGENCY_ENTITY_WORDS = {"pvt", "ltd", "private", "limited", "co", "company", "llp", "the", "and", "m", "s"}
+_AGENCY_GENERIC = {
+    "pharma": "pharma", "pharmaceutical": "pharma", "pharmaceuticals": "pharma", "pharmacy": "pharma",
+    "medical": "medical", "medicals": "medical", "medico": "medical", "medicos": "medical",
+    "agency": "agency", "agencies": "agency",
+    "distributor": "distributor", "distributors": "distributor",
+    "trader": "trader", "traders": "trader", "trading": "trader",
+    "enterprise": "enterprise", "enterprises": "enterprise",
+    "store": "store", "stores": "store", "drug": "drug", "drugs": "drug",
+    "house": "house", "dealer": "dealer", "dealers": "dealer", "wholesale": "wholesale",
+    "sales": "sales", "corporation": "corporation", "marketing": "marketing",
+}
+
+
+def _agency_parts(name):
+    """(core words, generic words) of an agency name, entity words
+    (Pvt / Ltd / & / Co ...) removed and plural / spelling forms of the
+    generic words (Pharma, Medical, Agency ...) made one."""
+    tokens = [t for t in re.sub(r"[^a-z0-9]+", " ", str(name or "").lower()).split()
+              if t not in _AGENCY_ENTITY_WORDS]
+    core = [t for t in tokens if t not in _AGENCY_GENERIC]
+    generic = {_AGENCY_GENERIC[t] for t in tokens if t in _AGENCY_GENERIC}
+    return core, generic
+
+
+def agency_similarity(name_a, name_b) -> float:
+    """0.0 if the two names are not the same agency, otherwise a score
+    (1.0 = identical apart from spaces/punctuation/entity words and generic
+    words like Pharma/Agency being added or dropped).
+
+    Same agency = same main words (spacing differences allowed; numbers
+    must be identical) and the generic words (Pharma,
+    Medical, Agency ...) do not contradict: one side may simply have more
+    of them or none. "Sharma Pharma" vs "Sharma Medical" is NOT the same.
+    """
+    def _all_compact(name):
+        return "".join(t for t in re.sub(r"[^a-z0-9]+", " ", str(name or "").lower()).split()
+                       if t not in _AGENCY_ENTITY_WORDS)
+
+    if _all_compact(name_a) and _all_compact(name_a) == _all_compact(name_b):
+        return 1.0          # same letters, only spaces / punctuation / Pvt Ltd differ
+    core_a, generic_a = _agency_parts(name_a)
+    core_b, generic_b = _agency_parts(name_b)
+    if generic_a and generic_b and not (generic_a <= generic_b or generic_b <= generic_a):
+        return 0.0
+    if not core_a and not core_b:
+        # only generic words ("Pharma Agency"): must be the same set
+        return 1.0 if generic_a == generic_b and generic_a else 0.0
+    if not core_a or not core_b:
+        return 0.0
+    if sorted(t for t in core_a if t.isdigit()) != sorted(t for t in core_b if t.isdigit()):
+        return 0.0
+    compact_a, compact_b = "".join(core_a), "".join(core_b)
+    if compact_a == compact_b:
+        return 1.0
+    # A spelling slip is NOT tolerated: "Rajesh Gupta" / "Rakesh Gupta" are
+    # two different agencies, and a wrong merge corrupts a money ledger.
+    return 0.0
+
+
+# ---------------------------------------------------------------------------
 # Search
 # ---------------------------------------------------------------------------
 

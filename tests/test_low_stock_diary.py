@@ -117,3 +117,64 @@ def test_screen_add_delete_flow(sqlite_db):
         ui._delete(1, ui._entries(1)[0]["diary_id"])
         assert ui._entries(1) == []
         assert ui._entries(2) == []                                          # another store: own list
+
+
+def test_add_with_known_rows_does_not_read_the_list_and_returns_id(sqlite_db):
+    with patch.object(repository, "list_entries", side_effect=AssertionError("must not read")):
+        result = service.add_medicine(1, "Dolo 650", known_rows=[])
+    assert result["status"] == "added" and isinstance(result["diary_id"], int)
+
+
+def test_known_rows_duplicate_is_exists_without_database(sqlite_db):
+    rows = [{"diary_id": 5, "name": "Dolo 650", "agency_id": None}]
+    with patch.object(repository, "add_entry", side_effect=AssertionError("must not write")):
+        assert service.add_medicine(1, "dolo-650", known_rows=rows)["status"] == "exists"
+
+
+def test_stale_known_rows_still_safe_via_database(sqlite_db):
+    service.add_medicine(1, "Dolo 650")
+    assert service.add_medicine(1, "Dolo 650", known_rows=[])["status"] == "exists"
+
+
+def _ids(store_id):
+    return {row["name"]: row["diary_id"] for row in service.get_entries(store_id)}
+
+
+def test_assign_to_agency_and_back(sqlite_db):
+    service.add_medicine(1, "Dolo 650")
+    service.add_medicine(1, "Telsar-H")
+    ids = _ids(1)
+    service.assign_to_agency(1, [ids["Dolo 650"]], 7)
+    plain, by_agency = service.split_rows(service.get_entries(1))
+    assert [row["name"] for row in plain] == ["Telsar-H"]
+    assert [row["name"] for row in by_agency[7]] == ["Dolo 650"]
+    service.return_to_diary(1, [ids["Dolo 650"]])
+    plain, by_agency = service.split_rows(service.get_entries(1))
+    assert len(plain) == 2 and by_agency == {}
+
+
+def test_assign_only_touches_own_store(sqlite_db):
+    service.add_medicine(1, "Dolo 650")
+    service.add_medicine(2, "Dolo 650")
+    other = _ids(2)["Dolo 650"]
+    service.assign_to_agency(1, [other], 7)               # id belongs to store 2: nothing happens
+    assert service.get_entries(2)[0]["agency_id"] is None
+
+
+def test_agency_list_oldest_first_and_clear_only_that_agency(sqlite_db):
+    for name in ["Dolo 650", "Telsar-H", "Pan 40"]:
+        service.add_medicine(1, name)
+    ids = _ids(1)
+    service.assign_to_agency(1, [ids["Dolo 650"], ids["Telsar-H"]], 7)
+    service.assign_to_agency(1, [ids["Pan 40"]], 8)
+    assert [row["name"] for row in service.agency_list(1, 7)] == ["Dolo 650", "Telsar-H"]
+    assert service.clear_agency_list(1, 7) == 2
+    assert service.agency_list(1, 7) == []
+    assert [row["name"] for row in service.agency_list(1, 8)] == ["Pan 40"]
+
+
+def test_order_message_and_whatsapp_url():
+    text = service.order_message("Sharma Agency", ["Dolo 650", "Pan 40"])
+    assert "Sharma Agency" in text and "1. Dolo 650" in text and "2. Pan 40" in text
+    url = service.whatsapp_url(text)
+    assert url.startswith("whatsapp://send?text=") and " " not in url and "\n" not in url

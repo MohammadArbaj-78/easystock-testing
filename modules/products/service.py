@@ -16,7 +16,7 @@ from datetime import date, datetime
 from modules.products import repository as products_repository
 from config.product_schema import PRODUCT_FIELDS, FieldType
 from core.exceptions import ValidationError
-from core.name_matching import names_match, normalized_name
+from core.name_matching import names_match, normalized_name, similar_medicine_names
 from utils.validators import is_valid_expiry, parse_expiry_month_year
 
 
@@ -461,6 +461,19 @@ def find_exact_lot_match(store_id: int, name: str, batch_number: str, expiry_dat
             product["name"], product["batch_number"], product["expiry_date"],
         ):
             return product
+    # Same batch + same expiry but the name is printed a little differently
+    # (a space, a spelling slip, an extra "IP"): still the same lot. Needs a
+    # real batch number - a blank batch is too weak to trust a similar name.
+    if str(batch_number or "").strip():
+        tokens = normalized_name(name).split()
+        if tokens:
+            for product in _reader_function(store_id, read)(tokens[0]):
+                if (
+                    _normalize_lot_key(product["batch_number"]) == _normalize_lot_key(batch_number)
+                    and str(product["expiry_date"] or "").strip() == str(expiry_date or "").strip()
+                    and similar_medicine_names(product["name"], name)
+                ):
+                    return product
     return None
 
 
@@ -588,7 +601,7 @@ def _find_placeholder_by_similar_name(store_id: int, name: str, read=None) -> di
         for product in candidates
         if not str(product["batch_number"] or "").strip()
         and not str(product["expiry_date"] or "").strip()
-        and names_match(product["name"], name)
+        and similar_medicine_names(product["name"], name)
     ]
     return matches[0] if len(matches) == 1 else None
 
