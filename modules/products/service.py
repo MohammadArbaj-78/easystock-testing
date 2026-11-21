@@ -362,6 +362,22 @@ def _normalize_lot_key(value) -> str:
     return str(value or "").strip().lower()
 
 
+def _expiry_is_later(existing_expiry, incoming_expiry) -> bool:
+    """True only when BOTH expiries are readable (Month/Year) and the first
+    one is strictly later than the second. Blank / unreadable -> False."""
+    from utils.validators import is_valid_expiry, parse_expiry_month_year
+    try:
+        existing = str(existing_expiry or "").strip()
+        incoming = str(incoming_expiry or "").strip()
+        if not (is_valid_expiry(existing) and is_valid_expiry(incoming)):
+            return False
+        e_month, e_year = parse_expiry_month_year(existing)
+        i_month, i_year = parse_expiry_month_year(incoming)
+        return (e_year, e_month) > (i_year, i_month)
+    except Exception:
+        return False
+
+
 def _lots_match(name_a, batch_a, expiry_a, name_b, batch_b, expiry_b) -> bool:
     """The single stock-lot identity comparison, used everywhere a lot
     match must be decided. Name and batch compare case-insensitively
@@ -847,6 +863,13 @@ def save_or_merge_invoice_lot(
     # unmodified behavior for any lot that still has real stock.
     zero_qty_match = find_zero_quantity_lot_by_name(store_id, cleaned["name"], read=read)
     if zero_qty_match is not None:
+        # "Asli qty save" OFF (the invoice row arrives with quantity 0): the
+        # row only remembers the medicine's latest batch / expiry. If this
+        # invoice is an OLDER one (its expiry is earlier than the row's),
+        # scanning it must not push the row back to the old batch - so the
+        # scan order of old and new bills does not matter.
+        if cleaned["quantity"] == 0 and _expiry_is_later(zero_qty_match.get("expiry_date"), cleaned["expiry_date"]):
+            return {"status": "merged", "product_id": zero_qty_match["product_id"]}
         _replace_zero_quantity_lot(store_id, zero_qty_match, cleaned)
         reader.note_write(zero_qty_match, cleaned)
         return {"status": "merged", "product_id": zero_qty_match["product_id"]}
