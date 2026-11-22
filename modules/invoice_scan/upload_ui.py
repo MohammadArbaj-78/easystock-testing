@@ -32,7 +32,7 @@ from config.settings import UPLOADS_MAX_BYTES, ALLOWED_UPLOAD_EXTENSIONS
 _UPLOAD_CSS = """
 <style>
 .inv-hint { text-align: center; margin: 0.2rem 0 0.8rem 0; }
-.inv-title { font-size: 1.25rem; font-weight: 800; line-height: 1.4; }
+.inv-title { font-size: 1.2rem; font-weight: 700; line-height: 1.4; }
 .inv-text { font-size: 0.95rem; color: #555; margin-top: 0.35rem; line-height: 1.55; }
 /* the upload area: one big, green, dashed target with one big button */
 .st-key-invoice_file_uploader [data-testid="stFileUploaderDropzone"] {
@@ -41,11 +41,13 @@ _UPLOAD_CSS = """
 }
 .st-key-invoice_file_uploader [data-testid="stFileUploaderDropzoneInstructions"] { display: none; }
 .st-key-invoice_file_uploader [data-testid="stFileUploaderDropzone"] button {
-    background: #1A7A6E; border-color: #1A7A6E; color: #fff; font-size: 0 !important;
-    min-height: 3.4rem; padding: 0.5rem 1.6rem; border-radius: 0.8rem; font-weight: 800;
+    background: #1A7A6E; border-color: #1A7A6E; color: #fff;
+    min-height: 3.2rem; padding: 0.4rem 2rem; border-radius: 0.7rem;
 }
+/* hide Streamlit's own "Upload" icon + text, show our own label */
+.st-key-invoice_file_uploader [data-testid="stFileUploaderDropzone"] button > * { display: none !important; }
 .st-key-invoice_file_uploader [data-testid="stFileUploaderDropzone"] button::after {
-    content: "📤  बिल अपलोड करें"; font-size: 1.15rem; color: #fff;
+    content: "बिल अपलोड करें"; font-size: 1.1rem; font-weight: 700; color: #fff;
 }
 .st-key-invoice_file_uploader [data-testid="stFileUploaderDropzone"] button:disabled { opacity: 0.5; }
 </style>
@@ -81,7 +83,7 @@ def _render_upload_section() -> None:
         st.markdown(
             """
             <div class='inv-hint'>
-                <div class='inv-title'>📸 बिल की फोटो लें या फाइल अपलोड करें</div>
+                <div class='inv-title'>बिल की फोटो लें या फाइल अपलोड करें</div>
                 <div class='inv-text'>आप जितनी साफ़ और पूरे बिल की फोटो खींचेंगे, आपका बिल उतना
                 अच्छा सिस्टम में हमेशा के लिए सेव होगा और डेटा उतना ही सही निकलेगा।</div>
             </div>
