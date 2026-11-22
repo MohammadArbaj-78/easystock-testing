@@ -643,8 +643,13 @@ def validate_medicine(row: dict) -> list:
         val = row.get(field_key, "").strip()
         if not val:
             errors.append(required_label)
-        elif not _is_numeric(val):
-            errors.append(invalid_label)
+        elif field_key != "quantity" and _is_blank_mark(val):
+            continue        # "-" / "_" = the bill has nothing here: accepted as empty
+        else:
+            if field_key == "gst_percent":
+                val = _strip_percent(val)       # "5%" and "5" are both fine
+            if not _is_numeric(val):
+                errors.append(invalid_label)
 
     # Pack is optional (blank = unknown), but if it is filled it must be a
     # number above zero.
@@ -673,6 +678,18 @@ def validate_all_medicines() -> dict:
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
+
+def _is_blank_mark(value) -> bool:
+    """True for "-", "_" (or several of them): how the owner says "this box
+    is empty on the bill" without being blocked."""
+    text = str(value or "").strip()
+    return bool(text) and all(ch in "-_\u2013\u2014\u2212" for ch in text)
+
+
+def _strip_percent(value) -> str:
+    """"5%" / "5 %" / "% 5" -> "5" (a percent sign on a GST value is harmless)."""
+    return str(value or "").replace("%", "").strip()
+
 
 def _is_numeric(value: str) -> bool:
     try:

@@ -40,16 +40,6 @@ _UPLOAD_CSS = """
     border-radius: 0.9rem; padding: 1.6rem 1rem; justify-content: center;
 }
 .st-key-invoice_file_uploader [data-testid="stFileUploaderDropzoneInstructions"] { display: none; }
-.st-key-invoice_file_uploader [data-testid="stFileUploaderDropzone"] button {
-    background: #1A7A6E; border-color: #1A7A6E; color: #fff;
-    min-height: 3.2rem; padding: 0.4rem 2rem; border-radius: 0.7rem;
-}
-/* hide Streamlit's own "Upload" icon + text, show our own label */
-.st-key-invoice_file_uploader [data-testid="stFileUploaderDropzone"] button > * { display: none !important; }
-.st-key-invoice_file_uploader [data-testid="stFileUploaderDropzone"] button::after {
-    content: "बिल अपलोड करें"; font-size: 1.1rem; font-weight: 700; color: #fff;
-}
-.st-key-invoice_file_uploader [data-testid="stFileUploaderDropzone"] button:disabled { opacity: 0.5; }
 </style>
 """
 

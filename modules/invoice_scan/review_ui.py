@@ -212,7 +212,7 @@ def _render_invoice_header() -> None:
     for message in review_service.validate_invoice_header(
         review_service.get_invoice_header()
     ).values():
-        st.caption(f":red[⚠️ {message}]")
+        st.caption(f":red[⚠️ {message}  Iske bina bill agency ke khate me nahi judega.]")
 
     st.divider()
 
@@ -694,11 +694,9 @@ def _render_summary() -> None:
                 f"{ledger['agency_name']}'s ledger."
             )
         elif ledger.get("reason"):
-            st.info(
-                f"Bill was not added to the agency ledger ({ledger['reason']}). "
-                "Fill in the Agency name / Grand total above and save again if "
-                "you want it tracked."
-            )
+            # A clear, red reason (not a quiet blue note): the owner must SEE
+            # why this bill is missing from the agency's account.
+            st.error(_ledger_not_saved_message(ledger["reason"]))
 
         if skipped:
             for item in skipped:
@@ -707,6 +705,22 @@ def _render_summary() -> None:
                 )
 
     _render_pending_matches()
+
+
+def _ledger_not_saved_message(reason: str) -> str:
+    """Short, plain reason why the bill did not go into the agency's account."""
+    reason = str(reason or "")
+    if "grand total" in reason.lower():
+        why = "Grand total khali ya galat hai."
+    elif "agency name" in reason.lower():
+        why = "Agency ka naam khali hai."
+    else:
+        why = reason or "Bill ki details poori nahi hain."
+    return (
+        f"❌ Bill agency ke khate me save NAHI hua: {why} "
+        "(Dawai stock me save ho gayi hai.) Agli baar save se pehle upar "
+        "'Bill Details' me Agency name aur Grand total bharo."
+    )
 
 
 def _render_pending_matches() -> None:

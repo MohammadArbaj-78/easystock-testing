@@ -653,6 +653,12 @@ def _replace_zero_quantity_lot(store_id: int, existing: dict, cleaned: dict) -> 
     products_repository.update_product(store_id, existing["product_id"], updated_data)
 
 
+def _is_blank_mark(value) -> bool:
+    """"-" / "_" (or several): the owner's way of saying "empty on the bill"."""
+    text = str(value or "").strip()
+    return bool(text) and all(ch in "-_\u2013\u2014\u2212" for ch in text)
+
+
 def _clean_invoice_lot_data(raw: dict) -> dict:
     """Validate and clean one invoice-sourced medicine row for the
     stock-lot save path.
@@ -712,7 +718,8 @@ def _clean_invoice_lot_data(raw: dict) -> dict:
         raise ValidationError("Quantity cannot be negative.")
 
     try:
-        mrp = float(raw.get("mrp"))
+        # "-" / "_" in MRP = the bill has no MRP for this medicine: kept as 0.
+        mrp = 0.0 if _is_blank_mark(raw.get("mrp")) else float(raw.get("mrp"))
     except (TypeError, ValueError):
         raise ValidationError("MRP must be a number.")
     if mrp < 0:
@@ -720,7 +727,7 @@ def _clean_invoice_lot_data(raw: dict) -> dict:
 
     rate_raw = raw.get("rate")
     rate = None
-    if rate_raw is not None and str(rate_raw).strip():
+    if rate_raw is not None and str(rate_raw).strip() and not _is_blank_mark(rate_raw):
         try:
             rate = float(rate_raw)
         except (TypeError, ValueError):
@@ -728,9 +735,9 @@ def _clean_invoice_lot_data(raw: dict) -> dict:
 
     gst_raw = raw.get("gst_percent")
     gst_percent = None
-    if gst_raw is not None and str(gst_raw).strip():
+    if gst_raw is not None and str(gst_raw).strip() and not _is_blank_mark(gst_raw):
         try:
-            gst_percent = float(gst_raw)
+            gst_percent = float(str(gst_raw).replace("%", "").strip())     # "5%" = 5
         except (TypeError, ValueError):
             raise ValidationError("GST % must be a number.")
 
