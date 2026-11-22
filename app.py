@@ -140,7 +140,7 @@ def render_main_app() -> None:
         # Opened again later, Udhar Khata starts at the customer list and
         # reads the balances fresh.
         for key in ("udhar_state", "udhar_selected", "udhar_mode", "udhar_confirm_delete"):
-            st.session_state.pop(key, None)    
+            st.session_state.pop(key, None)
     
     if page_function is not render_quick_setup_page:
         # Quick Setup now keeps what the owner was doing when another page is
@@ -418,10 +418,19 @@ _SIDEBAR_SWIPE_JS = """
                 return sb.getBoundingClientRect().right > 40;
             }
             function isMobile() { return window.innerWidth <= MOBILE_MAX; }
+            // Pages may mark a block (st.container(key="swipe_ok_...")) whose filter /
+            // search boxes must NOT block the sidebar swipe (Expiry Alerts): a swipe
+            // that starts on such a box opens the sidebar, a tap still opens the box.
+            function inSwipeOk(el) {
+                return !!(el && el.closest && el.closest('[class*="st-key-swipe_ok_"]'));
+            }
             function startsOnNoSwipe(el, checkScrollers) {
                 while (el && el !== document.body) {
                     if (el.nodeType === 1) {
-                        if (el.matches && el.matches(NO_SWIPE)) { return true; }
+                        if (el.matches && el.matches(NO_SWIPE)) {
+                            var freeInput = el.tagName === 'INPUT' && inSwipeOk(el) && document.activeElement !== el;
+                            if (!freeInput) { return true; }
+                        }
                         if (checkScrollers) {
                             var cs = window.getComputedStyle(el);
                             if (/(auto|scroll)/.test(cs.overflowX) && el.scrollWidth > el.clientWidth + 1) { return true; }
@@ -432,28 +441,53 @@ _SIDEBAR_SWIPE_JS = """
                 return false;
             }
 
-            var startX = 0, startY = 0, startT = 0, mode = null;
+            var startX = 0, startY = 0, startT = 0, mode = null, fromSwipeOk = false;
             document.addEventListener('touchstart', function (e) {
-                mode = null;
+                mode = null; fromSwipeOk = false;
                 if (!isMobile() || !e.touches || e.touches.length !== 1) { return; }
                 var t = e.touches[0];
                 startX = t.clientX; startY = t.clientY; startT = Date.now();
+                fromSwipeOk = inSwipeOk(e.target);
                 if (isOpen()) {
                     if (!startsOnNoSwipe(e.target, false)) { mode = 'close'; }
                 } else if (!startsOnNoSwipe(e.target, true)) {
                     mode = 'open';
                 }
             }, { passive: true });
-            document.addEventListener('touchend', function (e) {
+            // Returns true when this touch end was a swipe that opened / closed the sidebar.
+            function onEnd(e) {
                 var m = mode; mode = null;
-                if (!m || !e.changedTouches || !e.changedTouches.length) { return; }
-                if (Date.now() - startT > MAX_MS || Date.now() - lastAction < COOLDOWN_MS) { return; }
+                if (!m || !e.changedTouches || !e.changedTouches.length) { return false; }
+                if (Date.now() - startT > MAX_MS || Date.now() - lastAction < COOLDOWN_MS) { return false; }
                 var t = e.changedTouches[0];
                 var dx = t.clientX - startX, dy = t.clientY - startY;
-                if (Math.abs(dx) < MIN_DX || Math.abs(dx) < Math.abs(dy) * RATIO) { return; }
-                if (m === 'open' && dx > 0 && !isOpen()) { lastAction = Date.now(); clickFirst(OPEN_SELECTORS); }
-                else if (m === 'close' && dx < 0 && isOpen()) { lastAction = Date.now(); clickFirst(CLOSE_SELECTORS); }
-            }, { passive: true });
+                if (Math.abs(dx) < MIN_DX || Math.abs(dx) < Math.abs(dy) * RATIO) { return false; }
+                if (m === 'open' && dx > 0 && !isOpen()) { lastAction = Date.now(); clickFirst(OPEN_SELECTORS); return true; }
+                if (m === 'close' && dx < 0 && isOpen()) { lastAction = Date.now(); clickFirst(CLOSE_SELECTORS); return true; }
+                return false;
+            }
+            document.addEventListener('touchend', onEnd, { passive: true });
+            // A swipe that started on a filter / search box: the sidebar opens and the
+            // box itself must not react (no dropdown, no keyboard).
+            document.addEventListener('touchmove', function (e) {
+                if (mode !== 'open' || !fromSwipeOk || !e.touches || !e.touches.length || !e.cancelable) { return; }
+                var dx = e.touches[0].clientX - startX, dy = e.touches[0].clientY - startY;
+                if (Math.abs(dx) > 12 && Math.abs(dx) > Math.abs(dy)) { e.preventDefault(); }
+            }, { passive: false, capture: true });
+            document.addEventListener('touchend', function (e) {
+                if (mode !== 'open' || !fromSwipeOk) { return; }
+                if (!onEnd(e)) { return; }
+                e.stopPropagation();
+                if (e.cancelable) { e.preventDefault(); }
+                var calm = function () {
+                    var a = document.activeElement;
+                    if (a && a !== document.body) {
+                        try { a.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true })); } catch (x) {}
+                        if (a.blur) { a.blur(); }
+                    }
+                };
+                calm(); setTimeout(calm, 60);
+            }, { passive: false, capture: true });
             document.addEventListener('touchcancel', function () { mode = null; }, { passive: true });
         };
         var bridge = host.document.createElement('script');

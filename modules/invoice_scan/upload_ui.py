@@ -29,15 +29,34 @@ from core.exceptions import ValidationError, OCRError, GeminiAPIError
 from config.settings import UPLOADS_MAX_BYTES, ALLOWED_UPLOAD_EXTENSIONS
 
 
+_UPLOAD_CSS = """
+<style>
+.inv-hint { text-align: center; margin: 0.2rem 0 0.8rem 0; }
+.inv-title { font-size: 1.25rem; font-weight: 800; line-height: 1.4; }
+.inv-text { font-size: 0.95rem; color: #555; margin-top: 0.35rem; line-height: 1.55; }
+/* the upload area: one big, green, dashed target with one big button */
+.st-key-invoice_file_uploader [data-testid="stFileUploaderDropzone"] {
+    border: 2px dashed #1A7A6E; background: rgba(26,122,110,0.07);
+    border-radius: 0.9rem; padding: 1.6rem 1rem; justify-content: center;
+}
+.st-key-invoice_file_uploader [data-testid="stFileUploaderDropzoneInstructions"] { display: none; }
+.st-key-invoice_file_uploader [data-testid="stFileUploaderDropzone"] button {
+    background: #1A7A6E; border-color: #1A7A6E; color: #fff; font-size: 0 !important;
+    min-height: 3.4rem; padding: 0.5rem 1.6rem; border-radius: 0.8rem; font-weight: 800;
+}
+.st-key-invoice_file_uploader [data-testid="stFileUploaderDropzone"] button::after {
+    content: "📤  बिल अपलोड करें"; font-size: 1.15rem; color: #fff;
+}
+.st-key-invoice_file_uploader [data-testid="stFileUploaderDropzone"] button:disabled { opacity: 0.5; }
+</style>
+"""
+
+
 def render_invoice_scan_page() -> None:
     """Render the Invoice Scan page: upload area, validation feedback,
     and file preview.
     """
     st.subheader("🧾 Invoice Scan")
-    st.caption(
-        "Upload an invoice image or PDF. "
-        "After upload, you will be able to extract medicine details."
-    )
 
     _render_upload_section()
 
@@ -53,27 +72,22 @@ def _render_upload_section() -> None:
     )
     limit_mb = UPLOADS_MAX_BYTES // (1024 * 1024)
 
-    st.info(
-        f"📎 Supported formats: {allowed_display}  •  Maximum size: {limit_mb} MB\n\n"
-        "You can also use your phone camera to capture a photo of the invoice."
-    )
-
-    # --- Photo tips (shown before upload, in simple Hindi for Indian store owners) ---
-    st.markdown(
-        """
-        <div style='border-left: 4px solid #1A7A6E; padding: 0.6rem 1rem;
-                    background: rgba(26,122,110,0.06); border-radius: 4px;
-                    margin-bottom: 0.5rem;'>
-            <strong>📸 फोटो साफ़ लेने के लिए</strong><br>
-            • बिल पूरा दिखाई दे।<br>
-            • कैमरा सीधा रखें।<br>
-            • रोशनी अच्छी हो।<br>
-            • फोटो धुंधली न हो।<br>
-            • Batch Number और Expiry साफ़ दिखें।
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    # Simple first screen: one clear line, one big highlighted upload button.
+    # The hint is shown only before a bill is chosen - once a bill is uploaded
+    # (or a review is open) the screen is exactly the old one.
+    uploaded_before = bool(st.session_state.get("invoice_file_uploader")) or review_service.has_any_session()
+    st.markdown(_UPLOAD_CSS, unsafe_allow_html=True)
+    if not uploaded_before:
+        st.markdown(
+            """
+            <div class='inv-hint'>
+                <div class='inv-title'>📸 बिल की फोटो लें या फाइल अपलोड करें</div>
+                <div class='inv-text'>आप जितनी साफ़ और पूरे बिल की फोटो खींचेंगे, आपका बिल उतना
+                अच्छा सिस्टम में हमेशा के लिए सेव होगा और डेटा उतना ही सही निकलेगा।</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
     # Final stabilization fix: once a review session is active, the
     # uploader's own "browse/replace" control must not stay usable -
@@ -94,6 +108,8 @@ def _render_upload_section() -> None:
         key="invoice_file_uploader",
         disabled=session_already_active,
     )
+    if not uploaded_before:
+        st.caption(f"{allowed_display}  •  Max {limit_mb} MB")
 
     # --- Navigation persistence: show cached review when file_uploader is None ---
     # st.file_uploader returns None when the user navigates away and returns.
@@ -149,18 +165,9 @@ def _render_upload_section() -> None:
 
 
 def _render_empty_state() -> None:
-    """Show placeholder content when no file has been uploaded yet."""
-    st.markdown(
-        """
-        <div style='text-align:center; padding:2.5rem 1rem; color:#888;
-                    border:2px dashed #ccc; border-radius:8px;
-                    margin-top:0.5rem;'>
-            📄 No invoice uploaded yet.<br>
-            <small>Upload a file above to see a preview.</small>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    """Nothing is shown before an upload: the big upload button above is the
+    only thing the screen needs."""
+    return
 
 
 def _render_success_and_preview(uploaded_file, file_hash: str, result: dict) -> None:
