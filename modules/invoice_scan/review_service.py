@@ -504,7 +504,13 @@ def _finish_save(store_id, medicines, session, saved, skipped, pending_matches, 
             store_id,
             get_invoice_header(),
             [
-                {**row, "product_id": saved_product_ids.get(idx)}
+                {
+                    **row,
+                    # "-" / "_" in batch or expiry = empty on the bill: kept empty
+                    "batch_number": "" if _is_blank_mark(row.get("batch_number")) else row.get("batch_number"),
+                    "expiry_date": "" if _is_blank_mark(row.get("expiry_date")) else row.get("expiry_date"),
+                    "product_id": saved_product_ids.get(idx),
+                }
                 for idx, row in enumerate(medicines)
             ],
             agency_id=ledger.get("agency_id"),
@@ -627,10 +633,13 @@ def validate_medicine(row: dict) -> list:
     batch = row.get("batch_number", "").strip()
     if not batch:
         errors.append("Batch number is required.")
+    # (batch "-" / "_" = the bill has no batch: accepted as empty)
 
     expiry = row.get("expiry_date", "").strip()
     if not expiry:
         errors.append("Expiry is required.")
+    elif _is_blank_mark(expiry):
+        pass            # "-" / "_" = the bill has no expiry: accepted as empty
     elif not _is_valid_expiry(expiry):
         errors.append("Enter a valid expiry date.")
 

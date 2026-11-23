@@ -146,6 +146,71 @@ def clear_agency_list(store_id: int, agency_id: int) -> int:
     return len(ids)
 
 
+MAX_QTY = 99999
+
+
+def parse_qty_payload(text) -> dict:
+    """What the page sends after the owner set quantities: "<counter>;id:qty,id:qty".
+    Returns {diary_id: qty}; a broken piece is ignored, a qty is kept between
+    0 and MAX_QTY."""
+    result = {}
+    _, _, body = str(text or "").partition(";")
+    for part in body.split(","):
+        left, _, right = part.partition(":")
+        try:
+            diary_id, qty = int(left), int(right)
+        except ValueError:
+            continue
+        if diary_id > 0:
+            result[diary_id] = max(0, min(qty, MAX_QTY))
+    return result
+
+
+def set_quantities(store_id: int, quantities: dict) -> dict:
+    """Save quantities {diary_id: qty}; 0 means "not set" (stored empty).
+    Returns {"status": "saved", "saved": {diary_id: qty or None}} or
+    {"status": "error", "error": text} (for example the qty column is not
+    created yet) - it never raises."""
+    cleaned = {int(diary_id): (int(qty) or None) for diary_id, qty in quantities.items()}
+    if not cleaned:
+        return {"status": "saved", "saved": {}}
+    try:
+        repository.set_quantities(store_id, cleaned)
+    except Exception as error:
+        return {"status": "error", "error": str(error)}
+    return {"status": "saved", "saved": cleaned}
+
+
+def line_text(row: dict) -> str:
+    """One medicine as it is sent to the agency: "Name - qty" (just the name
+    when no quantity is set)."""
+    qty = row.get("qty")
+    return f"{row['name']} - {int(qty)}" if qty else str(row["name"])
+
+
+def clean_agency_name(text) -> str:
+    """The agency name the owner typed, or "" when it is too short / has no letter."""
+    import re
+    cleaned = name_matching.clean_spaces(text)
+    if not 2 <= len(cleaned) <= 100 or not re.search(r"[A-Za-z0-9]", cleaned):
+        return ""
+    return cleaned
+
+
+def add_agency(store_id: int, text) -> dict:
+    """Create an agency by name (or find the one that already has this name).
+    {"status": "ok", "agency_id", "name"} | "invalid" | "error"."""
+    name = clean_agency_name(text)
+    if not name:
+        return {"status": "invalid"}
+    try:
+        from modules.agencies import repository as agencies_repository
+        agency_id = agencies_repository.find_or_create_agency(store_id, name)
+    except Exception as error:
+        return {"status": "error", "error": str(error)}
+    return {"status": "ok", "agency_id": agency_id, "name": name}
+
+
 def order_message(agency_name: str, names: list) -> str:
     """The text to send / copy: a numbered list of medicines."""
     lines = [f"{number}. {name}" for number, name in enumerate(names, start=1)]

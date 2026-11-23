@@ -12,7 +12,7 @@ import time
 import streamlit as st
 import streamlit.components.v1 as components
 
-from core.cache_utils import get_cache_epoch
+from core.cache_utils import bump_cache_epoch, get_cache_epoch
 from core.session import get_current_store_id
 from modules.low_stock_diary import service
 from modules.agencies import service as agencies_service
@@ -28,6 +28,13 @@ _VERSION = "lsd_search_version"
 _FLASH = "lsd_flash"
 _SELECTED = "lsd_selected"
 _AGENCY_PICK = "lsd_agency_pick"
+_QTY_MODE = "lsd_qty_mode"
+_QTY_SINK = "lsd_qsink_input"
+_ADD_AGENCY = "__add_agency__"
+_QTY_HELP = (
+    "Qty save nahi ho payi. Supabase me `database/low_stock_diary_qty.sql` "
+    "ek baar chalani hai. Detail: "
+)
 _NAMES = "lsd_store_names"
 _NAMES_MAX_AGE_SECONDS = 600
 _KEYUP_DEBOUNCE_MS = 120
@@ -62,13 +69,30 @@ def _inject_css() -> None:
             font-size: 1rem; font-weight: 600; line-height: 1.35;
             touch-action: pan-y;
             overflow-wrap: anywhere;
+            display: flex; align-items: center; gap: 0.5rem;
         }
+        .lsd-row .lsd-name { flex: 1 1 auto; min-width: 0; }
+        .lsd-row .lsd-side { flex: 0 0 auto; display: flex; align-items: center; gap: 0.3rem; }
+        .lsd-row .lsd-side:empty { display: none; }
+        .lsd-row .lsd-side:not(:has(button)) {
+            background: rgba(49, 51, 63, 0.08); border-radius: 1rem; padding: 0 0.6rem;
+            font-size: 0.85rem; font-weight: 700;
+        }
+        .lsd-row.lsd-open { border-color: var(--primary-color, #1f6f5b); }
+        .lsd-qb {
+            width: 2rem; height: 2rem; padding: 0; margin: 0; line-height: 1;
+            font-size: 1.2rem; font-weight: 700; border-radius: 0.45rem;
+            border: 1px solid rgba(49, 51, 63, 0.3); background: #fff; color: inherit;
+            touch-action: manipulation; cursor: pointer;
+        }
+        .lsd-qb:active { background: rgba(31, 111, 91, 0.15); }
+        .lsd-qn { min-width: 1.7rem; text-align: center; font-weight: 700; }
         .lsd-row.lsd-sel {
             border-color: var(--primary-color, #1f6f5b);
             background: rgba(31, 111, 91, 0.12);
         }
         .lsd-row.lsd-sel::before { content: "\\2713  "; color: var(--primary-color, #1f6f5b); }
-        div[class*="st-key-lsd_del_"], div[class*="st-key-lsd_sel_"] { display: none !important; }
+        div[class*="st-key-lsd_del_"], div[class*="st-key-lsd_sel_"], div[class*="st-key-lsd_qsink"] { display: none !important; }
         </style>
         """,
         unsafe_allow_html=True,
@@ -89,8 +113,8 @@ def _inject_swipe_script() -> None:
         <script>
         try {
             var run = function () {
-                if (window.__easystockDiarySwipeV3) { return; }
-                window.__easystockDiarySwipeV3 = true;
+                if (window.__easystockDiarySwipeV4) { return; }
+                window.__easystockDiarySwipeV4 = true;
                 var drag = null;
 
                 function boxOf(card) { return card; }
@@ -101,6 +125,83 @@ def _inject_swipe_script() -> None:
                     box.style.willChange = "";
                     box.style.userSelect = "";
                 }
+
+                // ---- quantity (+/-) : everything is done here in the page, nothing is
+                // sent to the server until it is time to save (another medicine is
+                // tapped, the switch is turned off, or the owner leaves the list).
+                var loc = {}, dirty = {}, openId = null, seq = 0, lastBody = "", lastAt = 0;
+                function idOf(el) { var f = /lsd-id-(\\d+)/.exec(String(el.className)); return f ? parseInt(f[1], 10) : NaN; }
+                function baseQty(el) { return parseInt(el.getAttribute("data-q") || "0", 10) || 0; }
+                function qtyOf(el, id) { return Object.prototype.hasOwnProperty.call(loc, id) ? loc[id] : baseQty(el); }
+                function paintRow(el) {
+                    var id = idOf(el), side = el.querySelector(".lsd-side");
+                    if (!side || isNaN(id)) { return; }
+                    var q = qtyOf(el, id), isOpen = (openId === id);
+                    el.classList.toggle("lsd-open", isOpen);
+                    if (isOpen) {
+                        var n = side.querySelector(".lsd-qn");
+                        if (!n) {
+                            side.innerHTML = '<button type="button" class="lsd-qb" data-d="-1">\\u2212</button>'
+                                + '<span class="lsd-qn"></span><button type="button" class="lsd-qb" data-d="1">+</button>';
+                            n = side.querySelector(".lsd-qn");
+                        }
+                        if (n.textContent !== String(q)) { n.textContent = String(q); }
+                    } else {
+                        if (side.querySelector(".lsd-qb")) { side.innerHTML = ""; }
+                        var t = q > 0 ? String(q) : "";
+                        if (side.textContent !== t) { side.textContent = t; }
+                    }
+                }
+                function applyQty() {
+                    var rows = document.querySelectorAll(".lsd-qmode .lsd-row");
+                    if (!rows.length) { openId = null; return; }
+                    rows.forEach(function (el) {
+                        var id = idOf(el);
+                        if (loc[id] !== undefined && baseQty(el) === loc[id]) { delete loc[id]; delete dirty[id]; }   // saved
+                    });
+                    rows.forEach(paintRow);
+                }
+                function commit() {
+                    var ids = Object.keys(dirty);
+                    if (!ids.length) { return; }
+                    var input = document.querySelector('[class*="st-key-lsd_qsink"] input');
+                    if (!input) { return; }
+                    var body = ids.map(function (id) { return id + ":" + loc[id]; }).join(",");
+                    if (body === lastBody && Date.now() - lastAt < 1500) { return; }
+                    lastBody = body; lastAt = Date.now(); seq += 1;
+                    var setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+                    setter.call(input, seq + ";" + body);
+                    input.dispatchEvent(new Event("input", { bubbles: true }));
+                    input.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+                    input.dispatchEvent(new KeyboardEvent("keypress", { key: "Enter", code: "Enter", keyCode: 13, charCode: 13, which: 13, bubbles: true }));
+                }
+                function qtyTap(id) {
+                    openId = (openId === id) ? null : id;
+                    applyQty();
+                    commit();
+                }
+                var scheduled = false;
+                new MutationObserver(function () {
+                    if (scheduled) { return; }
+                    scheduled = true;
+                    requestAnimationFrame(function () { scheduled = false; applyQty(); });
+                }).observe(document.body, { childList: true, subtree: true });
+                document.addEventListener("click", function (e) {
+                    var b = e.target.closest ? e.target.closest(".lsd-qb") : null;
+                    if (b) {
+                        var row = b.closest(".lsd-row"), id = row ? idOf(row) : NaN;
+                        if (!isNaN(id)) {
+                            loc[id] = Math.max(0, Math.min(99999, qtyOf(row, id) + parseInt(b.getAttribute("data-d"), 10)));
+                            dirty[id] = true;
+                            paintRow(row);
+                        }
+                        e.stopPropagation();
+                        return;
+                    }
+                    if (Object.keys(dirty).length && !(e.target.closest && e.target.closest(".lsd-row.lsd-open"))) { commit(); }
+                }, true);
+                window.addEventListener("blur", commit);
+                document.addEventListener("visibilitychange", function () { if (document.hidden) { commit(); } });
 
                 document.addEventListener("pointerdown", function (e) {
                     if (e.pointerType === "mouse" && e.button !== 0) { return; }
@@ -147,6 +248,7 @@ def _inject_swipe_script() -> None:
                     if (!d.active) {
                         // A plain tap (no real movement) selects / unselects the line.
                         if (!cancelled && d.moved < 10 && Date.now() - d.t < 700) {
+                            if (d.box.closest(".lsd-qmode")) { qtyTap(d.id); return; }       // quantity mode: tap opens +/-
                             var pick = document.querySelector(".st-key-lsd_sel_" + d.id + " button");
                             if (pick) { pick.click(); }
                         }
@@ -188,6 +290,17 @@ def _inject_swipe_script() -> None:
         </script>
         """,
         height=0,
+    )
+
+
+def row_html(row: dict, selected: bool = False) -> str:
+    """One thin diary line: the name, and on the right the quantity (if set).
+    The page script (swipe / tap / +-) finds the line by its lsd-id-<id> class."""
+    qty = int(row.get("qty") or 0)
+    css = f"lsd-row lsd-id-{int(row['diary_id'])}{' lsd-sel' if selected else ''}"
+    return (
+        f"<div class='{css}' data-q='{qty}'><span class='lsd-name'>{html.escape(str(row['name']))}</span>"
+        f"<span class='lsd-side'>{qty if qty else ''}</span></div>"
     )
 
 
@@ -270,6 +383,23 @@ def _delete(store_id: int, diary_id: int) -> None:
         state["rows"] = [row for row in state["rows"] if row["diary_id"] != diary_id]
 
 
+def _save_quantities(store_id: int) -> None:
+    """The page script put the quantities the owner set into a hidden box
+    ("counter;id:qty,id:qty") - save them (one write per different quantity)."""
+    quantities = service.parse_qty_payload(st.session_state.get(_QTY_SINK, ""))
+    if not quantities:
+        return
+    result = service.set_quantities(store_id, quantities)
+    if result["status"] != "saved":
+        st.session_state[_FLASH] = ("warning", _QTY_HELP + result.get("error", ""))
+        return
+    state = st.session_state.get(_STATE)
+    if state is not None and state["store_id"] == store_id:
+        for row in state["rows"]:
+            if row["diary_id"] in result["saved"]:
+                row["qty"] = result["saved"][row["diary_id"]]
+
+
 def _toggle(diary_id: int) -> None:
     chosen = st.session_state.setdefault(_SELECTED, set())
     if diary_id in chosen:
@@ -300,24 +430,57 @@ def _clear_selection() -> None:
     st.session_state[_SELECTED] = set()
 
 
-def _render_send_bar(store_id: int, ids: list) -> None:
-    """Shown only while medicines are selected: pick an agency, send them there."""
-    agencies = _agency_names_cached(store_id, get_cache_epoch(store_id))
-    st.markdown(f"**{len(ids)} dawai chuni**")
-    if not agencies:
-        st.caption("Abhi koi agency nahi hai. Pehle kisi agency ka bill scan karke save karo.")
+def _add_agency(store_id: int, name_key: str, ids: list) -> None:
+    """The owner typed a new agency name: save the agency in the system; if
+    medicines are selected they go to it at once."""
+    result = service.add_agency(store_id, st.session_state.get(name_key, ""))
+    if result["status"] == "invalid":
+        st.session_state[_FLASH] = ("warning", "Agency ka naam kam se kam 2 akshar ka likho.")
+        return
+    if result["status"] == "error":
+        st.session_state[_FLASH] = ("warning", "Agency save nahi ho payi. " + result.get("error", ""))
+        return
+    bump_cache_epoch(store_id)                    # the Agencies page and this list show it too
+    if ids:
+        _send_to_agency(store_id, result["agency_id"], result["name"], ids)
     else:
-        names = dict(agencies)
-        pick = st.selectbox(
-            "Agency chuno", options=[agency_id for agency_id, _ in agencies],
-            format_func=lambda agency_id: names[agency_id], index=None,
-            placeholder="Agency chuno (chunte hi list me jayegi)", label_visibility="collapsed",
-            key=f"lsd_agency_{st.session_state.get(_AGENCY_PICK, 0)}",
+        st.session_state[_AGENCY_PICK] = st.session_state.get(_AGENCY_PICK, 0) + 1
+        st.session_state[_FLASH] = ("success", f"✅ Agency '{result['name']}' jud gayi. Ab dawai chuno aur uski list me bhejo.")
+    st.session_state["lsd_full_rerun"] = True
+
+
+def _render_agency_picker(store_id: int, ids: list) -> None:
+    """Always on top of the list: pick an agency (the first choice is "Add
+    agency"). With medicines selected, picking an agency sends them there at once."""
+    agencies = _agency_names_cached(store_id, get_cache_epoch(store_id))
+    names = dict(agencies)
+    version = st.session_state.get(_AGENCY_PICK, 0)
+    pick = st.selectbox(
+        "Agency chuno", options=[_ADD_AGENCY] + [agency_id for agency_id, _ in agencies],
+        format_func=lambda value: "➕ Add agency" if value == _ADD_AGENCY else names[value], index=None,
+        placeholder="Agency chuno (dawai chun kar)", label_visibility="collapsed",
+        key=f"lsd_agency_{version}",
+    )
+    if pick == _ADD_AGENCY:
+        name_key = f"lsd_new_agency_{version}"
+        st.text_input(
+            "Agency ka naam", key=name_key, max_chars=100,
+            placeholder="Nayi agency ka naam likho", label_visibility="collapsed",
         )
-        if pick is not None:        # choosing the agency sends the medicines right away
+        st.button(
+            "Agency add karo" if not ids else "Agency add karo aur list me bhejo", key=f"lsd_add_agency_{version}",
+            type="primary", use_container_width=True, on_click=_add_agency, args=(store_id, name_key, ids),
+        )
+    elif pick is not None:
+        if ids:                      # choosing the agency sends the medicines right away
             _send_to_agency(store_id, pick, names.get(pick, ""), ids)
             st.rerun()               # the whole page: the Agency tab shows the new list too
-    st.button("Chunav hatao", key="lsd_unselect", on_click=_clear_selection)
+        else:
+            st.session_state[_AGENCY_PICK] = version + 1
+            st.session_state[_FLASH] = ("info", "Pehle dawai par tap karke chuno, phir agency chuno.")
+            st.rerun(scope="fragment")
+    if ids:
+        st.button("Chunav hatao", key="lsd_unselect", on_click=_clear_selection)
 
 
 def _tile(label: str, key: str, store_id: int, name: str) -> None:
@@ -329,11 +492,19 @@ def _render_diary(store_id: int) -> None:
     """A fragment: typing and every button redraw only this tab."""
     rows = _entries(store_id)
 
+    if st.session_state.pop("lsd_full_rerun", False):
+        st.rerun()                       # a new agency was added: draw the whole page again
+
     flash = st.session_state.pop(_FLASH, None)
     if flash:
         getattr(st, flash[0])(flash[1])
 
     term = _search_box().strip()
+    qty_mode = st.toggle("🔢 Qty set karo", key=_QTY_MODE)
+    st.text_input(                       # hidden: the page script hands the quantities over here
+        "qty", key=_QTY_SINK, label_visibility="collapsed",
+        on_change=_save_quantities, args=(store_id,),
+    )
     if term:
         result = _store_result(store_id, term)
         _render_suggestions(store_id, result)
@@ -345,16 +516,15 @@ def _render_diary(store_id: int) -> None:
         return
     chosen = st.session_state.setdefault(_SELECTED, set())
     chosen &= {row["diary_id"] for row in plain}
-    st.caption(f"📒 {len(plain)} dawai  •  tap = chuno  •  right slide = hatao")
-    if chosen:
-        _render_send_bar(store_id, sorted(chosen))
+    st.caption(
+        f"📒 {len(plain)} dawai  •  "
+        + ("tap = qty set karo" if qty_mode else "tap = chuno")
+        + "  •  right slide = hatao"
+    )
+    _render_agency_picker(store_id, sorted(chosen))
     st.markdown(
-        "<div class='lsd-list'>"
-        + "".join(
-            f"<div class='lsd-row lsd-id-{int(row['diary_id'])}"
-            f"{' lsd-sel' if row['diary_id'] in chosen else ''}'>{html.escape(str(row['name']))}</div>"
-            for row in plain
-        )
+        f"<div class='lsd-list{' lsd-qmode' if qty_mode else ''}'>"
+        + "".join(row_html(row, row["diary_id"] in chosen) for row in plain)
         + "</div>",
         unsafe_allow_html=True,
     )

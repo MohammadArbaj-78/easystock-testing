@@ -689,11 +689,15 @@ def _clean_invoice_lot_data(raw: dict) -> dict:
         raise ValidationError("Medicine Name is required.")
 
     batch_number = str(raw.get("batch_number", "")).strip()
+    if _is_blank_mark(batch_number):
+        batch_number = ""           # "-" / "_" = the bill has no batch: kept empty
 
     expiry_date = str(raw.get("expiry_date", "")).strip()
     if not expiry_date:
         raise ValidationError("Expiry is required.")
-    if not is_valid_expiry(expiry_date):
+    if _is_blank_mark(expiry_date):
+        expiry_date = ""            # "-" / "_" = the bill has no expiry: kept empty
+    elif not is_valid_expiry(expiry_date):
         raise ValidationError(
             "Expiry must be in Month/Year format (e.g. 3/28, 03/28, 03/2028 or Jun-2028)."
         )

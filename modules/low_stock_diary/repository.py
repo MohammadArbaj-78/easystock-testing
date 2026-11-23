@@ -13,7 +13,8 @@ from config.settings import ACTIVE_DB_BACKEND
 
 def list_entries(store_id: int) -> list:
     """Every diary row of the store, newest first:
-    [{"diary_id", "name", "agency_id"}]."""
+    [{"diary_id", "name", "agency_id", "qty"}]. qty is the quantity the owner
+    set (None = not set; also None while the qty column is not created yet)."""
     if ACTIVE_DB_BACKEND == "supabase":
         return _list_supabase(store_id)
     return _list_sqlite(store_id)
@@ -49,6 +50,19 @@ def set_agency(store_id: int, diary_ids: list, agency_id) -> None:
         _table().update({"agency_id": value}).eq("store_id", store_id).in_("diary_id", ids).execute()
     else:
         _set_agency_sqlite(store_id, ids, value)
+
+
+def set_quantities(store_id: int, quantities: dict) -> None:
+    """Save the quantity of some diary rows: {diary_id: qty (int) or None}.
+    Own store only. Needs the qty column (database/low_stock_diary_qty.sql)."""
+    by_qty = {}
+    for diary_id, qty in quantities.items():
+        by_qty.setdefault(qty, []).append(int(diary_id))
+    for qty, ids in by_qty.items():
+        if ACTIVE_DB_BACKEND == "supabase":
+            _table().update({"qty": qty}).eq("store_id", store_id).in_("diary_id", ids).execute()
+        else:
+            _set_qty_sqlite(store_id, ids, qty)
 
 
 def list_agency_mobiles(store_id: int) -> dict:
@@ -125,7 +139,7 @@ def _table():
 
 def _list_supabase(store_id: int) -> list:
     response = (
-        _table().select("diary_id, name, agency_id")
+        _table().select("*")
         .eq("store_id", store_id).order("diary_id", desc=True).execute()
     )
     return response.data or []
@@ -151,11 +165,15 @@ def _ensure_sqlite_table(connection) -> None:
             name       TEXT NOT NULL,
             name_key   TEXT NOT NULL,
             agency_id  INTEGER,
+            qty        INTEGER,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             UNIQUE (store_id, name_key)
         )
         """
     )
+    columns = [row[1] for row in connection.execute("PRAGMA table_info(low_stock_diary)").fetchall()]
+    if "qty" not in columns:          # a table made before the quantity feature
+        connection.execute("ALTER TABLE low_stock_diary ADD COLUMN qty INTEGER")
 
 
 def _list_sqlite(store_id: int) -> list:
@@ -163,7 +181,7 @@ def _list_sqlite(store_id: int) -> list:
     with get_connection() as connection:
         _ensure_sqlite_table(connection)
         rows = connection.execute(
-            "SELECT diary_id, name, agency_id FROM low_stock_diary WHERE store_id = ? ORDER BY diary_id DESC",
+            "SELECT diary_id, name, agency_id, qty FROM low_stock_diary WHERE store_id = ? ORDER BY diary_id DESC",
             (store_id,),
         ).fetchall()
     return [dict(row) for row in rows]
@@ -199,4 +217,15 @@ def _set_agency_sqlite(store_id: int, ids: list, agency_id) -> None:
         connection.execute(
             f"UPDATE low_stock_diary SET agency_id = ? WHERE store_id = ? AND diary_id IN ({marks})",
             [agency_id, store_id, *ids],
+        )
+
+
+def _set_qty_sqlite(store_id: int, ids: list, qty) -> None:
+    from core.database import get_connection
+    marks = ",".join("?" for _ in ids)
+    with get_connection() as connection:
+        _ensure_sqlite_table(connection)
+        connection.execute(
+            f"UPDATE low_stock_diary SET qty = ? WHERE store_id = ? AND diary_id IN ({marks})",
+            [qty, store_id, *ids],
         )

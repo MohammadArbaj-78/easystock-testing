@@ -9,8 +9,6 @@ It shares the diary's session list, hidden-button swipe script and CSS, so it
 is drawn after the Diary tab in the same run.
 """
 
-import html
-
 import streamlit as st
 
 from core.cache_utils import get_cache_epoch
@@ -112,10 +110,7 @@ def _render(store_id: int) -> None:
 def _render_agency(store_id: int, agency_id: int, agency_name: str, rows: list, mobile: str = None) -> None:
     st.markdown(
         "<div class='lsd-list'>"
-        + "".join(
-            f"<div class='lsd-row lsd-id-{int(row['diary_id'])}'>{html.escape(str(row['name']))}</div>"
-            for row in rows
-        )
+        + "".join(diary_ui.row_html(row) for row in rows)
         + "</div>",
         unsafe_allow_html=True,
     )
@@ -123,7 +118,7 @@ def _render_agency(store_id: int, agency_id: int, agency_name: str, rows: list, 
     for row in rows:
         st.button("↩", key=f"lsd_del_{row['diary_id']}", on_click=_return_row, args=(store_id, row["diary_id"]))
 
-    message = service.order_message(agency_name, [row["name"] for row in rows])
+    message = service.order_message(agency_name, [service.line_text(row) for row in rows])
     with st.container(key=f"lsa_wa_{agency_id}"):
         if mobile:
             # number known: the agency's own chat opens directly

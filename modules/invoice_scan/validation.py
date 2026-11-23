@@ -134,6 +134,12 @@ def _gst_pattern(medicines: list) -> dict:
     return {"dominant": dominant, "counts": counts}
 
 
+def _is_blank_mark(value) -> bool:
+    """"-" / "_" typed in a box = "the bill has nothing here"."""
+    text = str(value or "").strip()
+    return bool(text) and all(ch in "-_\u2013\u2014\u2212" for ch in text)
+
+
 def _duplicate_batch_groups(medicines: list) -> dict:
     """Return {batch_number: [row, row, ...]} for every non-empty batch
     number that appears on more than one row. Rows are the actual dicts
@@ -142,7 +148,7 @@ def _duplicate_batch_groups(medicines: list) -> dict:
     by_batch: dict = {}
     for row in medicines:
         batch = str(row.get("batch_number", "")).strip()
-        if batch:
+        if batch and not _is_blank_mark(batch):
             by_batch.setdefault(batch, []).append(row)
     return {batch: rows for batch, rows in by_batch.items() if len(rows) > 1}
 
@@ -255,7 +261,7 @@ def validate_medicines(medicines: list) -> list:
         # validator (utils.validators.is_valid_expiry) - no new date
         # parsing logic here.
         expiry = str(row.get("expiry_date", "")).strip()
-        if expiry and not is_valid_expiry(expiry):
+        if expiry and not _is_blank_mark(expiry) and not is_valid_expiry(expiry):
             flags.append("INVALID_EXPIRY_FORMAT")
 
         row["_validation"] = {
