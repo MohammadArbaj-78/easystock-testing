@@ -14,7 +14,8 @@ modules.agencies.service or modules.agencies.repository, never here.
 import streamlit as st
 
 from modules.agencies import service as agencies_service
-from core.session import get_current_store_id
+from core import pdf_export
+from core.session import get_current_store_id, get_current_store_name
 from core.cache_utils import get_cache_epoch, bump_cache_epoch
 import html
 
@@ -33,15 +34,68 @@ _KEYUP_DEBOUNCE_MS = 150
 
 _CARD_CSS = """
 <style>
-/* Each agency is its own clearly outlined card. */
+/* Same look as the Udhar Khata list: a thin white block per agency, the name on
+   the left and what is owed on the right (red = baki, green = advance). */
+.ag-tiles { display: flex; gap: 0.5rem; margin: 0.2rem 0 0.7rem 0; }
+.ag-tile { flex: 1; min-width: 0; background: #fff; border: 1px solid rgba(49,51,63,0.16);
+           border-radius: 0.6rem; padding: 0.5rem 0.75rem; }
+.ag-tl { font-size: 0.78rem; color: #777; }
+.ag-tv { font-size: 1.4rem; font-weight: 800; line-height: 1.25; }
 [class*="st-key-agency_card_"] {
-    border: 2px solid var(--primary-color, #1f6f5b);
-    border-radius: 0.75rem;
-    padding: 0.35rem;
-    margin-bottom: 0.9rem;
+    background: #fff;
+    border: 1px solid rgba(49, 51, 63, 0.12);
+    border-radius: 0.6rem;
+    padding: 0;
+    margin-bottom: -0.45rem;
+    overflow: hidden;
+}
+[class*="st-key-agency_card_"] [data-testid="stExpander"],
+[class*="st-key-agency_card_"] [data-testid="stExpander"] details {
+    border: none !important;
+    border-radius: 0 !important;
+    background: transparent !important;
+}
+[class*="st-key-agency_card_"] [data-testid="stExpander"] summary {
+    padding: 0.55rem 0.75rem;
+}
+/* the heading "**Name**  :red[₹x baaki]": name left, amount right */
+[class*="st-key-agency_card_"] [data-testid="stExpander"] summary [data-testid="stMarkdownContainer"] { width: 100%; }
+[class*="st-key-agency_card_"] [data-testid="stExpander"] summary [data-testid="stMarkdownContainer"] p {
+    display: flex; justify-content: space-between; align-items: baseline; gap: 0.75rem; margin: 0;
+    font-size: 1rem; line-height: 1.3;
+}
+[class*="st-key-agency_card_"] [data-testid="stExpander"] summary [data-testid="stMarkdownContainer"] p > :first-child {
+    min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+[class*="st-key-agency_card_"] [data-testid="stExpander"] summary [data-testid="stMarkdownContainer"] p > :last-child {
+    flex: none; font-weight: 700; font-size: 0.95rem;
+}
+/* what is inside the opened agency: a thin line above it */
+[class*="st-key-agency_card_"] [data-testid="stExpanderDetails"] {
+    border-top: 1px solid rgba(49, 51, 63, 0.1);
+    padding-top: 0.6rem;
 }
 </style>
 """
+
+
+def _label_text(text: str) -> str:
+    """An agency name as safe heading text (no accidental bold / colour / maths)."""
+    for char in "\\*_[]`$<>":
+        text = text.replace(char, "\\" + char)
+    return text
+
+
+def _tiles_html(agencies: list, total_balance: float) -> str:
+    owing = sum(1 for agency in agencies if agency["balance"] > 0)
+    return (
+        "<div class='ag-tiles'>"
+        f"<div class='ag-tile'><div class='ag-tl'>Total baki</div><div class='ag-tv' style='color:#D32F2F'>"
+        f"₹{max(total_balance, 0):,.2f}</div></div>"
+        f"<div class='ag-tile'><div class='ag-tl'>Agencies</div><div class='ag-tv'>{len(agencies)}"
+        f"<span style='font-size:0.8rem;font-weight:600;color:#888'> ({owing} baki)</span></div></div>"
+        "</div>"
+    )
 
 
 @st.cache_data(ttl=840, show_spinner=False)
@@ -96,19 +150,25 @@ def render_agencies_page() -> None:
     image_urls = _get_bill_image_urls_cached(photo_paths) if photo_paths else {}
 
     total_balance = sum(agency["balance"] for agency in agencies)
-    st.caption(f"Total outstanding across all agencies: ₹{total_balance:,.2f}")
+    store_name = get_current_store_name()              # read here: the PDF is made in another thread
+    pdf_export.pdf_button(
+        "Download PDF",
+        lambda: pdf_export.build_agencies_pdf(store_name, agencies, all_details),
+        "Agencies_Ledger", "agencies",
+    )
+    st.markdown(_tiles_html(agencies, total_balance), unsafe_allow_html=True)
 
     for agency in agencies:
         balance = agency["balance"]
         if balance > 0:
-            balance_label = f"₹{balance:,.2f} baaki"
+            balance_label = f":red[₹{balance:,.2f} baaki]"
         elif balance < 0:
-            balance_label = f"₹{-balance:,.2f} advance"
+            balance_label = f":green[₹{-balance:,.2f} advance]"
         else:
-            balance_label = "Fully paid"
+            balance_label = ":gray[Fully paid]"
 
         with st.container(key=f"agency_card_{agency['agency_id']}"):
-            with st.expander(f"{agency['agency_name']} — {balance_label}"):
+            with st.expander(f"**{_label_text(str(agency['agency_name']))}**  {balance_label}"):
                 _render_agency_detail(store_id, agency, all_details.get(agency["agency_id"]), image_urls)
 
 

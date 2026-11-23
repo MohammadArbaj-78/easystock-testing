@@ -13,7 +13,8 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from core.cache_utils import bump_cache_epoch, get_cache_epoch
-from core.session import get_current_store_id
+from core import pdf_export
+from core.session import get_current_store_id, get_current_store_name
 from modules.low_stock_diary import service
 from modules.agencies import service as agencies_service
 from modules.sales import service as sales_service
@@ -499,6 +500,8 @@ def _render_diary(store_id: int) -> None:
     if flash:
         getattr(st, flash[0])(flash[1])
 
+    _render_pdf_button(store_id, rows)
+
     term = _search_box().strip()
     qty_mode = st.toggle("🔢 Qty set karo", key=_QTY_MODE)
     st.text_input(                       # hidden: the page script hands the quantities over here
@@ -533,6 +536,26 @@ def _render_diary(store_id: int) -> None:
     for row in plain:
         st.button("✖", key=f"lsd_del_{row['diary_id']}", on_click=_delete, args=(store_id, row["diary_id"]))
         st.button("✔", key=f"lsd_sel_{row['diary_id']}", on_click=_toggle, args=(row["diary_id"],))
+
+
+def _render_pdf_button(store_id: int, rows: list) -> None:
+    """A small "Download list" button: the whole diary (plain list, then each
+    agency's list) as a PDF. Nothing is made until it is pressed."""
+    if not rows:
+        return
+    store_name = get_current_store_name()              # read here: the PDF is made in another thread
+    names = dict(_agency_names_cached(store_id, get_cache_epoch(store_id)))
+    snapshot = [dict(row) for row in rows]
+
+    def build() -> bytes:
+        plain, by_agency = service.split_rows(snapshot)
+        groups = [
+            (names.get(agency_id) or f"Agency {agency_id}", list(reversed(items)))
+            for agency_id, items in sorted(by_agency.items(), key=lambda pair: str(names.get(pair[0], "")).lower())
+        ]
+        return pdf_export.build_diary_pdf(store_name, list(reversed(plain)), groups)
+
+    pdf_export.pdf_button("Download list", build, "Low_Stock_Diary", "diary")
 
 
 def _store_result(store_id: int, term: str) -> dict:

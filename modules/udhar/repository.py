@@ -60,6 +60,14 @@ def list_entries(store_id: int, customer_id: int, limit: int = 300) -> list:
     return _list_entries_sqlite(store_id, customer_id, limit)
 
 
+def list_all_entries(store_id: int) -> list:
+    """Every entry of every customer of the store, oldest first (used only by
+    the PDF record): [{"entry_id", "customer_id", "kind", "amount", "note", "entry_date"}]."""
+    if ACTIVE_DB_BACKEND == "supabase":
+        return _list_all_entries_supabase(store_id)
+    return _list_all_entries_sqlite(store_id)
+
+
 def delete_entry(store_id: int, entry_id: int) -> None:
     if ACTIVE_DB_BACKEND == "supabase":
         _table("udhar_entries").delete().eq("store_id", store_id).eq("entry_id", entry_id).execute()
@@ -81,6 +89,22 @@ def _list_customers_supabase(store_id: int) -> list:
         .eq("store_id", store_id).limit(5000).execute()
     ).data or []
     return [dict(row, balance=round(float(row.get("balance") or 0), 2)) for row in rows]
+
+
+def _list_all_entries_supabase(store_id: int) -> list:
+    rows, start, page = [], 0, 1000                  # the API gives at most 1000 rows at a time
+    while True:
+        chunk = (
+            _table("udhar_entries")
+            .select("entry_id, customer_id, kind, amount, note, entry_date")
+            .eq("store_id", store_id).order("entry_id")
+            .range(start, start + page - 1).execute()
+        ).data or []
+        rows += chunk
+        if len(chunk) < page:
+            break
+        start += page
+    return [dict(row, amount=float(row["amount"])) for row in rows]
 
 
 def _add_customer_supabase(store_id: int, name: str, mobile: str) -> int:
@@ -190,6 +214,18 @@ def _list_entries_sqlite(store_id: int, customer_id: int, limit: int) -> list:
             "SELECT entry_id, kind, amount, note, entry_date FROM udhar_entries "
             "WHERE store_id = ? AND customer_id = ? ORDER BY entry_date DESC, entry_id DESC LIMIT ?",
             (store_id, customer_id, limit),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def _list_all_entries_sqlite(store_id: int) -> list:
+    from core.database import get_connection
+    with get_connection() as connection:
+        _ensure_sqlite_tables(connection)
+        rows = connection.execute(
+            "SELECT entry_id, customer_id, kind, amount, note, entry_date FROM udhar_entries "
+            "WHERE store_id = ? ORDER BY entry_id",
+            (store_id,),
         ).fetchall()
     return [dict(row) for row in rows]
 

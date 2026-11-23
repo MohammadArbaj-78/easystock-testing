@@ -118,6 +118,14 @@ def get_history(store_id: int, customer_id: int, balance: float) -> list:
     return history
 
 
+def build_pdf(store_id: int, store_name: str) -> bytes:
+    """The whole Udhar record as a PDF: every customer with number, udhar,
+    jama and baki, then each customer's entries. Reads the data itself (it
+    runs when the owner presses the download button)."""
+    from core import pdf_export
+    return pdf_export.build_udhar_pdf(store_name, repository.list_customers(store_id), repository.list_all_entries(store_id))
+
+
 def delete_entry(store_id: int, entry_id: int) -> None:
     repository.delete_entry(store_id, entry_id)
 

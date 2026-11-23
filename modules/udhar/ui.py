@@ -16,6 +16,7 @@ from datetime import date
 import streamlit as st
 import streamlit.components.v1 as components
 
+from core import pdf_export
 from core.session import get_current_store_id, get_current_store_name
 from modules.udhar import service
 
@@ -481,6 +482,11 @@ def _render_list(store_id: int) -> None:
     _show_flash()
 
     st.markdown(_tiles_html(service.summary(customers)), unsafe_allow_html=True)
+    if customers:
+        store_name = get_current_store_name()          # read here: the PDF is made in another thread
+        pdf_export.pdf_button(
+            "Download record", lambda: service.build_pdf(store_id, store_name), "Udhar_Khata", "udhar",
+        )
 
     _render_add_customer(store_id)
 
