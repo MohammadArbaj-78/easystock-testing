@@ -695,6 +695,37 @@ def _is_blank_mark(value) -> bool:
     return bool(text) and all(ch in "-_\u2013\u2014\u2212" for ch in text)
 
 
+def _number_or_none(value):
+    """A box's text as a number (commas allowed), or None when it is blank / not a number."""
+    text = str(value or "").replace(",", "").strip()
+    if not text or _is_blank_mark(text):
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def net_rate_text(row: dict) -> str:
+    """The "Net Rate" column: what one piece really costs after the free pieces.
+
+        net rate = rate x paid qty / (paid qty + free qty)
+
+    Example: rate 10, 10 paid + 2 free  ->  10 x 10 / 12 = 8.33.
+    Worked out from the row's own boxes (paid QTY, and TQT = paid + free), so it
+    follows the reviewer's corrections at once. With nothing free it is the
+    Rate itself; when the rate is blank or not a number the cell stays empty.
+    Display only: nothing is saved from it."""
+    rate = _number_or_none(row.get("rate"))
+    if rate is None:
+        return ""
+    paid = _number_or_none(row.get("qty"))
+    total = _number_or_none(row.get("quantity"))
+    if paid and total and 0 < paid < total:
+        rate = rate * paid / total
+    return f"{rate:.2f}"
+
+
 def _strip_percent(value) -> str:
     """"5%" / "5 %" / "% 5" -> "5" (a percent sign on a GST value is harmless)."""
     return str(value or "").replace("%", "").strip()

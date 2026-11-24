@@ -18,6 +18,11 @@ from datetime import date, datetime
 
 import streamlit as st
 
+try:
+    from st_keyup import st_keyup
+except ImportError:          # package not installed: a normal text box is used instead
+    st_keyup = None
+
 from modules.products import service as products_service
 from config.product_schema import PRODUCT_FIELDS, FieldType
 from core.session import get_current_store_id
@@ -55,29 +60,40 @@ def _load_more_products() -> None:
         + PRODUCTS_PAGE_SIZE
     )
 
+_LIST_CSS = """
+<style>
+/* Products list: thin white rows, like the Udhar list (look only) */
+div[class*="st-key-prod_rows"] [data-testid="stExpander"] { background: #fff; border: 1px solid rgba(49,51,63,0.12) !important;
+    border-radius: 0.6rem; margin-bottom: 0.35rem; }
+div[class*="st-key-prod_rows"] [data-testid="stExpander"] summary { padding: 0.5rem 0.75rem; font-weight: 600; }
+div[class*="st-key-prod_rows"] [data-testid="stExpander"] summary p { font-size: 0.92rem; line-height: 1.35; }
+</style>
+"""
+
+
+def _search_box() -> str:
+    """Live search box (results change while typing, no Search button)."""
+    hint = "Dawai ya batch number se dhoondho"
+    if st_keyup is not None:
+        try:
+            text = st_keyup("Search", placeholder=hint, debounce=150,
+                            key="products_search_term", label_visibility="collapsed")
+        except TypeError:
+            text = st_keyup("Search", debounce=150, key="products_search_term")
+        return text or ""
+    return st.text_input("Search", placeholder=hint, key="products_search_term",
+                         label_visibility="collapsed") or ""
+
+
 def _render_product_list() -> None:
     """Render the searchable product list with edit/delete actions per
     row.
     """
     store_id = get_current_store_id()
 
-    search_col, search_btn_col = st.columns([6, 1.3])
+    st.markdown(_LIST_CSS, unsafe_allow_html=True)
+    search_term = _search_box()
 
-    with search_col:
-        search_term = st.text_input(
-            "Search by medicine name or batch number",
-            placeholder="e.g. Paracetamol or B001",
-            key="products_search_term",
-        )
-    
-    with search_btn_col:
-        st.button(
-            "🔎 Search",
-            key="products_search_button",
-            type="primary",
-            use_container_width=True,
-        )
-    
     # A new search starts again from the first page.
     if st.session_state.get("products_last_search") != search_term:
         st.session_state["products_last_search"] = search_term
@@ -133,8 +149,9 @@ def _render_product_list() -> None:
                     st.session_state.pop("products_bulk_confirm", None)
                     st.rerun()
 
-    for product in products:
-        _render_product_row(store_id, product, select_mode)
+    with st.container(key="prod_rows"):
+        for product in products:
+            _render_product_row(store_id, product, select_mode)
 
     if total > len(products):
         st.button(

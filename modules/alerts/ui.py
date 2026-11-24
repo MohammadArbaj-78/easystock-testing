@@ -13,6 +13,11 @@ never here.
 
 import streamlit as st
 
+try:
+    from st_keyup import st_keyup
+except ImportError:          # package not installed: a normal text box is used instead
+    st_keyup = None
+
 from modules.alerts import service as alerts_service
 from modules.products import service as products_service
 from config.alert_theme import ALERT_TYPE_DISPLAY, render_alert_banner
@@ -41,22 +46,7 @@ def render_expiry_alerts_page() -> None:
     with st.container(key="swipe_ok_expiry"):
         selected_alert_type = _render_filter_dropdown(store_id)
 
-        search_col, search_btn_col = st.columns([6, 1.3])
-    
-        with search_col:
-            search_term = st.text_input(
-                "Search by medicine name or batch number",
-                placeholder="e.g. Paracetamol or B001",
-                key="expiry_alerts_search_term",
-            )
-    
-        with search_btn_col:
-            st.button(
-                "🔎 Search",
-                key="expiry_alerts_search_button",
-                type="primary",
-                use_container_width=True,
-            )
+        search_term = _search_box()
 
     filtered_buckets = _get_filtered_alerts_cached(
         store_id,
@@ -76,6 +66,20 @@ def render_expiry_alerts_page() -> None:
         products = filtered_buckets[alert_type]
         if products:
             _render_alert_section(store_id, alert_type, products)
+
+
+def _search_box() -> str:
+    """Live search box (results change while typing, no Search button)."""
+    hint = "Dawai ya batch number se dhoondho"
+    if st_keyup is not None:
+        try:
+            text = st_keyup("Search", placeholder=hint, debounce=150,
+                            key="expiry_alerts_search_term", label_visibility="collapsed")
+        except TypeError:
+            text = st_keyup("Search", debounce=150, key="expiry_alerts_search_term")
+        return text or ""
+    return st.text_input("Search", placeholder=hint, key="expiry_alerts_search_term",
+                         label_visibility="collapsed") or ""
 
 
 @st.cache_data(show_spinner=False)

@@ -112,6 +112,7 @@ _COLUMNS = [
     ("pack_size",    "Pack",           1),
     ("mrp",          "MRP",            1),
     ("rate",         "Rate",           1),
+    ("_net",         "Net Rate",       1),      # not a field: Rate after the free pieces, worked out here
     ("gst_percent",  "GST %",          1),
 ]
 
@@ -259,6 +260,12 @@ def _sync_pending_widget_edits() -> None:
                 review_service.update_medicine(idx, field_key, widget_value)
 
 
+def _two_decimals(value) -> str:
+    """A Rate box's text as 12.50 (empty when it is not a number)."""
+    number = review_service._number_or_none(value)
+    return "" if number is None else f"{number:.2f}"
+
+
 def _render_table() -> None:
     """Render the editable medicine table: one row per medicine.
 
@@ -336,8 +343,9 @@ def _render_table_scroll_css() -> None:
             .st-key-review_table_scroll [data-testid="stColumn"]:nth-child(6) { width: 70px  !important; }
             .st-key-review_table_scroll [data-testid="stColumn"]:nth-child(7) { width: 70px  !important; }
             .st-key-review_table_scroll [data-testid="stColumn"]:nth-child(8) { width: 70px  !important; }
-            .st-key-review_table_scroll [data-testid="stColumn"]:nth-child(9) { width: 70px  !important; }
-            .st-key-review_table_scroll [data-testid="stColumn"]:nth-child(10) { width: 55px  !important; }
+            .st-key-review_table_scroll [data-testid="stColumn"]:nth-child(9) { width: 80px  !important; }
+            .st-key-review_table_scroll [data-testid="stColumn"]:nth-child(10) { width: 70px  !important; }
+            .st-key-review_table_scroll [data-testid="stColumn"]:nth-child(11) { width: 55px  !important; }
             .easystock-mobile-scroll-hint {
                 display: block;
                 font-size: 0.8rem;
@@ -521,6 +529,17 @@ def _render_medicine_row(idx: int, medicine: dict, row_errors: list) -> None:
         cols = st.columns(widths)
 
         for col_widget, (field_key, label, _) in zip(cols[:-1], _COLUMNS):
+            if field_key == "_net":
+                # Net Rate: Rate after the free pieces. Worked out from this
+                # row's own boxes, display only (nothing to edit or save).
+                net_text = review_service.net_rate_text(medicine)
+                changed = bool(net_text) and net_text != _two_decimals(medicine.get("rate"))
+                col_widget.markdown(
+                    "<div style='padding-top:0.45rem; font-weight:%s; color:%s;'>%s</div>"
+                    % ("700" if changed else "400", "#1A7A6E" if changed else "inherit", net_text or "-"),
+                    unsafe_allow_html=True,
+                )
+                continue
             if field_key.startswith("_"):
                 # The "x" between TQT and Pack: "this many units  x  this many
                 # pieces in each". Display only, nothing to edit or save.
