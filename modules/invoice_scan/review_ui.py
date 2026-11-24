@@ -112,7 +112,7 @@ _COLUMNS = [
     ("pack_size",    "Pack",           1),
     ("mrp",          "MRP",            1),
     ("rate",         "Rate",           1),
-    ("_net",         "Net Rate",       1),      # not a field: Rate after the free pieces, worked out here
+    ("_net",         "Net Rate",       1.6),      # not a field: Rate after the free pieces, worked out here
     ("gst_percent",  "GST %",          1),
 ]
 
@@ -322,6 +322,11 @@ def _render_table_scroll_css() -> None:
     st.markdown(
         """
         <style>
+        /* Net Rate cell: a block like the boxes next to it (any screen) */
+        .rv-net { display: flex; align-items: center; min-height: 2.5rem; padding: 0 0.5rem; box-sizing: border-box;
+                  border-radius: 0.5rem; white-space: nowrap; overflow: hidden; font-size: 0.875rem;
+                  background: var(--secondary-background-color, #f0ece1); }
+        .rv-net-changed { font-weight: 700; color: #1A7A6E; }
         @media (max-width: 768px) {
             .st-key-review_table_scroll {
                 overflow-x: auto;
@@ -535,8 +540,7 @@ def _render_medicine_row(idx: int, medicine: dict, row_errors: list) -> None:
                 net_text = review_service.net_rate_text(medicine)
                 changed = bool(net_text) and net_text != _two_decimals(medicine.get("rate"))
                 col_widget.markdown(
-                    "<div style='padding-top:0.45rem; font-weight:%s; color:%s;'>%s</div>"
-                    % ("700" if changed else "400", "#1A7A6E" if changed else "inherit", net_text or "-"),
+                    "<div class='rv-net%s'>%s</div>" % (" rv-net-changed" if changed else "", net_text or "-"),
                     unsafe_allow_html=True,
                 )
                 continue

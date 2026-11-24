@@ -214,11 +214,11 @@ def get_filtered_alerts(store_id: int, alert_type: str = None, search_term: str 
         }
 
     if search_term and search_term.strip():
-        term = search_term.strip().lower()
+        from core import name_matching
         all_buckets = {
             key: [
                 product for product in products
-                if term in product["name"].lower() or term in product["batch_number"].lower()
+                if name_matching.search_rank(product["name"], product["batch_number"], search_term) is not None
             ]
             for key, products in all_buckets.items()
         }

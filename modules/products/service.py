@@ -254,6 +254,25 @@ def search_products_page(store_id: int, search_term: str = None, limit: int = 50
     the total number of matches. Search always runs on ALL products."""
     return products_repository.get_products_page(store_id, search_term, limit)
 
+def search_products_page_live(store_id: int, search_term: str, limit: int, all_rows: list = None) -> dict:
+    """Like search_products_page, for the live search box: with a search term,
+    only medicines whose name has a word STARTING with what was typed (or a
+    matching batch number) are listed, best match first. Without a term it is
+    exactly search_products_page. all_rows: the store's products, read once
+    by the caller (otherwise read here)."""
+    if not search_term or not search_term.strip():
+        return search_products_page(store_id, search_term, limit)
+    from core import name_matching
+    rows = all_rows if all_rows is not None else products_repository.get_all_products(store_id)
+    ranked = []
+    for position, row in enumerate(rows):
+        tier = name_matching.search_rank(row.get("name"), row.get("batch_number"), search_term)
+        if tier is not None:
+            ranked.append((tier, position, row))
+    ranked.sort(key=lambda item: (item[0], item[1]))     # stays in the usual name order inside a tier
+    return {"rows": [item[2] for item in ranked[:limit]], "total": len(ranked)}
+
+
 def get_product(store_id: int, product_id: int) -> dict:
     """Get a single product by ID for editing.
 

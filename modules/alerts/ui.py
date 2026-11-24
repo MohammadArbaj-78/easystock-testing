@@ -38,7 +38,13 @@ def render_expiry_alerts_page() -> None:
     by color-coded, expandable product sections.
     """
     st.subheader("⏰ Expiry Alerts")
+    _render_expiry_alerts()
 
+
+@st.fragment
+def _render_expiry_alerts() -> None:
+    """A fragment: typing in the search box or changing the filter redraws
+    only this list, not the whole app."""
     store_id = get_current_store_id()
 
     # "swipe_ok_": a swipe that starts on the filter / search box opens the

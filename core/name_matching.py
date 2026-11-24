@@ -280,6 +280,26 @@ def match_tier(name, words):
     return None
 
 
+def search_rank(name, batch, term):
+    """Live-search test for a list: 0/1 = shown (0: the name starts with what
+    was typed, 1: every typed word starts some word of the name), None = hidden.
+    So "a" shows names with a word starting with "a" - not every name that
+    merely has an "a" inside - and "ar" shows words starting with "ar".
+    A batch number matches when it starts with what was typed (or contains it,
+    once at least 3 characters are typed). An empty search shows everything."""
+    words = search_words(term)
+    if not words:
+        return 0
+    tier = match_tier(name, words)
+    if tier is not None and tier <= 1:
+        return tier
+    typed = clean_spaces(term).lower()
+    batch_text = str(batch or "").lower()
+    if typed and (batch_text.startswith(typed) or (len(typed) >= 3 and typed in batch_text)):
+        return 1
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Combination medicines
 # ---------------------------------------------------------------------------

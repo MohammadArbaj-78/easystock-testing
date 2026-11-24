@@ -91,10 +91,10 @@ def get_low_stock_alerts(store_id: int, search_term: str = None, global_minimum:
     all_low_stock = products_repository.get_low_stock_products(store_id, global_minimum=global_minimum)
 
     if search_term and search_term.strip():
-        term = search_term.strip().lower()
+        from core import name_matching
         all_low_stock = [
             p for p in all_low_stock
-            if term in p["name"].lower() or term in p["batch_number"].lower()
+            if name_matching.search_rank(p["name"], p["batch_number"], search_term) is not None
         ]
 
     buckets = {severity: [] for severity in ALL_SEVERITIES}

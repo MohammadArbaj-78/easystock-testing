@@ -54,6 +54,20 @@ def _search_products_page_cached(store_id: int, search_term: str, limit: int, _e
     return products_service.search_products_page(store_id, search_term, limit)
 
 
+@st.cache_data(show_spinner=False)
+def _all_products_cached(store_id: int, _epoch: int) -> list:
+    """The store's products, read once per change (the live search filters this
+    in memory, so typing does not ask the database each time)."""
+    return products_service.search_products(store_id)
+
+
+@st.cache_data(show_spinner=False)
+def _live_products_page_cached(store_id: int, search_term: str, limit: int, _epoch: int) -> dict:
+    return products_service.search_products_page_live(
+        store_id, search_term, limit, all_rows=_all_products_cached(store_id, _epoch)
+    )
+
+
 def _load_more_products() -> None:
     st.session_state["products_visible_limit"] = (
         st.session_state.get("products_visible_limit", PRODUCTS_PAGE_SIZE)
@@ -85,6 +99,7 @@ def _search_box() -> str:
                          label_visibility="collapsed") or ""
 
 
+@st.fragment
 def _render_product_list() -> None:
     """Render the searchable product list with edit/delete actions per
     row.
@@ -100,7 +115,7 @@ def _render_product_list() -> None:
         st.session_state["products_visible_limit"] = PRODUCTS_PAGE_SIZE
     limit = st.session_state.get("products_visible_limit", PRODUCTS_PAGE_SIZE)
 
-    page = _search_products_page_cached(
+    page = (_live_products_page_cached if search_term.strip() else _search_products_page_cached)(
         store_id,
         search_term,
         limit,

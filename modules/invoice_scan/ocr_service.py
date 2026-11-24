@@ -466,6 +466,17 @@ def _build_genai_client(api_key: str):
     return genai.Client(api_key=api_key)
 
 
+def _resolve_model() -> str:
+    """The Gemini model for the logged-in store: the one the owner set in the
+    admin app, else GEMINI_MODEL. Any problem = GEMINI_MODEL (never breaks a scan)."""
+    try:
+        from core import ai_model
+        from core.session import get_current_store_id
+        return ai_model.model_for_store(get_current_store_id())
+    except Exception:
+        return GEMINI_MODEL
+
+
 def extract_medicines_from_file(file_obj) -> dict:
     """Extract medicine line items from an uploaded invoice file.
 
@@ -519,6 +530,7 @@ def extract_medicines_from_file(file_obj) -> dict:
         preprocess_result = None
 
     start_time = time.monotonic()
+    model_name = _resolve_model()
 
     # Gemini receives the (preprocessed or original) invoice image and
     # the extraction prompt only - no OCR hint. Exactly one Gemini call
@@ -556,7 +568,7 @@ def extract_medicines_from_file(file_obj) -> dict:
         client = _build_genai_client(api_key)
         try:
             response = client.models.generate_content(
-                model=GEMINI_MODEL,
+                model=model_name,
                 contents=contents,
                 config=genai_types.GenerateContentConfig(
                     temperature=0,                       # deterministic reads (no random digit flips)
@@ -658,6 +670,6 @@ def extract_medicines_from_file(file_obj) -> dict:
         "medicines": medicines,
         "medicine_count": len(medicines),
         "extraction_time_seconds": elapsed,
-        "model": GEMINI_MODEL,
+        "model": model_name,
         "invoice_header": invoice_header,
     }
